@@ -1,0 +1,93 @@
+{
+  "id": "demo22ChildSpecGenerateGate",
+  "name": "DEMO 22 - Child Spec Generate and Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Spec child workflow\n\nInput: one Spec item from one LLD.\n\nThis child drafts and gates exactly one spec.",
+        "height": 220,
+        "width": 400,
+        "color": 3
+      },
+      "id": "be2f6af3-2182-4acf-a60f-26a8ad7a7dd9",
+      "name": "Spec child note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "0559ed44-d553-40d7-b4e8-edec6578f7cc",
+      "name": "Receive one Spec item",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 2500));\nreturn items.map(item => ({ json: { ...item.json, spec_stage: 'spec_draft_created', spec_artifact: item.json.target_path } }));"
+      },
+      "id": "07087e9b-df8f-4d08-907a-437a9a6bc02e",
+      "name": "Draft one Spec",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 2500));\nreturn items.map(item => ({ json: { ...item.json, spec_stage: 'spec_gate_passed', spec_quality_score: 91, github_pr_url: `https://github.example/${item.json.target_repo}/pull/${item.json.spec_issue}` } }));"
+      },
+      "id": "f14a3b0d-5645-4e7c-8368-c34f6e33ac88",
+      "name": "Gate one Spec",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Receive one Spec item": {
+      "main": [
+        [
+          {
+            "node": "Draft one Spec",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft one Spec": {
+      "main": [
+        [
+          {
+            "node": "Gate one Spec",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

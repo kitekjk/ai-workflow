@@ -1,0 +1,208 @@
+{
+  "id": "demoParentOrchestration",
+  "name": "DEMO 00 - Parent Orchestration",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Parent workflow\n\nThis demo shows one parent workflow calling several child workflows.\n\nOpen the parent execution to see which child node is running.\nOpen each child execution to see the exact active stage inside that child.",
+        "height": 260,
+        "width": 460,
+        "color": 5
+      },
+      "id": "f241fdb8-5b49-4435-8a20-0f9130545551",
+      "name": "Parent note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -280
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7162e-320f-451e-99e7-441cd60574fb",
+      "name": "Start demo",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b6c15c71-e4f8-41d4-83fb-3c9153694d33",
+              "name": "project_key",
+              "value": "OPS-123",
+              "type": "string"
+            },
+            {
+              "id": "9b0e88d1-d9bf-4766-9de1-0962d68458fb",
+              "name": "jira_hld",
+              "value": "HLD-001",
+              "type": "string"
+            },
+            {
+              "id": "a0f83cff-7c5e-42ef-b1b4-8768d24a865d",
+              "name": "demo_message",
+              "value": "Parent is orchestrating LLD, Spec, and Dev child workflows.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "465a9e41-dfe0-4115-87a7-62d5701743f4",
+      "name": "Prepare demo payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -480,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "demoChildLldGate",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "a8704f08-e170-4e74-a027-eb9fcf9eccd4",
+      "name": "Child 04 - LLD gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "demoChildSpecGate",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "eead23e3-b49c-4da1-bd35-bc39cfd91b45",
+      "name": "Child 06 - Spec gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        40,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "demoChildDevImplement",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "0d6d9bde-354e-458c-a8f4-32b0a2e83862",
+      "name": "Child 07 - Dev implement",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        300,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d49fb364-72c5-45ce-89e5-83719b3909ee",
+              "name": "orchestration_status",
+              "value": "demo_complete",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1624d175-d53d-409e-9473-b695b3de4ba8",
+      "name": "Parent complete",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        140
+      ]
+    }
+  ],
+  "connections": {
+    "Start demo": {
+      "main": [
+        [
+          {
+            "node": "Prepare demo payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare demo payload": {
+      "main": [
+        [
+          {
+            "node": "Child 04 - LLD gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Child 04 - LLD gate": {
+      "main": [
+        [
+          {
+            "node": "Child 06 - Spec gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Child 06 - Spec gate": {
+      "main": [
+        [
+          {
+            "node": "Child 07 - Dev implement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Child 07 - Dev implement": {
+      "main": [
+        [
+          {
+            "node": "Parent complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

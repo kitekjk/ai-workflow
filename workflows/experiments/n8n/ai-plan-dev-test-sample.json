@@ -1,0 +1,84 @@
+{
+  "id": "aiPlanDevTestSample",
+  "name": "AI 기획 개발 테스트 - 샘플",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## AI 기획 개발 테스트 샘플\n\n이 워크플로우는 앞으로 만들 agent runner 흐름의 자리표시자입니다.\n\n1. 기획 요청 수집\n2. 개발 작업 분해\n3. 테스트 결과 확인\n4. 다음 작업 결정",
+        "height": 280,
+        "width": 420,
+        "color": 4
+      },
+      "id": "4a089166-6007-44de-bc7d-c7c3e9c690d0",
+      "name": "Workflow note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f08e85a8-b98f-4f97-8ff5-6d664e9b9083",
+      "name": "Start manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6a7c0d72-03d0-4117-b2a0-90b8501dd219",
+              "name": "message",
+              "value": "AI workflow scaffold is visible. Next: connect planner, developer, tester, and agent runner.",
+              "type": "string"
+            },
+            {
+              "id": "44e77072-d751-426d-8b35-10cf1eb2657e",
+              "name": "stage",
+              "value": "planning-placeholder",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8f79f4a8-ad0e-4192-b990-7c88cd00910d",
+      "name": "Show placeholder message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -300,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Start manually": {
+      "main": [
+        [
+          {
+            "node": "Show placeholder message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-05-15T00:00:00.000Z",
+  "versionId": "6b07902c-f20d-42dd-a916-3f0cdd28f9fc"
+}

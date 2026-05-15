@@ -1,0 +1,168 @@
+{
+  "id": "demo20HldToLldSpecFanout",
+  "name": "DEMO 20 - HLD to LLD and Spec Fanout",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## HLD fan-out demo\n\nOne HLD creates multiple LLD work items.\n\nEach LLD child workflow then creates multiple Spec work items.\n\nHLD 1\n→ LLD N\n→ Spec M per LLD",
+        "height": 260,
+        "width": 430,
+        "color": 5
+      },
+      "id": "e2cc1344-756c-4319-b869-a57fdc08d153",
+      "name": "HLD fanout note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a9769755-2874-4126-b48b-6cf5c2473634",
+      "name": "Start from approved HLD",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1d5c0086-a750-4689-b3eb-628ad1f3887a",
+              "name": "project_key",
+              "value": "OPS-123",
+              "type": "string"
+            },
+            {
+              "id": "66d4041b-05f8-47dc-b3b0-4d7d1633c2aa",
+              "name": "hld_issue",
+              "value": "HLD-001",
+              "type": "string"
+            },
+            {
+              "id": "6e922290-fbbd-4c8c-ac01-04f25b8d3844",
+              "name": "hld_artifact",
+              "value": "backend-repo/docs/projects/OPS-123/system-hld.md",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e8b9250c-2127-4e62-aa36-458fd8f9158f",
+      "name": "Approved HLD payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -460,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = items[0].json;\nreturn [\n  {\n    json: {\n      ...base,\n      lld_issue: 'BE-LLD-001',\n      lld_name: 'Order Domain Backend LLD',\n      target_repo: 'backend-repo',\n      target_path: 'docs/projects/OPS-123/lld/order-domain.md',\n      planned_specs: [\n        { spec_issue: 'BE-SPEC-001', spec_name: 'Create Order API Spec', target_path: 'docs/projects/OPS-123/specs/create-order-api.md' },\n        { spec_issue: 'BE-SPEC-002', spec_name: 'Cancel Order API Spec', target_path: 'docs/projects/OPS-123/specs/cancel-order-api.md' }\n      ]\n    }\n  },\n  {\n    json: {\n      ...base,\n      lld_issue: 'BE-LLD-002',\n      lld_name: 'Payment Domain Backend LLD',\n      target_repo: 'backend-repo',\n      target_path: 'docs/projects/OPS-123/lld/payment-domain.md',\n      planned_specs: [\n        { spec_issue: 'BE-SPEC-003', spec_name: 'Authorize Payment API Spec', target_path: 'docs/projects/OPS-123/specs/authorize-payment-api.md' },\n        { spec_issue: 'BE-SPEC-004', spec_name: 'Refund Payment API Spec', target_path: 'docs/projects/OPS-123/specs/refund-payment-api.md' }\n      ]\n    }\n  },\n  {\n    json: {\n      ...base,\n      lld_issue: 'FE-LLD-001',\n      lld_name: 'Order Screen Frontend LLD',\n      target_repo: 'frontend-repo',\n      target_path: 'docs/projects/OPS-123/lld/order-screen.md',\n      planned_specs: [\n        { spec_issue: 'FE-SPEC-001', spec_name: 'Order List Screen Spec', target_path: 'docs/projects/OPS-123/specs/order-list-screen.md' },\n        { spec_issue: 'FE-SPEC-002', spec_name: 'Order Detail Screen Spec', target_path: 'docs/projects/OPS-123/specs/order-detail-screen.md' }\n      ]\n    }\n  }\n];"
+      },
+      "id": "d2c4f884-b67e-47f0-9aaa-65ec5ed67ba9",
+      "name": "Split HLD into 3 LLD items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "demo21ChildLldCreatesSpecs",
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "c7bb5fd9-a572-48d7-8c92-54c09bf747fe",
+      "name": "Run one LLD child per item",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        80,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: { project_key: 'OPS-123', hld_issue: 'HLD-001', lld_count: 3, spec_count: items.length, fanout_status: 'all_lld_and_specs_completed', completed_spec_issues: items.map(item => item.json.spec_issue) } }];"
+      },
+      "id": "4ff82987-5b0a-4ec6-b876-db76f52ae591",
+      "name": "Fan-in summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Start from approved HLD": {
+      "main": [
+        [
+          {
+            "node": "Approved HLD payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved HLD payload": {
+      "main": [
+        [
+          {
+            "node": "Split HLD into 3 LLD items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split HLD into 3 LLD items": {
+      "main": [
+        [
+          {
+            "node": "Run one LLD child per item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run one LLD child per item": {
+      "main": [
+        [
+          {
+            "node": "Fan-in summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

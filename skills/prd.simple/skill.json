@@ -1,0 +1,23 @@
+{
+  "id": "prd.simple",
+  "version": "0.1.0",
+  "name": "Simple PRD Generator",
+  "description": "Generate a concise product requirements document from a short requirement.",
+  "engine": {
+    "type": "claude_cli",
+    "defaultModel": "sonnet"
+  },
+  "inputs": [
+    "requirement"
+  ],
+  "outputs": [
+    "prd_markdown"
+  ],
+  "permissions": {
+    "filesystem": "write_outputs_only",
+    "shell": false,
+    "git": false,
+    "jira": false,
+    "wiki": false
+  }
+}

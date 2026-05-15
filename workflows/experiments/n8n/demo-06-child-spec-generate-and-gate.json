@@ -1,0 +1,119 @@
+{
+  "id": "demoChildSpecGate",
+  "name": "DEMO 06 - Child Spec Generate and Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Child Spec workflow\n\nThis child simulates one spec item after LLD approval.\n\nThe active node shows spec draft, quality gate, and task creation stages.",
+        "height": 240,
+        "width": 420,
+        "color": 3
+      },
+      "id": "bbe08a66-3ce9-4c2e-b41d-f071ed5bdbd7",
+      "name": "Spec note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "06321ebf-1ec7-4ef8-b52c-0f3e708d97f2",
+      "name": "Called by parent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -660,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 8000));\nreturn items.map(item => ({ json: { ...item.json, child_workflow: 'SPEC', current_stage: 'generated_spec', artifact: 'backend-repo/docs/projects/OPS-123/specs/create-order-api.md' } }));"
+      },
+      "id": "fc1ebf6c-a28b-42ca-bbfa-6d176ca9330f",
+      "name": "Generate Spec draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 8000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'spec_gate_passed', quality_score: 91, gate_status: 'pass' } }));"
+      },
+      "id": "d14c8db9-a5db-44e7-a682-4bc50665b77a",
+      "name": "Score Spec quality gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 5000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'jira_dev_task_ready', jira_task: 'DEV-201' } }));"
+      },
+      "id": "5c63948a-f4b7-45ab-a55a-1aeb7b0837bc",
+      "name": "Create Dev Task placeholder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Called by parent": {
+      "main": [
+        [
+          {
+            "node": "Generate Spec draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Spec draft": {
+      "main": [
+        [
+          {
+            "node": "Score Spec quality gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Spec quality gate": {
+      "main": [
+        [
+          {
+            "node": "Create Dev Task placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

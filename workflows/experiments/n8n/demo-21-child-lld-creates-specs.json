@@ -1,0 +1,174 @@
+{
+  "id": "demo21ChildLldCreatesSpecs",
+  "name": "DEMO 21 - Child LLD Creates Specs",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## LLD child workflow\n\nInput: one LLD item.\n\nThis child drafts and gates one LLD, then fans out into multiple Spec child executions.",
+        "height": 240,
+        "width": 430,
+        "color": 4
+      },
+      "id": "acf8302a-7e0e-4d3f-913e-7039cbaf4ff1",
+      "name": "LLD child note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        -280
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "af589e13-4ab8-492a-9fc5-260b1a67fc7d",
+      "name": "Receive one LLD item",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 3000));\nreturn items.map(item => ({ json: { ...item.json, lld_stage: 'lld_draft_created', lld_quality_score: null } }));"
+      },
+      "id": "51d0339a-7f84-4432-a2cb-2dd3930be8ff",
+      "name": "Draft one LLD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 3000));\nreturn items.map(item => ({ json: { ...item.json, lld_stage: 'lld_gate_passed', lld_quality_score: 88 } }));"
+      },
+      "id": "c4420e39-d809-42fa-9708-e5bc78da9df4",
+      "name": "Gate one LLD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const output = [];\nfor (const item of items) {\n  const specs = item.json.planned_specs || [];\n  for (const spec of specs) {\n    output.push({\n      json: {\n        project_key: item.json.project_key,\n        hld_issue: item.json.hld_issue,\n        hld_artifact: item.json.hld_artifact,\n        lld_issue: item.json.lld_issue,\n        lld_name: item.json.lld_name,\n        lld_artifact: item.json.target_path,\n        lld_quality_score: item.json.lld_quality_score,\n        target_repo: item.json.target_repo,\n        spec_issue: spec.spec_issue,\n        spec_name: spec.spec_name,\n        target_path: spec.target_path\n      }\n    });\n  }\n}\nreturn output;"
+      },
+      "id": "51a76fc9-4ad5-4e83-8d2d-c51d30c42811",
+      "name": "Split LLD into Spec items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "demo22ChildSpecGenerateGate",
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "58d5b9fb-cfac-43b9-b51f-86d995f794c9",
+      "name": "Run one Spec child per item",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        320,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return items.map(item => ({ json: { ...item.json, lld_stage: 'lld_specs_completed' } }));"
+      },
+      "id": "e735f2d9-6ab0-4648-b191-2348acbb2655",
+      "name": "Return completed specs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Receive one LLD item": {
+      "main": [
+        [
+          {
+            "node": "Draft one LLD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft one LLD": {
+      "main": [
+        [
+          {
+            "node": "Gate one LLD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate one LLD": {
+      "main": [
+        [
+          {
+            "node": "Split LLD into Spec items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split LLD into Spec items": {
+      "main": [
+        [
+          {
+            "node": "Run one Spec child per item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run one Spec child per item": {
+      "main": [
+        [
+          {
+            "node": "Return completed specs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

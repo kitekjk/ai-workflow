@@ -1,0 +1,119 @@
+{
+  "id": "demoChildDevImplement",
+  "name": "DEMO 07 - Child Dev Implement",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Child Dev workflow\n\nThis child simulates one implementation task.\n\nThe active node shows branch creation, code implementation, and test stages.",
+        "height": 240,
+        "width": 420,
+        "color": 6
+      },
+      "id": "baf67840-507b-4586-9bca-caa70f6a9ee6",
+      "name": "Dev note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "7bb3675d-1c4e-4846-a5cf-3cbbd8ff357a",
+      "name": "Called by parent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -660,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 7000));\nreturn items.map(item => ({ json: { ...item.json, child_workflow: 'DEV', current_stage: 'branch_created', branch: 'feature/OPS-123-create-order' } }));"
+      },
+      "id": "0f65e96a-787c-473a-8c4d-33dd74aed9e9",
+      "name": "Create branch placeholder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 9000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'code_implemented', files_changed: ['src/orders/create-order.ts', 'tests/orders/create-order.spec.ts'] } }));"
+      },
+      "id": "7fdb8e12-f8f4-417f-8c50-ee31c016090f",
+      "name": "Implement code placeholder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 8000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'tests_passed', github_pr_url: 'https://github.example/backend-repo/pull/202', test_status: 'pass' } }));"
+      },
+      "id": "2cf6caf0-d0af-417e-9219-90f5b413cdf6",
+      "name": "Run tests placeholder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Called by parent": {
+      "main": [
+        [
+          {
+            "node": "Create branch placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create branch placeholder": {
+      "main": [
+        [
+          {
+            "node": "Implement code placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Implement code placeholder": {
+      "main": [
+        [
+          {
+            "node": "Run tests placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}

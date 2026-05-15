@@ -1,0 +1,119 @@
+{
+  "id": "demoChildLldGate",
+  "name": "DEMO 04 - Child LLD Generate and Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Child LLD workflow\n\nThis child simulates one LLD item.\n\nDuring execution, the active node shows whether the child is generating, scoring, or publishing.",
+        "height": 240,
+        "width": 420,
+        "color": 4
+      },
+      "id": "ca2eed21-f693-4f34-983a-f441c5f85e20",
+      "name": "LLD note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "597f5f67-16b7-44b4-8c1f-885413d9ca30",
+      "name": "Called by parent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -660,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 8000));\nreturn items.map(item => ({ json: { ...item.json, child_workflow: 'LLD', current_stage: 'generated_lld', artifact: 'backend-repo/docs/projects/OPS-123/lld/order-domain.md' } }));"
+      },
+      "id": "6854fe68-6e3b-4e49-baac-7273e50c21e1",
+      "name": "Generate LLD draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 8000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'quality_gate_passed', quality_score: 88, gate_status: 'pass' } }));"
+      },
+      "id": "54acb9e3-0381-419b-aa31-969f36a2460b",
+      "name": "Score LLD quality gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 5000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'github_pr_ready', github_pr_url: 'https://github.example/backend-repo/pull/101' } }));"
+      },
+      "id": "41f0df2b-542c-4d0d-bcc9-5dff80f4f8d0",
+      "name": "Create LLD PR placeholder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        120,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Called by parent": {
+      "main": [
+        [
+          {
+            "node": "Generate LLD draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate LLD draft": {
+      "main": [
+        [
+          {
+            "node": "Score LLD quality gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score LLD quality gate": {
+      "main": [
+        [
+          {
+            "node": "Create LLD PR placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}
