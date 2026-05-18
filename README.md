@@ -1,47 +1,109 @@
-# n8-ai-workflow
+# ai-workflow
 
-Local workspace for building AI-assisted n8n workflows.
+Workspace for building a custom AI-assisted development workflow system.
+
+The project originally explored n8n as a workflow orchestrator, but the current
+direction is a custom metadata-driven workflow app with a dedicated agent
+scheduler, agent runner, and execution dashboard. n8n exports are kept only as
+historical experiments and reference material.
 
 ## Goals
 
-- Design reusable workflow patterns for AI automation.
-- Keep workflow exports, notes, and supporting scripts organized.
-- Document setup steps as the project grows.
+- Define reusable workflow metadata for AI-assisted development.
+- Build a workflow app that can edit definitions and show execution state.
+- Build an agent scheduler that claims, retries, cancels, and tracks jobs.
+- Build an agent runner that executes versioned skills through code-agent
+  engines such as Claude CLI or Codex CLI.
+- Preserve traceability across Jira, GitHub, generated artifacts, quality gates,
+  and execution logs.
 
 ## Structure
 
 ```text
-n8-ai-workflow/
-  workflows/   Exported n8n workflows
-  docs/        Notes, prompts, and implementation decisions
-  scripts/     Helper scripts
+ai-workflow/
+  docs/                         Requirements, notes, and design decisions
+  scripts/                      Local runner demos and helper scripts
+  skills/                       Versioned skill package experiments
+  ui-execution-dashboard-demo/  Frontend execution dashboard demo
+  workflows/experiments/n8n/    Archived n8n workflow experiments
 ```
 
-Current direction:
+## Current Direction
 
-- n8n experiments are preserved in `workflows/experiments/n8n/`.
-- Production direction is a custom metadata-driven workflow app.
-- See `docs/development-requirements.md` for the current requirements summary.
+The production system is expected to have three major parts:
 
-## Run n8n locally
+1. **AI Workflow App**: metadata-driven workflow definitions, workflow editor,
+   execution dashboard, status ledger, and Jira/GitHub visibility.
+2. **Agent Scheduler**: pending job polling or queue subscription, atomic claim,
+   locking, concurrency limits, retries, cancellation, heartbeat, timeout, and
+   stale job recovery.
+3. **Agent Runner**: skill registry, execution records, workspace preparation,
+   engine adapters, artifact collection, and status event emission.
 
-Start n8n with Postgres:
+See `docs/development-requirements.md` for the current requirements summary.
 
-```powershell
-docker compose up -d
+## Existing Demos
+
+- `ui-execution-dashboard-demo/`: frontend-only mock dashboard for nested
+  workflow execution visibility.
+- `scripts/agent-runner-demo.mjs`: local demo runner that executes the
+  `skills/prd.simple` package through Claude CLI.
+- `npm run demo:prd`: TypeScript vertical slice for PRD confirmation workflow
+  orchestration with stubbed Jira, Git, Wiki, scheduler, and runner behavior.
+
+## Local Checks
+
+Install root dependencies:
+
+```bash
+npm install
 ```
 
-Open n8n:
+Run the PRD confirmation tests:
 
-```text
-http://localhost:5678
+```bash
+npm test -- tests/prd-confirmation.test.ts
 ```
 
-Stop the stack:
+Run the PRD confirmation demo:
 
-```powershell
-docker compose down
+```bash
+npm run demo:prd
 ```
 
-Local data is stored in Docker volumes named `n8-ai-workflow_n8n_data` and
-`n8-ai-workflow_postgres_data`.
+Run the local Workflow API:
+
+```bash
+npm run start:api
+```
+
+Example API calls:
+
+```bash
+curl -X POST http://127.0.0.1:3000/prd/intake \
+  -H 'content-type: application/json' \
+  -d '{"prdJiraKey":"PRD-100"}'
+
+curl -X POST http://127.0.0.1:3000/tick
+
+curl http://127.0.0.1:3000/state/PRD-100
+```
+
+Run with real Jira, PRD repo, and Confluence adapters:
+
+```bash
+cp .env.example .env
+# Fill JIRA_*, PRD_REPO_*, and CONFLUENCE_* values.
+INTEGRATION_MODE=real npm run start:api
+```
+
+In real mode, Jira is still manually triggered:
+
+```bash
+curl -X POST http://127.0.0.1:3000/prd/intake \
+  -H 'content-type: application/json' \
+  -d '{"prdJiraKey":"YOUR-PRD-KEY"}'
+```
+
+The n8n Docker setup and exported workflows remain in the repository for
+comparison and migration reference, not as the planned production runtime.

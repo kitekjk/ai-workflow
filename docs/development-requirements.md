@@ -74,6 +74,180 @@ Spec+      = Task
 
 Operational team requests should remain as original request issues. They should be linked to the PRD Initiative rather than replaced by the PRD.
 
+### Stage 1: PRD Confirmation Workflow
+
+The first workflow stage is to confirm a PRD from one or more operational
+request Jira tickets. This is a planner-owned workflow. AI can assist with
+drafting, evaluation, revision, and traceability, but the planner or product
+owner should retain control over grouping, final content, and approval.
+
+Recommended starting model:
+
+```text
+Operational request Jira tickets
+  -> Planner reviews and groups requests in Jira
+  -> Planner creates PRD Jira ticket in Jira
+  -> Planner links source request tickets to the PRD ticket in Jira
+  -> Workflow App intakes PRD ticket
+  -> Workflow Engine reads linked source requests
+  -> PRD draft generation job
+  -> Runner Skill commits draft directly to PRD repo main
+  -> Runner Skill publishes or updates PRD wiki page
+  -> PRD evaluation job
+  -> AI or planner revision loop
+  -> Planner/PO approval through Jira status transition
+  -> PRD confirmed in Jira
+  -> Downstream HLD/LLD/Spec workflow can start
+```
+
+The Workflow App should not create PRD Jira tickets or own request grouping in
+v1. The planner creates the PRD ticket directly in Jira and explicitly links the
+source operational request tickets there. The Workflow App intakes an existing
+PRD ticket and starts the PRD confirmation workflow from that Jira context.
+
+The initial PRD Jira ticket should be treated mostly as a container for the
+grouping decision. It may not contain PRD content yet. The source operational
+request tickets are expected to contain the actual request details, context,
+constraints, and desired outcomes. PRD draft generation should therefore read
+the linked request tickets as the primary input and use the PRD ticket metadata
+as grouping, ownership, and workflow context.
+
+The Workflow App may later recommend candidate request groupings or create PRD
+tickets on behalf of planners, but that should be an extension rather than the
+initial responsibility. Grouping operational requests into one PRD is a
+planning/product decision and should be explicit in Jira through issue links, a
+structured field, or both.
+
+Recommended PRD Jira ticket fields or links:
+
+```text
+issue_type: Initiative or PRD
+source_request_links: one or more operational request Jira keys
+initial_prd_body: optional, may be empty in v1
+target_repositories: PRD/backend/frontend repositories as needed
+business_owner: planner or product owner
+approval_owner: planner, PO, or designated approver
+workflow_definition_id: prd_confirmation
+workflow_run_id: populated by Workflow App
+prd_repo_url: populated after draft commit
+prd_wiki_url: populated after wiki publish
+quality_score: populated after evaluation
+gate_status: draft | evaluating | needs_revision | approved | rejected
+```
+
+PRD confirmation responsibilities:
+
+- Operational team creates individual request Jira tickets.
+- Planner decides which request tickets belong in a PRD.
+- Planner creates or updates the PRD Jira ticket directly in Jira and links
+  source requests.
+- Workflow App/Engine validates that the PRD ticket has at least one linked
+  source request, imports source request snapshots, and creates internal work
+  items.
+- Runner Worker skills generate PRD drafts, commit directly to the PRD repo,
+  publish wiki pages, apply wiki/Jira feedback revisions, and run evaluations,
+  but do not update Jira.
+- Workflow Engine records runner results, updates Jira, and creates revision
+  work when needed.
+- Planner or PO approves the confirmed PRD before downstream development
+  workflows begin.
+
+PRD intake validation should check:
+
+- The PRD Jira ticket exists and is readable.
+- The PRD Jira ticket has at least one linked operational request ticket.
+- Each linked source request ticket is readable.
+- Required ownership fields are present or can be inferred.
+- The PRD ticket is not already bound to an active workflow run unless the user
+  is explicitly resuming or retrying that run.
+- The source request snapshots are stored before generation starts so the PRD
+  draft can be reproduced later.
+
+PRD confirmation trigger options:
+
+```text
+v1 manual:
+  Planner enters PRD Jira key in Workflow App or clicks "Generate PRD".
+
+v1 polling-ready:
+  Workflow App can later poll JQL for PRD tickets with a status or label such
+  as PRD Requested / ai-prd-requested.
+
+later webhook:
+  Jira webhook starts the same internal intake command.
+```
+
+PRD evaluation behavior:
+
+- The PRD draft should be evaluated against a planning rubric.
+- If the score passes the threshold, the PRD moves to planner approval.
+- If the score fails, the workflow should not automatically rewrite the PRD from
+  the same incomplete inputs.
+- The quality gate result should produce missing information, clarification
+  questions, risk items, and concrete revision guidance.
+- Workflow Engine should mark the PRD ticket as needs_revision or create a
+  clarification/revision Jira ticket when separate human ownership is needed.
+- A PRD revision job should run only after the planner or requester provides
+  additional input and explicitly asks the workflow to apply feedback.
+- Approval should be an explicit Jira status transition before HLD generation
+  starts.
+
+PRD wiki feedback behavior:
+
+- Wiki feedback revision should be explicitly triggered in v1.
+- The planner should signal that wiki feedback is ready by using a Workflow App
+  action, Jira status transition, Jira comment command, or another explicit
+  command.
+- Workflow Engine should then create a `prd.apply_feedback_revision` runner
+  job.
+- Runner Skill should read the wiki feedback, Jira comments, or additional
+  planner input, apply the revision to the PRD repo, update the wiki page, and
+  report a structured revision summary back as runner result data.
+- Workflow Engine should then decide whether to run another quality evaluation,
+  request planner clarification, or move toward approval.
+- Wiki polling or webhook-based automatic feedback detection can be added later,
+  but should not be required for v1.
+
+PRD approval behavior:
+
+- Jira status transition should be the v1 source of truth for final PRD
+  approval.
+- A planner or PO approves the PRD by moving the PRD Jira ticket to the agreed
+  approved status.
+- Workflow Engine should consume that approval through manual refresh, polling,
+  or a later webhook.
+- Workflow Engine should update the PRD Jira ticket with the final PRD repo
+  link, final wiki link, final quality score, gate status, and downstream
+  workflow readiness.
+- HLD/LLD/Spec workflows must not start until the PRD Jira ticket reaches the
+  approved status.
+
+PRD artifact ownership:
+
+```text
+PRD Git repository
+  - canonical PRD source
+  - runner skill commits drafts and revisions directly to main
+  - commit history provides traceability and rollback
+  - PR/merge flow is not required for v1 because Jira is the approval source of
+    truth
+
+Wiki page
+  - immediately published review/share copy
+  - runner skill creates or updates the page whenever the PRD draft changes
+  - planners review the wiki page because Git review is not assumed
+  - wiki is not the canonical source, but it is the primary human review surface
+
+Workflow artifact store
+  - runner logs, raw outputs, quality reports, snapshots, and intermediate
+    execution artifacts
+  - not the canonical PRD source
+
+Jira PRD ticket
+  - workflow status, gate status, approval status, source request links,
+    PRD repo link, wiki link, quality score, and comments
+```
+
 Each generated or managed work item should store or link:
 
 - Project key
@@ -87,6 +261,109 @@ Each generated or managed work item should store or link:
 - Agent job ID
 - GitHub PR URL
 - Workflow execution/run ID
+
+### Jira, Workflow, and Runner Ownership
+
+Every runner job should have a primary Jira tracking context before execution
+starts. Multiple runner jobs may share the same Jira issue when they are
+execution steps within the same human-owned work item. The Workflow App/Engine
+is responsible for assigning that primary Jira key, creating a new Jira ticket
+only when a separate human-owned work item, approval, clarification, or revision
+needs to be tracked independently.
+
+Ownership rules:
+
+- Jira is the business/work-tracking source of truth.
+- Workflow App/Engine is the orchestration source of truth.
+- GitHub is the artifact/code-review source of truth.
+- Runner workers are execution units and should not directly create, update,
+  transition, comment on, or link Jira issues.
+- Jira mutations should go through a Jira Adapter owned by the Workflow
+  App/Engine boundary.
+- Runner workers may receive Jira keys as context and may emit structured
+  results, artifacts, logs, status events, and change requests.
+
+The normal creation flow is:
+
+```text
+Workflow Engine
+  -> determine next work item
+  -> determine primary Jira tracking context
+  -> create a separate Jira ticket only when the work requires independent
+     human ownership or tracking
+  -> create or update internal work_item
+  -> create agent_job with primary_jira_key and work_item_id
+  -> scheduler dispatches job to runner worker
+```
+
+The normal completion flow is:
+
+```text
+Runner Worker
+  -> write status_events
+  -> write artifacts and final structured result
+  -> mark agent_job as terminal or blocked
+
+Workflow Engine
+  -> consume runner result
+  -> update work_item state
+  -> update primary Jira ticket/comment/status/link
+  -> decide next workflow node
+```
+
+Jira ticket creation rules:
+
+- Create a Jira ticket for a human-owned work unit such as PRD, HLD, LLD, Spec,
+  Dev, Test, Deployment, QA, or an approval gate when that unit needs independent
+  tracking.
+- Do not create a separate Jira ticket for every runner job. PRD generation,
+  PRD quality evaluation, feedback-based PRD revision, and PRD repository
+  commits can all share the same PRD Jira ticket.
+- Create a separate Jira ticket when additional information is needed from an
+  operational requester, when a planner must perform a substantial manual
+  revision, when an approved upstream artifact needs a formal change request,
+  or when work must move to a different owner/team.
+- Store job-level traceability in `agent_jobs`, `agent_job_results`,
+  `status_events`, and comments/links on the primary Jira ticket rather than
+  creating Jira issue noise for every execution step.
+
+### Upstream Revision Tickets
+
+When lower-level work discovers that an upstream artifact must change, the
+runner should not modify the upstream Jira issue directly. It should emit a
+structured change request. The Workflow Engine should create a separate Jira
+ticket for that revision and link it to both the source work item and the
+upstream artifact issue.
+
+Example:
+
+```text
+Dev job finds a Spec problem
+  -> runner emits change_request(target_artifact_type=spec)
+  -> engine marks Dev ticket blocked or waiting
+  -> engine creates Spec Revision ticket
+  -> engine links Dev ticket, original Spec ticket, and Spec Revision ticket
+  -> engine starts a revision workflow
+  -> original Dev work resumes or is replanned after revision approval
+```
+
+Recommended issue relationship:
+
+```text
+Original request issue
+  -> PRD Initiative
+    -> HLD Epic
+      -> LLD Story
+        -> Spec/Dev/Test Task
+
+Revision/Change Request Task
+  -> links to affected upstream artifact issue
+  -> links to blocking downstream issue
+  -> may create follow-up runner jobs through a revision workflow
+```
+
+This keeps the main Jira hierarchy stable while preserving a clear audit trail
+for feedback discovered during downstream execution.
 
 ## 5. Repository Ownership
 
@@ -353,10 +630,16 @@ Suggested core entities:
 workflow_definitions
 workflow_runs
 work_items
+external_issues
+work_item_jira_links
 artifact_versions
 quality_gate_results
 status_events
 agent_jobs
+agent_job_results
+change_requests
+workflow_engine_inbox
+workflow_engine_outbox
 external_links
 ```
 
@@ -368,7 +651,7 @@ parent_id
 run_id
 project_key
 artifact_type
-jira_key
+primary_jira_key
 target_repo
 target_path
 state
@@ -383,6 +666,56 @@ error
 
 The status ledger should be treated as the operational execution source of truth. Jira remains the business/work source of truth. GitHub remains the artifact/code source of truth.
 
+Suggested relationship model:
+
+```text
+external_issues
+  - stores Jira issue snapshots and sync metadata
+  - can represent operational request issues, generated artifact issues, and
+    revision/change-request issues
+
+work_items
+  - internal execution tree node
+  - must have a primary Jira tracking context before runner execution
+  - may map to one generated artifact, manual gate, runner job, or integration
+    action
+
+work_item_jira_links
+  - maps work items to Jira issues
+  - supports primary, parent, source_request, upstream_artifact,
+    downstream_blocker, revision, and related roles
+
+agent_jobs
+  - executable unit created by Workflow Engine
+  - references work_item_id and primary_jira_key
+  - claimed by Scheduler and executed by Runner Worker
+
+agent_job_results
+  - final structured result emitted by Runner Worker
+  - includes output status, artifacts, quality data, and change requests
+
+change_requests
+  - structured request to revise upstream artifacts or workflow state
+  - created from runner result data
+  - processed by Workflow Engine, which may create separate Jira revision
+    tickets and follow-up workflows
+
+workflow_engine_inbox
+  - durable queue for runner result events, approval commands, retry requests,
+    cancel requests, and adapter results that still need engine processing
+
+workflow_engine_outbox
+  - durable queue for side effects such as Jira mutations, GitHub mutations,
+    notification events, and scheduler-visible job creation
+```
+
+Runner workers should write status and results to MySQL rather than calling the
+Workflow API directly. Workflow Engine should consume durable inbox/outbox
+records and process them idempotently. This avoids fragile HTTP callback
+handling, keeps progress recoverable after process restarts, and preserves a
+single orchestration path for manual commands, runner results, and integration
+side effects.
+
 ## 12. Agent Runner Requirements
 
 The agent runner should be designed as a general execution platform rather than multiple hardcoded runner types.
@@ -391,12 +724,43 @@ The workflow app should call the runner with:
 
 - Goal
 - Context references
+- Primary Jira key
+- Work item ID
 - Skill ID and version
 - Policy
 - Credential scope
 - Required outputs
 
 The runner's behavior should be determined by the selected versioned skill and execution policy.
+
+The runner should treat Jira and GitHub references as execution context, not as
+ownership of those systems. Runner output should be structured enough for the
+Workflow Engine to decide whether to update Jira, create revision tickets,
+re-run upstream steps, resume blocked work, or stop for human approval.
+
+Runner result data should support:
+
+```json
+{
+  "status": "succeeded | failed | blocked | needs_revision",
+  "summary": "Human-readable execution summary",
+  "artifacts": [],
+  "quality": {
+    "score": 0,
+    "pass": false,
+    "feedback": []
+  },
+  "change_requests": [
+    {
+      "target_artifact_type": "spec",
+      "target_jira_key": "PROJ-123",
+      "reason": "The API error contract is ambiguous.",
+      "requested_change": "Clarify validation error response format.",
+      "blocking_current_job": true
+    }
+  ]
+}
+```
 
 ### Runner and Skill Model
 
@@ -461,7 +825,7 @@ For automation usage, a dedicated automation Claude account may be used instead 
 
 ### Runner Scheduler
 
-The workflow app should not directly execute long-running runner work in-process. It should create an `agent_job`, and an agent runner scheduler should claim and execute jobs.
+The workflow app should not directly execute long-running runner work in-process. It should create an `agent_job`, and an agent runner scheduler should claim jobs and dispatch them to runner workers.
 
 Recommended flow:
 
@@ -474,7 +838,7 @@ Workflow App
 Runner Scheduler
   -> claim pending job
   -> lock job for one runner
-  -> start runner executor
+  -> dispatch job to a separate runner worker process
   -> update heartbeat/status
   -> handle timeout, retry, cancellation, and stale jobs
 
@@ -490,6 +854,7 @@ Initial scheduler responsibilities:
 
 - Pending job polling or queue subscription
 - Atomic job claim/lock
+- Dispatch to a separate runner worker process
 - Concurrency limits
 - Timeout enforcement
 - Retry scheduling
@@ -514,7 +879,20 @@ timed_out
 
 Current state should be stored on `agent_jobs`. Full execution history should be stored in `status_events`.
 
-For an MVP, PostgreSQL polling with atomic claim semantics is acceptable. Later, the scheduler may move to Redis, RabbitMQ, Temporal, or a cloud queue if needed.
+For v1, MySQL polling with atomic claim semantics is the preferred scheduler
+foundation because the company infrastructure supports MySQL and DynamoDB.
+The scheduler should rely on transactional row claiming, short lock windows,
+heartbeats, and stale-job recovery. DynamoDB can be considered later for
+high-volume event storage or queue-like workloads if operational needs justify
+it, but the initial relational execution model should target MySQL.
+
+The scheduler and runner worker should be separate processes. The scheduler is
+responsible for job discovery, claiming, locking, retry timing, cancellation
+detection, and stale-job recovery. Runner workers are responsible for long-lived
+AI execution, workspace preparation, engine adapter invocation, artifact
+collection, and detailed execution logs. This separation keeps lock management
+and orchestration lightweight while allowing runner capacity, isolation, and
+credentials to be scaled independently.
 
 ### Credential and Permission Model
 
@@ -646,26 +1024,111 @@ n8n
   - Slack/email/peripheral automation
 ```
 
-## 15. MVP Direction
+### Process Topology
 
-The MVP should prove the custom workflow approach without building a full n8n clone.
+The usable v1 should run as separate processes where the separation has
+operational value, but avoid unnecessary service fragmentation. The target
+local and deployment topology is:
 
-Recommended MVP:
+```text
+frontend
+workflow-api
+workflow-engine
+scheduler
+runner-worker
+mysql
+```
 
-1. Define workflows in YAML/JSON metadata.
-2. Render workflow definitions as a read-only or lightly editable canvas.
-3. Implement HLD to LLD to Spec fan-out/fan-in.
-4. Implement a status ledger.
-5. Implement execution tree dashboard.
-6. Add an `agent_jobs` model.
-7. Add a simple runner scheduler that claims and runs pending jobs.
-8. Add a demo skill that generates a simple PRD from a short requirement.
-9. Run the demo skill through Claude CLI in headless mode.
-10. Add local runner execution records and status events.
-11. Add quality gate placeholder scoring.
-12. Add links for Jira/GitHub placeholders.
-13. Add retry and failure states.
-14. Later connect real Jira, GitHub, Wiki, and expanded agent runner behavior.
+Process responsibilities:
+
+- `workflow-api`: HTTP API, authentication, user commands, dashboard reads,
+  Jira intake requests, approval/retry/cancel/pause commands.
+- `workflow-engine`: workflow definition interpretation, state transitions,
+  runner result processing, branching, fan-out/fan-in, approval gates,
+  change-request handling, and creation of agent jobs.
+- `scheduler`: MySQL-backed job claiming, locking, heartbeat monitoring,
+  timeout detection, retry timing, cancellation detection, stale-job recovery,
+  and dispatch to runner workers.
+- `runner-worker`: long-running AI execution, workspace preparation, skill
+  loading, engine adapter execution, artifact collection, logs, results, and
+  status event emission.
+- `frontend`: workflow dashboard, execution tree, event ledger, workflow
+  definition views, and operator controls.
+
+Jira and GitHub integration should be module boundaries, not separate v1
+processes. The same applies to artifact storage, workflow definition import,
+and engine inbox processing. These concerns should be written as isolated
+packages or commands so they can become dedicated workers later if needed,
+without adding process complexity now.
+
+### Module Boundaries
+
+The codebase should be modular even when processes remain limited:
+
+```text
+packages/domain
+packages/db
+packages/workflow-dsl
+packages/workflow-runtime
+packages/runner-contract
+packages/jira-adapter
+packages/github-adapter
+packages/artifact-store
+packages/config
+packages/logger
+
+tools/workflow-importer
+tools/db-migrate
+tools/seed-demo
+```
+
+Important ownership rules:
+
+- Jira/GitHub side effects are owned by Workflow App/Engine modules, not runner
+  workers.
+- Runner workers may emit structured results, artifacts, status events, and
+  change requests, but should not directly create or update Jira tickets.
+- Workflow definitions are canonical in Git YAML/JSON and imported into MySQL
+  for execution and dashboard queries.
+- MySQL is the v1 operational store for workflow runs, work items, agent jobs,
+  status events, imported definitions, and adapter state.
+
+## 15. Usable V1 Direction
+
+The first release should be usable for real internal workflow execution, not a
+minimal throwaway demo. It should prove the custom workflow approach while
+supporting varied development workflows such as task-size classification,
+branching, document generation, implementation, review, testing, deployment,
+and QA.
+
+Recommended v1 scope:
+
+1. Define workflows in Git-versioned YAML/JSON metadata.
+2. Import workflow definitions into MySQL for execution, search, and dashboard
+   queries while keeping Git as the canonical source.
+3. Implement core node types: trigger, decision, branch, agent_job,
+   quality_gate, approval, fanout, fanin, child_workflow, jira_update,
+   github_pr, test, deploy, and manual_task.
+4. Implement the planner-owned PRD confirmation workflow from linked
+   operational request Jira tickets.
+5. Implement task-size classification and branching so small, medium, and large
+   development requests can follow different paths.
+6. Implement parent-child workflow runs and work item trees.
+7. Implement a durable status ledger in MySQL.
+8. Implement the execution tree dashboard against real execution state.
+9. Add the `agent_jobs` model and job contract.
+10. Add a MySQL-backed runner scheduler that claims and runs pending jobs.
+11. Add separate runner worker processes with support for versioned skill
+    packages.
+12. Run document-generation, quality-gate, review, and code-agent jobs through
+    Claude CLI or Codex CLI engine adapters.
+13. Add local or object-storage-ready runner execution records and status
+    events.
+14. Add Jira read/create/update integration, with manual Jira issue intake first
+    and polling/webhook trigger support layered in later.
+15. Add GitHub artifact and PR links.
+16. Add retry, failure, cancellation, timeout, and stale-job recovery states.
+17. Add human approval and override flows at major gates.
 
 ## 16. Open Questions
 
@@ -673,10 +1136,11 @@ The following topics still need design decisions:
 
 - Agent job API shape
 - Skill package schema and versioning rules
-- Runner scheduler implementation: DB polling, queue, Temporal, or other
-- Whether runner executor is embedded initially or always a separate process
-- Database choice
-- Workflow definition storage: DB, Git, or both
+- Runner scheduler implementation details for MySQL polling, including claim
+  query shape, lock timeout, heartbeat interval, retry timing, and concurrency
+  limits
+- DynamoDB usage, if any, for event storage or high-volume operational records
+- Workflow definition import/cache details for Git canonical source plus MySQL
 - Approval workflow details
 - GitHub PR strategy for generated documents
 - Jira field mapping
