@@ -105,5 +105,36 @@ curl -X POST http://127.0.0.1:3000/prd/intake \
   -d '{"prdJiraKey":"YOUR-PRD-KEY"}'
 ```
 
+Choose the PRD runner skill with `RUNNER_SKILL_MODE`:
+
+- `stub`: deterministic local fake skill, useful for API demos.
+- `adapter`: template-based PRD markdown committed to the PRD repo and
+  published to Confluence.
+- `cli`: Claude CLI or Codex CLI generates, evaluates, and revises the PRD
+  document; the workflow then commits the markdown and publishes the wiki page.
+
+Example CLI-backed run:
+
+```bash
+INTEGRATION_MODE=real
+RUNNER_SKILL_MODE=cli
+RUNNER_ENGINE=claude # or codex
+CLAUDE_CLI_PATH=claude
+CODEX_CLI_PATH=codex
+RUNNER_CLI_TIMEOUT_MS=120000
+RUNNER_OUTPUT_LANGUAGE=ko
+npm run start:api
+```
+
+The CLI runner uses `scripts/prd-cli-engine.mjs` as a bridge. It sends the PRD
+job context to the selected CLI and requires the final answer to be a JSON
+object. Draft and revision jobs must include `markdown`; quality jobs must
+include a `status` such as `passed` or `needs_revision`.
+
+Confluence publishing is implemented as a generic markdown page publisher.
+Current PRD jobs still expose PRD-shaped artifacts for workflow compatibility,
+but the wiki layer accepts `documentType` values such as `prd`, `hld`, `lld`,
+and `adr`.
+
 The n8n Docker setup and exported workflows remain in the repository for
 comparison and migration reference, not as the planned production runtime.

@@ -141,6 +141,25 @@ class FakeJiraReader {
 class FakeWikiPublisher {
   readonly published: Array<Record<string, unknown>> = [];
 
+  async publishMarkdownPage(input: {
+    documentType: string;
+    sourceKey: string;
+    title: string;
+    markdown: string;
+  }): Promise<{
+    type: "wiki_page";
+    documentType: string;
+    location: "wiki";
+    url: string;
+  }> {
+    return {
+      type: "wiki_page",
+      documentType: input.documentType,
+      location: "wiki",
+      url: `https://wiki.example.com/${input.documentType}/${input.sourceKey}`
+    };
+  }
+
   async publishPrd(input: { jiraKey: string; title: string; markdown: string }): Promise<{
     type: "prd_wiki_page";
     location: "wiki";
@@ -156,6 +175,10 @@ class FakeWikiPublisher {
 }
 
 class ThrowingWikiPublisher {
+  async publishMarkdownPage(): Promise<never> {
+    throw new Error("wiki exploded");
+  }
+
   async publishPrd(): Promise<never> {
     throw new Error("wiki exploded");
   }

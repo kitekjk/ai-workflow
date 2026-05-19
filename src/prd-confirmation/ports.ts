@@ -22,6 +22,18 @@ export interface PrdRepository {
 }
 
 export interface WikiPublisher {
+  publishMarkdownPage(input: {
+    documentType: string;
+    sourceKey: string;
+    title: string;
+    markdown: string;
+  }): Promise<{
+    type: "wiki_page";
+    documentType: string;
+    location: "wiki";
+    url: string;
+  }>;
+
   publishPrd(input: {
     jiraKey: string;
     title: string;

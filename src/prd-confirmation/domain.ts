@@ -49,6 +49,7 @@ export interface Artifact {
   type: "prd_markdown" | "prd_wiki_page";
   location: "git" | "wiki";
   url: string;
+  createdAt?: string;
 }
 
 export interface AgentJobResult {

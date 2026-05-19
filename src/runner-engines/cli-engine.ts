@@ -1,0 +1,125 @@
+import { spawn } from "node:child_process";
+import { basename } from "node:path";
+
+export interface CliEngineOptions {
+  command: string;
+  args?: string[];
+  timeoutMs: number;
+}
+
+export class CliEngineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliEngineError";
+  }
+}
+
+export class CliEngine {
+  private readonly command: string;
+  private readonly args: string[];
+  private readonly timeoutMs: number;
+
+  constructor(options: CliEngineOptions) {
+    this.command = options.command;
+    this.args = options.args ?? [];
+    this.timeoutMs = options.timeoutMs;
+  }
+
+  async runJson(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { stdout } = await this.runProcess(input);
+
+    try {
+      const parsed = JSON.parse(stdout) as unknown;
+      if (!isRecord(parsed)) {
+        throw new CliEngineError(`${this.commandName()} did not return a JSON object`);
+      }
+
+      return parsed;
+    } catch (error) {
+      if (error instanceof CliEngineError) {
+        throw error;
+      }
+
+      throw new CliEngineError(
+        `${this.commandName()} did not return valid JSON on stdout. stdout: ${formatOutput(stdout)}`
+      );
+    }
+  }
+
+  private async runProcess(input: Record<string, unknown>): Promise<{
+    stdout: string;
+    stderr: string;
+  }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(this.command, this.args, {
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new CliEngineError(`${this.commandName()} timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timeout);
+        reject(new CliEngineError(`${this.commandName()} failed to start: ${error.message}`));
+      });
+      child.on("close", (code, signal) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
+
+        const reason = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+        reject(
+          new CliEngineError(
+            `${this.commandName()} exited with ${reason}. stderr: ${formatOutput(
+              stderr
+            )} stdout: ${formatOutput(stdout)}`
+          )
+        );
+      });
+
+      child.stdin.end(JSON.stringify(input));
+    });
+  }
+
+  private commandName(): string {
+    return basename(this.command);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatOutput(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "<empty>";
+}

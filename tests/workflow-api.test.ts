@@ -87,6 +87,55 @@ describe("Workflow API", () => {
       "prd.evaluate_quality"
     ]);
   });
+
+  it("shows only the latest artifact for each artifact type and location", async () => {
+    await postJson(`${baseUrl}/prd/intake`, { prdJiraKey: "PRD-100" });
+    await postJson(`${baseUrl}/tick`, {});
+    await postJson(`${baseUrl}/tick`, {});
+    await postJson(`${baseUrl}/prd/feedback-revision`, {
+      prdJiraKey: "PRD-100",
+      requestedBy: "planner@example.com",
+      feedback: "Add success metric."
+    });
+    await postJson(`${baseUrl}/tick`, {});
+
+    const state = await getJson(`${baseUrl}/state/PRD-100`);
+
+    expect(state.artifacts).toEqual([
+      {
+        type: "prd_markdown",
+        location: "git",
+        url: "https://git.example.com/prd/prds/PRD-100.md"
+      },
+      {
+        type: "prd_wiki_page",
+        location: "wiki",
+        url: "https://wiki.example.com/prd/PRD-100"
+      }
+    ]);
+  });
+
+  it("keeps artifact history internally with creation timestamps", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: false });
+    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+
+    try {
+      await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+      await postJson(`${localServer.url}/tick`, {});
+      await postJson(`${localServer.url}/tick`, {});
+      await postJson(`${localServer.url}/prd/feedback-revision`, {
+        prdJiraKey: "PRD-100",
+        requestedBy: "planner@example.com",
+        feedback: "Add success metric."
+      });
+      await postJson(`${localServer.url}/tick`, {});
+
+      expect(fixture.store.artifacts).toHaveLength(4);
+      expect(fixture.store.artifacts.every((artifact) => artifact.createdAt)).toBe(true);
+    } finally {
+      await localServer.close();
+    }
+  });
 });
 
 async function postJson(url: string, body: Record<string, unknown>): Promise<Response> {
