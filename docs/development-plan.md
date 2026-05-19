@@ -293,6 +293,44 @@ Escalation rule:
 - `adr_needed: true`는 HLD/LLD 생성 전에 무조건 ADR을 먼저 만들라는 뜻이 아니다. HLD/LLD 생성 job에서 ADR 후보를 함께 도출하고, 확정이 필요한 항목만 별도 ADR job으로 분리한다.
 - `규모 확인 필요` 상태에서는 개발자가 HLD/LLD/Spec 시작점을 직접 선택하거나 추가 설명을 제공한다. 직접 선택이 있으면 그 선택을 우선하고, 추가 설명만 있으면 `prd.route_downstream`을 다시 실행한다.
 
+Routing count 기준:
+
+- domain impact는 해당 domain의 model, policy, state, ownership boundary, transaction behavior, event/API contract가 바뀔 때만 count한다.
+- 다른 domain 데이터를 read-only lookup 또는 display만 하는 경우는 dependency로 기록하되, 그 자체로 HLD를 강제하지 않는다.
+- use case는 독립적인 user action, API, scheduled job, message consumer/producer, state-changing command, 독립적으로 검증 가능한 Acceptance Criteria를 기준으로 count한다.
+- target repository가 여러 개여도 domain model이나 policy 변경이 한 domain에 제한되면 자동으로 HLD로 올리지 않는다.
+- 여러 repository 변경이 service boundary, shared contract, state propagation을 바꾸면 HLD로 올린다.
+
+Routing result schema:
+
+```yaml
+route: HLD | LLD | Spec | NeedsScaleClarification
+confidence: high | medium | low
+usecase_count: 1
+domain_impact_count: 1
+domains:
+  - Order
+reasons:
+  - Single Order API use case can be specified directly.
+dependencies:
+  - Payment is read-only dependency, not an impacted domain.
+adr_needed: false
+needs_clarification:
+  - Confirm whether Payment status is updated or only read.
+next_work_items:
+  - type: Spec
+    suggested_jira_parent: PRD-123
+    source_prd_url: https://example.invalid/prd/PRD-123
+```
+
+Routing 결과 처리:
+
+- high/medium confidence는 route에 따라 HLD/LLD/Spec 다음 job을 생성한다.
+- low confidence 또는 `NeedsScaleClarification`은 Jira 상태를 `규모 확인 필요`로 전환한다.
+- Per-PRD routing result는 PRD Jira ticket의 structured comment/field와 workflow job result에 저장한다.
+- HLD/LLD/Spec Jira ticket은 routing 확정 후에만 생성한다.
+- routing runner 실행 자체마다 별도 Jira issue를 만들지 않는다.
+
 ### 4.3 HLD 생성/평가/승인
 
 - approved PRD와 target repository context를 입력으로 받는다.
