@@ -15,8 +15,14 @@ export async function runRunnerWorkerOnce(
   job.status = "running";
   try {
     const result = await skills.execute(job, store);
+    const completedAt = new Date().toISOString();
 
-    store.artifacts.push(...result.artifacts);
+    store.artifacts.push(
+      ...result.artifacts.map((artifact) => ({
+        ...artifact,
+        createdAt: artifact.createdAt ?? completedAt
+      }))
+    );
     store.agentJobResults.push(createJobResult(job, result.output));
     job.status = "succeeded";
   } catch (error) {

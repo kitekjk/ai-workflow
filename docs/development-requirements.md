@@ -25,7 +25,7 @@ The system should support:
 
 ## 3. Agreed Process Flow
 
-The high-level workflow is:
+The canonical high-level workflow is:
 
 ```text
 Operational development requests
@@ -40,6 +40,10 @@ Operational development requests
 → QA
 ```
 
+After PRD approval, the workflow does not always need to start at HLD. A PRD
+routing job should analyze the confirmed PRD and choose the earliest safe
+downstream artifact: HLD, LLD, or Spec.
+
 The target hierarchy is:
 
 ```text
@@ -53,10 +57,14 @@ The fan-out structure is:
 
 ```text
 One PRD
-  → One HLD
-    → Multiple LLDs
+  → HLD, LLD, or Spec routing decision
+    → HLD when multiple domains or architecture boundaries are affected
+      → Multiple LLDs
+        → Multiple Specs per LLD
+    → LLD when multiple use cases in one domain need implementation design
       → Multiple Specs per LLD
-        → Development / review / test per Spec
+    → Spec when one use case/API can be specified directly
+      → Development / review / test per Spec
 ```
 
 ## 4. Jira Model
@@ -133,6 +141,9 @@ prd_repo_url: populated after draft commit
 prd_wiki_url: populated after wiki publish
 quality_score: populated after evaluation
 gate_status: draft | evaluating | needs_revision | approved | rejected
+downstream_route: HLD | LLD | Spec, populated after PRD approval
+downstream_route_confidence: high | medium | low
+downstream_route_reason: short human-readable summary
 ```
 
 PRD confirmation responsibilities:
@@ -221,6 +232,84 @@ PRD approval behavior:
   workflow readiness.
 - HLD/LLD/Spec workflows must not start until the PRD Jira ticket reaches the
   approved status.
+
+PRD downstream routing behavior:
+
+- After PRD approval, Workflow Engine should create a `prd.route_downstream`
+  internal work item and runner job.
+- The routing job should read the confirmed PRD artifact, PRD Jira metadata,
+  linked operational request snapshots, and any target repository context.
+- The routing job should estimate `usecase_count`, `domain_impact_count`, and
+  whether the change is a single API or entrypoint-centered modification.
+- The primary routing rule is:
+
+```text
+domain_impact_count >= 2
+  -> start at HLD
+
+domain_impact_count == 1 and usecase_count >= 2
+  -> start at LLD
+
+domain_impact_count == 1 and usecase_count == 1 and the change is a single
+API/entrypoint-centered modification
+  -> start at Spec
+
+unable to determine confidently
+  -> start at LLD or ask for clarification, depending on risk
+```
+
+- A domain should count as impacted only when its model, policy, state,
+  ownership boundary, transaction behavior, or event/API contract changes.
+  Read-only lookup or display of another domain's data should be recorded as a
+  dependency, but should not automatically force HLD.
+- A use case should be estimated from independent user actions, APIs,
+  scheduled jobs, message consumers/producers, state-changing commands, or
+  independently testable acceptance criteria.
+- Escalate from Spec to LLD even for one use case when the PRD implies DB schema
+  changes, state-transition design, concurrency/transaction design, compensation
+  logic, external integration behavior, or a non-trivial policy change.
+- Escalate from LLD to HLD when the PRD changes cross-domain policy, domain
+  ownership, state propagation, service boundaries, platform architecture, or
+  multi-team responsibilities.
+- The routing job may also set `adr_needed: true` when a technology or
+  architecture decision must be resolved before HLD/LLD/Spec work can proceed.
+
+Recommended routing result schema:
+
+```yaml
+route: HLD | LLD | Spec
+confidence: high | medium | low
+usecase_count: 1
+domain_impact_count: 1
+domains:
+  - Order
+reasons:
+  - Single Order API use case can be specified directly.
+dependencies:
+  - Payment is read-only dependency, not an impacted domain.
+adr_needed: false
+needs_clarification:
+  - Confirm whether Payment status is updated or only read.
+next_work_items:
+  - type: Spec
+    suggested_jira_parent: PRD-123
+    source_prd_url: https://example.invalid/prd/PRD-123
+```
+
+Jira handling for PRD routing:
+
+- The routing job implementation should be tracked by its own Jira ticket,
+  because it is a reusable workflow capability rather than a one-off PRD task.
+- Per-PRD routing results should be written as structured comments and fields on
+  the PRD Jira ticket.
+- A separate HLD/LLD/Spec Jira ticket should be created only after routing
+  determines the next human-owned work item.
+- Do not create a separate Jira issue for every routing runner execution. Store
+  job-level details in `agent_jobs`, `agent_job_results`, `status_events`, and
+  the PRD Jira comment.
+- If confidence is low or required ownership is unclear, Workflow Engine should
+  either create a clarification task or mark the PRD as blocked for downstream
+  routing rather than silently choosing HLD/LLD/Spec.
 
 PRD artifact ownership:
 

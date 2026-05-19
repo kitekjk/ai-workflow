@@ -135,13 +135,23 @@ function summarizeState(fixture: Fixture, prdJiraKey: string): Record<string, un
     prdJiraKey,
     prdStatus: fixture.store.externalIssues.get(prdJiraKey)?.status,
     jobs,
-    artifacts: fixture.store.artifacts.map((artifact) => ({
+    artifacts: latestArtifacts(fixture.store.artifacts).map((artifact) => ({
       type: artifact.type,
       location: artifact.location,
       url: artifact.url
     })),
     latestResult: fixture.store.agentJobResults.at(-1)?.output ?? null
   };
+}
+
+function latestArtifacts<T extends { type: string; location: string }>(artifacts: T[]): T[] {
+  const byTypeAndLocation = new Map<string, T>();
+
+  for (const artifact of artifacts) {
+    byTypeAndLocation.set(`${artifact.type}:${artifact.location}`, artifact);
+  }
+
+  return Array.from(byTypeAndLocation.values());
 }
 
 async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
