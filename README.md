@@ -40,7 +40,9 @@ The production system is expected to have three major parts:
 3. **Agent Runner**: skill registry, execution records, workspace preparation,
    engine adapters, artifact collection, and status event emission.
 
-See `docs/development-requirements.md` for the current requirements summary.
+See `docs/development-requirements.md` for the current requirements summary and
+`docs/deployment-runbook.md` for deployment, local runner, and MySQL migration
+operations.
 
 ## Existing Demos
 
@@ -76,6 +78,31 @@ Run the local Workflow API:
 ```bash
 npm run start:api
 ```
+
+Use the MySQL-backed scheduler/document runtime for runner APIs:
+
+```bash
+WORKFLOW_RUNTIME_STORE=mysql npm run start:api
+```
+
+In MySQL mode, PRD compatibility workflow actions are also mirrored into the
+workflow/document read-model tables after state-changing API calls. API startup
+then hydrates the PRD compatibility fixture from those MySQL read-model rows
+before routes are served. Generic workflow and document GET views read directly
+from the MySQL read model when `WORKFLOW_RUNTIME_STORE=mysql`. PRD intake is
+also written through a MySQL command path for the initial run, document, and
+draft job. Workflow/App, Jira, and Wiki feedback plus explicit revision
+requests are also written through a MySQL command path for `feedback_item` and
+revision `workflow_job` rows. Approval state changes and downstream
+routing/fan-out/implementation job scheduling have a MySQL command path for the
+affected `document` and `workflow_job` rows. Engine-created document state
+changes and follow-up jobs are recorded through one command transaction during
+`/tick`, including an explicit engine transition type plus work item and
+external issue before/after state metadata and affected work item/document ids
+for later repository-backed engine migration. Runner result processing also
+records the run projection for
+`workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`,
+and current document pointers.
 
 Example API calls:
 

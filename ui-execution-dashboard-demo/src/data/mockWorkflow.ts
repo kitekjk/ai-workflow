@@ -6,10 +6,13 @@ export type WorkState =
   | 'pending'
   | 'blocked'
 
-export type ArtifactType = 'PRD' | 'HLD' | 'BE LLD' | 'FE LLD' | 'BE Spec' | 'FE Spec'
+export type ArtifactType = 'PRD' | 'HLD' | 'BE LLD' | 'FE LLD' | 'BE Spec' | 'FE Spec' | 'ADR'
 
 export type WorkItem = {
   id: string
+  itemKind?: 'document' | 'job'
+  documentId?: string
+  approvalGateId?: string
   parentId: string | null
   depth: number
   title: string

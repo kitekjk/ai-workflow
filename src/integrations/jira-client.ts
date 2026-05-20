@@ -6,6 +6,39 @@ export interface JiraRestClientOptions {
   apiToken: string;
   authMode?: "basic" | "bearer";
   apiVersion?: "2" | "3";
+  writebackFieldIds?: JiraWritebackFieldIds;
+  transitionIds?: JiraTransitionIds;
+}
+
+export interface JiraWritebackFieldIds {
+  workflowRunId?: string;
+  currentArtifactUrl?: string;
+  gateStatus?: string;
+  qualityScore?: string;
+}
+
+export interface JiraTransitionIds {
+  awaitingApproval?: string;
+  approved?: string;
+  rejected?: string;
+  needsRevision?: string;
+}
+
+export interface JiraWorkflowStatusWriteback {
+  issueKey: string;
+  workflowRunId?: string;
+  currentArtifactUrl?: string;
+  gateStatus?: string;
+  qualityScore?: number;
+  comment?: string;
+  transition?: keyof JiraTransitionIds;
+  transitionId?: string;
+}
+
+export interface JiraWorkflowStatusWritebackResult {
+  fieldsUpdated: string[];
+  commentCreated: boolean;
+  transitioned: boolean;
 }
 
 interface JiraIssueResponse {
@@ -26,11 +59,15 @@ export class JiraRestClient {
   private readonly baseUrl: string;
   private readonly authorization: string;
   private readonly apiVersion: "2" | "3";
+  private readonly writebackFieldIds: JiraWritebackFieldIds;
+  private readonly transitionIds: JiraTransitionIds;
 
   constructor(options: JiraRestClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.apiVersion = options.apiVersion ?? "3";
     this.authorization = buildAuthorization(options);
+    this.writebackFieldIds = options.writebackFieldIds ?? {};
+    this.transitionIds = options.transitionIds ?? {};
   }
 
   async loadPrdWithSources(prdJiraKey: string): Promise<{
@@ -60,6 +97,33 @@ export class JiraRestClient {
     };
   }
 
+  async writeWorkflowStatus(input: JiraWorkflowStatusWriteback): Promise<JiraWorkflowStatusWritebackResult> {
+    const fields = this.workflowStatusFields(input);
+    const transitionId = input.transitionId ?? (input.transition ? this.transitionIds[input.transition] : undefined);
+
+    if (input.transition && !transitionId) {
+      throw new Error(`Jira transition id is not configured for ${input.transition}`);
+    }
+
+    if (Object.keys(fields).length > 0) {
+      await this.putIssueFields(input.issueKey, fields);
+    }
+
+    if (input.comment) {
+      await this.addComment(input.issueKey, input.comment);
+    }
+
+    if (transitionId) {
+      await this.transitionIssue(input.issueKey, transitionId);
+    }
+
+    return {
+      fieldsUpdated: Object.keys(fields),
+      commentCreated: Boolean(input.comment),
+      transitioned: Boolean(transitionId)
+    };
+  }
+
   private async getIssue(issueKey: string): Promise<JiraIssueResponse> {
     const response = await fetch(`${this.baseUrl}/rest/api/${this.apiVersion}/issue/${encodeURIComponent(issueKey)}`, {
       headers: {
@@ -74,6 +138,109 @@ export class JiraRestClient {
 
     return response.json() as Promise<JiraIssueResponse>;
   }
+
+  private workflowStatusFields(input: JiraWorkflowStatusWriteback): Record<string, unknown> {
+    const fields: Record<string, unknown> = {};
+
+    addWritebackField(fields, this.writebackFieldIds, "workflowRunId", input.workflowRunId);
+    addWritebackField(fields, this.writebackFieldIds, "currentArtifactUrl", input.currentArtifactUrl);
+    addWritebackField(fields, this.writebackFieldIds, "gateStatus", input.gateStatus);
+    addWritebackField(fields, this.writebackFieldIds, "qualityScore", input.qualityScore);
+
+    return fields;
+  }
+
+  private async putIssueFields(issueKey: string, fields: Record<string, unknown>): Promise<void> {
+    const response = await fetch(`${this.issueUrl(issueKey)}`, {
+      method: "PUT",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify({ fields })
+    });
+
+    await requireOk(response, `Jira issue field writeback failed for ${issueKey}`);
+  }
+
+  private async addComment(issueKey: string, comment: string): Promise<void> {
+    const response = await fetch(`${this.issueUrl(issueKey)}/comment`, {
+      method: "POST",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify({ body: commentBodyForApiVersion(comment, this.apiVersion) })
+    });
+
+    await requireOk(response, `Jira issue comment writeback failed for ${issueKey}`);
+  }
+
+  private async transitionIssue(issueKey: string, transitionId: string): Promise<void> {
+    const response = await fetch(`${this.issueUrl(issueKey)}/transitions`, {
+      method: "POST",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify({ transition: { id: transitionId } })
+    });
+
+    await requireOk(response, `Jira issue transition failed for ${issueKey}`);
+  }
+
+  private issueUrl(issueKey: string): string {
+    return `${this.baseUrl}/rest/api/${this.apiVersion}/issue/${encodeURIComponent(issueKey)}`;
+  }
+
+  private jsonHeaders(): Record<string, string> {
+    return {
+      accept: "application/json",
+      authorization: this.authorization,
+      "content-type": "application/json"
+    };
+  }
+}
+
+function addWritebackField(
+  fields: Record<string, unknown>,
+  fieldIds: JiraWritebackFieldIds,
+  key: keyof JiraWritebackFieldIds,
+  value: string | number | undefined
+): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  const fieldId = fieldIds[key];
+
+  if (!fieldId) {
+    throw new Error(`Jira writeback field id is not configured for ${key}`);
+  }
+
+  fields[fieldId] = value;
+}
+
+function commentBodyForApiVersion(comment: string, apiVersion: "2" | "3"): unknown {
+  if (apiVersion === "2") {
+    return comment;
+  }
+
+  return {
+    type: "doc",
+    version: 1,
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: comment
+          }
+        ]
+      }
+    ]
+  };
+}
+
+async function requireOk(response: Response, message: string): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+
+  const body = await response.text();
+  throw new Error(`${message}: HTTP ${response.status} ${body}`);
 }
 
 function buildAuthorization(options: JiraRestClientOptions): string {

@@ -20,6 +20,12 @@ const input = await readInput();
 if (input.jobType !== "prd.generate_draft") {
   throw new Error("Unexpected job type: " + input.jobType);
 }
+if (input.promptContract?.documentType !== "prd") {
+  throw new Error("Missing PRD prompt contract");
+}
+if (!input.promptContract?.outputSchema?.required?.includes("markdown")) {
+  throw new Error("Missing markdown output schema");
+}
 console.log(JSON.stringify({
   status: "succeeded",
   markdown: "# PAIR-2 Generated PRD\\n\\nGenerated through CLI.\\n\\n" + input.sourceRequests[0].summary,
@@ -128,6 +134,9 @@ if (input.jobType === "prd.generate_draft") {
 } else if (input.jobType === "prd.evaluate_quality") {
   if (!input.currentDocumentMarkdown?.includes("한국어 PRD 본문")) {
     throw new Error("Missing generated document markdown");
+  }
+  if (!input.promptContract?.outputSchema?.required?.includes("score")) {
+    throw new Error("Missing evaluation output schema");
   }
   if (input.documentType !== "prd") {
     throw new Error("Missing generic document type");

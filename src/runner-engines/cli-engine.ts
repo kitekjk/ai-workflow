@@ -1,10 +1,18 @@
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 
 export interface CliEngineOptions {
   command: string;
   args?: string[];
   timeoutMs: number;
+  cwd?: string;
+}
+
+export interface CliEngineJsonResult {
+  output: Record<string, unknown>;
+  stdout: string;
+  stderr: string;
 }
 
 export class CliEngineError extends Error {
@@ -18,15 +26,22 @@ export class CliEngine {
   private readonly command: string;
   private readonly args: string[];
   private readonly timeoutMs: number;
+  private readonly cwd?: string;
 
   constructor(options: CliEngineOptions) {
     this.command = options.command;
     this.args = options.args ?? [];
     this.timeoutMs = options.timeoutMs;
+    this.cwd = options.cwd;
   }
 
   async runJson(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const { stdout } = await this.runProcess(input);
+    return (await this.runJsonWithProcessOutput(input)).output;
+  }
+
+  async runJsonWithProcessOutput(input: Record<string, unknown>): Promise<CliEngineJsonResult> {
+    const processOutput = await this.runProcess(input);
+    const { stdout } = processOutput;
 
     try {
       const parsed = JSON.parse(stdout) as unknown;
@@ -34,7 +49,11 @@ export class CliEngine {
         throw new CliEngineError(`${this.commandName()} did not return a JSON object`);
       }
 
-      return parsed;
+      return {
+        output: parsed,
+        stdout: processOutput.stdout,
+        stderr: processOutput.stderr
+      };
     } catch (error) {
       if (error instanceof CliEngineError) {
         throw error;
@@ -51,8 +70,10 @@ export class CliEngine {
     stderr: string;
   }> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.command, this.args, {
-        stdio: ["pipe", "pipe", "pipe"]
+      const spawnCommand = resolveSpawnCommand(this.command, this.args);
+      const child = spawn(spawnCommand.command, spawnCommand.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: this.cwd
       });
       let stdout = "";
       let stderr = "";
@@ -122,4 +143,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function formatOutput(value: string): string {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : "<empty>";
+}
+
+function resolveSpawnCommand(command: string, args: string[]): { command: string; args: string[] } {
+  if (process.platform !== "win32" || !existsSync(command)) {
+    return { command, args };
+  }
+
+  const firstLine = readFileSync(command, "utf8").split(/\r?\n/, 1)[0] ?? "";
+
+  if (!firstLine.startsWith("#!") || !firstLine.includes("node")) {
+    return { command, args };
+  }
+
+  return {
+    command: process.execPath,
+    args: [command, ...args]
+  };
 }

@@ -2,7 +2,18 @@ import { describe, expect, it } from "vitest";
 import { AdapterBackedPrdSkills } from "../../src/prd-confirmation/adapter-backed-skills";
 import { CliPrdSkills } from "../../src/prd-confirmation/cli-prd-skills";
 import { StubPrdSkills } from "../../src/prd-confirmation/runner-skills";
-import { createRuntimeFromEnv } from "../../src/runtime/create-runtime";
+import {
+  createWorkflowApiRuntimeFromEnv,
+  parseLeaseMs,
+  parseWorkflowRuntimeStore
+} from "../../src/runtime/create-workflow-api-runtime";
+import {
+  confluenceParentPageIdsByDocumentType,
+  createRuntimeFromEnv,
+  githubRuntimeConfig,
+  jiraTransitionIds,
+  jiraWritebackFieldIds
+} from "../../src/runtime/create-runtime";
 
 describe("createRuntimeFromEnv", () => {
   it("uses seeded stub runtime when integration mode is not real", () => {
@@ -67,6 +78,131 @@ describe("createRuntimeFromEnv", () => {
         RUNNER_ENGINE: "claude"
       })
     ).toThrow(/CLAUDE_CLI_PATH is required when RUNNER_SKILL_MODE=cli/);
+  });
+
+  it("parses optional Confluence parent page routing by document type", () => {
+    expect(
+      confluenceParentPageIdsByDocumentType({
+        CONFLUENCE_PARENT_PAGE_ID_PRD: "111",
+        CONFLUENCE_PARENT_PAGE_ID_HLD: "https://example.atlassian.net/wiki/spaces/DOCS/pages/222/HLD",
+        CONFLUENCE_PARENT_PAGE_ID_SPEC: "333"
+      })
+    ).toEqual({
+      prd: "111",
+      hld: "https://example.atlassian.net/wiki/spaces/DOCS/pages/222/HLD",
+      spec: "333"
+    });
+  });
+
+  it("parses Jira writeback field and transition allowlists", () => {
+    expect(
+      jiraWritebackFieldIds({
+        JIRA_FIELD_WORKFLOW_RUN_ID: "customfield_10010",
+        JIRA_FIELD_CURRENT_ARTIFACT_URL: "customfield_10011",
+        JIRA_FIELD_GATE_STATUS: "customfield_10012",
+        JIRA_FIELD_QUALITY_SCORE: "customfield_10013"
+      })
+    ).toEqual({
+      workflowRunId: "customfield_10010",
+      currentArtifactUrl: "customfield_10011",
+      gateStatus: "customfield_10012",
+      qualityScore: "customfield_10013"
+    });
+    expect(
+      jiraTransitionIds({
+        JIRA_TRANSITION_AWAITING_APPROVAL_ID: "21",
+        JIRA_TRANSITION_APPROVED_ID: "31",
+        JIRA_TRANSITION_REJECTED_ID: "41",
+        JIRA_TRANSITION_NEEDS_REVISION_ID: "51"
+      })
+    ).toEqual({
+      awaitingApproval: "21",
+      approved: "31",
+      rejected: "41",
+      needsRevision: "51"
+    });
+  });
+
+  it("parses optional GitHub integration settings", () => {
+    expect(
+      githubRuntimeConfig({
+        GITHUB_BASE_URL: "https://github.example.com/api/v3",
+        GITHUB_TOKEN: "ghp_secret",
+        GITHUB_OWNER: "acme",
+        GITHUB_REPO: "workflow-app",
+        GITHUB_API_VERSION: "2022-11-28",
+        GITHUB_DEFAULT_BASE_BRANCH: "develop"
+      })
+    ).toEqual({
+      baseUrl: "https://github.example.com/api/v3",
+      token: "ghp_secret",
+      owner: "acme",
+      repo: "workflow-app",
+      apiVersion: "2022-11-28",
+      defaultBaseBranch: "develop"
+    });
+    expect(githubRuntimeConfig({})).toBeUndefined();
+    expect(
+      githubRuntimeConfig({
+        GITHUB_OWNER: "acme",
+        GITHUB_REPO: "workflow-app"
+      })
+    ).toBeUndefined();
+    expect(() =>
+      githubRuntimeConfig({
+        GITHUB_TOKEN: "ghp_secret",
+        GITHUB_OWNER: "acme"
+      })
+    ).toThrow("GITHUB_REPO is required when GitHub integration is configured");
+  });
+
+  it("keeps API runtime persistence in memory unless MySQL is explicitly requested", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub"
+    });
+
+    try {
+      expect(runtime.runtimeStore).toBe("memory");
+      expect(runtime.scheduler).toBeUndefined();
+      expect(runtime.documentRepository).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("wires MySQL scheduler and document repositories when requested", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_JOB_LEASE_MS: "45000"
+    });
+
+    try {
+      expect(runtime.runtimeStore).toBe("mysql");
+      expect(runtime.scheduler).toBeDefined();
+      expect(runtime.documentRepository).toBeDefined();
+      expect(runtime.snapshotMirror).toBeDefined();
+      expect(runtime.snapshotLoader).toBeDefined();
+      expect(runtime.restorePrdSnapshot).toBeDefined();
+      expect(runtime.readModel).toBeDefined();
+      expect(runtime.prdIntakeCommand).toBeDefined();
+      expect(runtime.feedbackRevisionCommand).toBeDefined();
+      expect(runtime.workflowResultCommand).toBeDefined();
+      expect(runtime.workflowTransitionCommand).toBeDefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("parses API runtime store and runner lease configuration", () => {
+    expect(parseWorkflowRuntimeStore(undefined)).toBe("memory");
+    expect(parseWorkflowRuntimeStore("memory")).toBe("memory");
+    expect(parseWorkflowRuntimeStore("mysql")).toBe("mysql");
+    expect(() => parseWorkflowRuntimeStore("sqlite")).toThrow(/WORKFLOW_RUNTIME_STORE/);
+
+    expect(parseLeaseMs(undefined)).toBe(30_000);
+    expect(parseLeaseMs("15000")).toBe(15_000);
+    expect(() => parseLeaseMs("0")).toThrow(/WORKFLOW_JOB_LEASE_MS/);
   });
 });
 

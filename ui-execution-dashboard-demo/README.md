@@ -1,8 +1,8 @@
 # Workflow Execution Dashboard UI Demo
 
-Pure frontend mock/demo for the future custom workflow app execution dashboard.
+Frontend demo for the future custom workflow app execution dashboard.
 
-This is not a backend, runner, scheduler, database, or API implementation. It uses only local mock data to show how the future dashboard can expose nested parent-child workflow execution state better than a generic n8n execution view.
+The dashboard still ships with a mock execution tree, and it can also connect to the local Workflow API through the Vite `/api` proxy.
 
 ## What It Shows
 
@@ -42,13 +42,21 @@ This is not a backend, runner, scheduler, database, or API implementation. It us
   - `job.failed`
   - `job.retrying`
   - `job.completed`
-- Mock-only controls:
+- Mock controls:
   - Start Demo Run
   - Advance Step
   - Fail Selected
   - Retry Selected
   - Toggle Pause
   - Reset Demo
+- API controls:
+  - Seed API
+  - Refresh API
+  - Tick API
+  - Quality Pass
+  - Feedback
+  - Revise
+  - Approve
 
 ## Run Locally
 
@@ -64,18 +72,31 @@ Open the Vite URL printed in the terminal, usually:
 http://localhost:5173/
 ```
 
+To connect the API controls, run the Workflow API in another terminal:
+
+```powershell
+cd ..
+npm run start:api
+```
+
+The Vite dev server proxies `/api` to `http://127.0.0.1:3000` by default. Override with:
+
+```powershell
+$env:VITE_WORKFLOW_API_PROXY_TARGET="http://127.0.0.1:3001"
+npm run dev
+```
+
 ## Build Check
 
 ```powershell
 npm run build
 ```
 
-## Mock Data
+## Data
 
-The dashboard data is intentionally separated from the UI in:
+Mock and API mapping data are separated from the UI in:
 
 ```text
 src/data/mockWorkflow.ts
+src/data/workflowApi.ts
 ```
-
-The app does not make network requests. External Jira, GitHub, artifact, quality, and log links are placeholders for visual traceability only.

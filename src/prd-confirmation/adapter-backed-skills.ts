@@ -71,6 +71,27 @@ export class AdapterBackedPrdSkills implements PrdSkillExecutor {
       };
     }
 
+    if (job.jobType === "prd.route_downstream") {
+      return {
+        output: {
+          status: "routed",
+          route: "hld",
+          rationale: "PRD requires a high-level design before detailed decomposition.",
+          downstreamDocuments: [
+            {
+              type: "hld",
+              title: `HLD for ${job.primaryJiraKey}`
+            }
+          ]
+        },
+        artifacts: []
+      };
+    }
+
+    if (job.jobType !== "prd.apply_feedback_revision") {
+      throw new Error(`Unsupported adapter-backed PRD job type: ${job.jobType}`);
+    }
+
     const markdown = `${buildPrdMarkdown(job.primaryJiraKey, store)}\n\n## Planner Feedback Applied\n\n${String(
       job.input.feedback ?? ""
     )}\n`;

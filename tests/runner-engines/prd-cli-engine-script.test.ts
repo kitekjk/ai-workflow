@@ -61,6 +61,78 @@ fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
     expect(JSON.parse(readFileSync(argsFile, "utf8"))).not.toContain("--ask-for-approval");
   });
 
+  it("supports generic document runner prompts through the new bridge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "document-runner-engine-"));
+    const promptFile = join(dir, "prompt.txt");
+    const argsFile = join(dir, "args.json");
+    const cwdFile = join(dir, "cwd.txt");
+    const fakeCodex = join(dir, "codex");
+    writeFileSync(
+      fakeCodex,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(args));
+fs.writeFileSync(${JSON.stringify(cwdFile)}, process.cwd().replace(/\\\\/g, "/"));
+let prompt = "";
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(promptFile)}, prompt);
+  const outputIndex = args.indexOf("--output-last-message");
+  fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
+    status: "succeeded",
+    markdown: "# Generated Spec",
+    summary: "Generated with generic bridge"
+  }));
+});
+`
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "scripts/document-runner-engine.mjs",
+        "--engine",
+        "codex",
+        "--bin",
+        fakeCodex,
+        "--timeout-ms",
+        "5000",
+        "--sandbox",
+        "workspace-write",
+        "--workdir",
+        dir
+      ],
+      {
+        cwd: process.cwd(),
+        input: JSON.stringify({
+          jobType: "document.generate",
+          documentType: "spec",
+          sourceKey: "PRD-100",
+          outputLanguage: "ko"
+        })
+      }
+    ).toString();
+
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(JSON.parse(stdout)).toMatchObject({
+      status: "succeeded",
+      markdown: "# Generated Spec"
+    });
+    expect(prompt).toContain("generating a spec");
+    expect(prompt).toContain("generatedFiles");
+    expect(prompt).toContain("document.generate");
+    expect(prompt).toContain("Prompt contract");
+    expect(prompt).toContain("Required markdown sections");
+    expect(prompt).toContain("Output JSON Schema");
+    expect(prompt).toContain("Implementation Plan");
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual(
+      expect.arrayContaining(["--sandbox", "workspace-write"])
+    );
+    expect(readFileSync(cwdFile, "utf8")).toBe(dir.replace(/\\/g, "/"));
+  });
+
   it("asks the model to return Korean draft and quality output when outputLanguage is ko", () => {
     const dir = mkdtempSync(join(tmpdir(), "prd-cli-engine-language-"));
     const promptFile = join(dir, "prompt.txt");
@@ -116,5 +188,6 @@ process.stdin.on("end", () => {
     expect(prompt).toContain("currentDocumentMarkdown");
     expect(prompt).toContain("summary");
     expect(prompt).toContain("missingInformation");
+    expect(prompt).toContain("Output JSON Schema");
   });
 });

@@ -119,6 +119,7 @@
 .control-strip {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
   margin-bottom: 12px;
   padding: 8px;
@@ -145,6 +146,13 @@ button,
 
 .control-strip button {
   padding: 0 10px;
+}
+
+.control-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 32px;
+  background: var(--border);
 }
 
 button:hover,
@@ -252,40 +260,6 @@ button:disabled {
   background: var(--blue);
 }
 
-.visibility-contrast {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: #f8fafc;
-}
-
-.visibility-contrast div {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 9px 10px;
-}
-
-.visibility-contrast span {
-  display: block;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.visibility-contrast strong {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-strong);
-  font-size: 12px;
-  line-height: 1.3;
-}
-
 .flow-canvas {
   overflow: auto;
   background:
@@ -297,15 +271,15 @@ button:disabled {
 
 .flow-stage {
   position: relative;
-  width: 835px;
-  height: 340px;
+  min-width: 835px;
+  min-height: 340px;
 }
 
 .flow-lines {
   position: absolute;
   inset: 0;
-  width: 835px;
-  height: 340px;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
@@ -406,7 +380,8 @@ button:disabled {
 .content-grid {
   display: grid;
   grid-template-columns: minmax(720px, 1.9fr) minmax(330px, 0.9fr);
-  grid-template-rows: minmax(420px, auto) minmax(260px, 0.8fr);
+  grid-template-rows: auto minmax(260px, auto);
+  grid-auto-rows: auto;
   gap: 12px;
 }
 
@@ -423,6 +398,10 @@ button:disabled {
 }
 
 .detail-panel {
+  align-self: start;
+  max-height: calc(100vh - 22px);
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 14px;
 }
 
@@ -645,6 +624,15 @@ code {
   padding: 14px 0;
 }
 
+.detail-heading > div {
+  min-width: 0;
+}
+
+.detail-heading h2,
+.detail-heading p {
+  overflow-wrap: anywhere;
+}
+
 .detail-heading p {
   margin: 7px 0 0;
   color: var(--text-muted);
@@ -654,6 +642,7 @@ code {
 .detail-stack {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .info-block,
@@ -661,6 +650,7 @@ code {
 .agent-card,
 .error-box,
 .related-links {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
@@ -673,6 +663,7 @@ code {
   color: var(--text-strong);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -681,6 +672,10 @@ code {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.quality-card > div {
+  min-width: 0;
 }
 
 .quality-card strong {
@@ -720,6 +715,12 @@ code {
   font-weight: 700;
 }
 
+.agent-grid code,
+.agent-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .agent-grid strong {
   color: var(--text-strong);
 }
@@ -746,8 +747,14 @@ code {
 
 .related-links a {
   min-width: 0;
+  overflow: hidden;
   padding: 0 9px;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.related-links a svg {
+  flex: 0 0 auto;
 }
 
 .ledger-layout {
@@ -845,13 +852,10 @@ code {
 
   .content-grid {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
   }
 
   .workflow-browser {
-    grid-template-columns: 1fr;
-  }
-
-  .visibility-contrast {
     grid-template-columns: 1fr;
   }
 

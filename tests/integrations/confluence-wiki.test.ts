@@ -85,6 +85,47 @@ describe("ConfluenceWikiPublisher", () => {
     expect(server.requests[0].body.body.storage.value).toContain("<h2>Architecture</h2>");
   });
 
+  it("routes each document type to its configured Confluence parent page", async () => {
+    const publisher = new ConfluenceWikiPublisher({
+      baseUrl: server.url,
+      email: "bot@example.com",
+      apiToken: "secret",
+      spaceKey: "DOCS",
+      parentPageId: "root-parent",
+      parentPageIdByDocumentType: {
+        prd: "111",
+        hld: "https://wiki.example.com/wiki/spaces/DOCS/pages/222/HLD",
+        lld: "333",
+        spec: "444"
+      }
+    });
+
+    await publisher.publishMarkdownPage({
+      documentType: "hld",
+      sourceKey: "PRD-100-HLD-1",
+      title: "PRD-100-HLD-1 HLD",
+      markdown: "# HLD"
+    });
+    await publisher.publishMarkdownPage({
+      documentType: "lld",
+      sourceKey: "PRD-100-HLD-1-LLD-1",
+      title: "PRD-100-HLD-1-LLD-1 LLD",
+      markdown: "# LLD"
+    });
+    await publisher.publishMarkdownPage({
+      documentType: "adr",
+      sourceKey: "ADR-1",
+      title: "ADR-1",
+      markdown: "# ADR"
+    });
+
+    expect(server.requests.map((request) => request.body.ancestors)).toEqual([
+      [{ id: "222" }],
+      [{ id: "333" }],
+      [{ id: "root-parent" }]
+    ]);
+  });
+
   it("converts markdown section headings to Confluence heading elements", async () => {
     const publisher = new ConfluenceWikiPublisher({
       baseUrl: server.url,
@@ -212,6 +253,146 @@ describe("ConfluenceWikiPublisher", () => {
     });
     expect(server.requests[2].body.body.storage.value).toContain("Updated generated content.");
   });
+
+  it("retries an existing page update with the latest version after a version conflict", async () => {
+    server.nextStatus = 400;
+    server.nextBody = {
+      message:
+        "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: A page with this title already exists"
+    };
+    server.existingPage = {
+      id: "999",
+      title: "PRD-100 FAQ automation",
+      version: { number: 3 },
+      _links: {
+        webui: "/wiki/spaces/PRD/pages/999"
+      }
+    };
+    server.latestExistingPage = {
+      id: "999",
+      title: "PRD-100 FAQ automation",
+      version: { number: 4 },
+      _links: {
+        webui: "/wiki/spaces/PRD/pages/999"
+      }
+    };
+    server.nextPutStatus = 409;
+    server.nextPutBody = {
+      message: "Version conflict: current version is newer"
+    };
+    const publisher = new ConfluenceWikiPublisher({
+      baseUrl: server.url,
+      email: "bot@example.com",
+      apiToken: "secret",
+      spaceKey: "PRD",
+      parentPageId: "123"
+    });
+
+    const result = await publisher.publishPrd({
+      jiraKey: "PRD-100",
+      title: "PRD-100 FAQ automation",
+      markdown: "# PRD-100\n\nUpdated generated content."
+    });
+
+    expect(result.url).toBe(`${server.url}/wiki/spaces/PRD/pages/999`);
+    expect(server.requests.map((request) => [request.method, request.path])).toEqual([
+      ["POST", "/wiki/rest/api/content"],
+      ["GET", "/wiki/rest/api/content"],
+      ["PUT", "/wiki/rest/api/content/999"],
+      ["GET", "/wiki/rest/api/content"],
+      ["PUT", "/wiki/rest/api/content/999"]
+    ]);
+    expect(server.requests[2].body.version).toEqual({ number: 4 });
+    expect(server.requests[4].body.version).toEqual({ number: 5 });
+  });
+
+  it("collects footer and open inline comments from a Confluence page", async () => {
+    server.footerComments = [
+      {
+        id: "c-1",
+        pageId: "999",
+        title: "Footer comment",
+        version: {
+          createdAt: "2026-05-20T08:00:00.000Z",
+          authorId: "account-1"
+        },
+        body: {
+          storage: {
+            value: "<p>Add the rollout KPI.</p>"
+          }
+        },
+        _links: {
+          webui: "/wiki/spaces/PRD/pages/999?focusedCommentId=c-1"
+        }
+      }
+    ];
+    server.inlineComments = [
+      {
+        id: "ic-1",
+        pageId: "999",
+        title: "Inline comment",
+        version: {
+          createdAt: "2026-05-20T08:05:00.000Z",
+          authorId: "account-2"
+        },
+        body: {
+          storage: {
+            value: "<p>Clarify edge cases.</p>"
+          }
+        },
+        resolutionStatus: "open",
+        properties: {
+          inlineOriginalSelection: "Acceptance criteria"
+        },
+        _links: {
+          webui: "/wiki/spaces/PRD/pages/999?focusedCommentId=ic-1"
+        }
+      }
+    ];
+    const publisher = new ConfluenceWikiPublisher({
+      baseUrl: server.url,
+      email: "bot@example.com",
+      apiToken: "secret",
+      spaceKey: "PRD",
+      parentPageId: "123"
+    });
+
+    const result = await publisher.collectPageFeedback({
+      pageUrl: `${server.url}/wiki/spaces/PRD/pages/999/Page+Title`
+    });
+
+    expect(result).toMatchObject({
+      pageId: "999",
+      comments: [
+        {
+          externalId: "confluence-comment:c-1",
+          author: "account-1",
+          body: "Add the rollout KPI.",
+          createdAt: "2026-05-20T08:00:00.000Z",
+          url: `${server.url}/wiki/spaces/PRD/pages/999?focusedCommentId=c-1`
+        },
+        {
+          externalId: "confluence-comment:ic-1",
+          author: "account-2",
+          body: "Selection: Acceptance criteria\nComment: Clarify edge cases.",
+          createdAt: "2026-05-20T08:05:00.000Z",
+          url: `${server.url}/wiki/spaces/PRD/pages/999?focusedCommentId=ic-1`,
+          metadata: {
+            resolutionStatus: "open"
+          }
+        }
+      ]
+    });
+    expect(server.requests.slice(-2).map((request) => [request.method, request.path])).toEqual([
+      ["GET", "/wiki/api/v2/pages/999/footer-comments"],
+      ["GET", "/wiki/api/v2/pages/999/inline-comments"]
+    ]);
+    expect(server.requests.at(-1)?.query).toMatchObject({
+      "body-format": "storage",
+      "resolution-status": "open",
+      status: "current"
+    });
+  });
 });
 
 async function createFakeConfluenceServer(): Promise<{
@@ -219,7 +400,12 @@ async function createFakeConfluenceServer(): Promise<{
   requests: Array<Record<string, any>>;
   nextStatus: number;
   nextBody: unknown;
+  nextPutStatus: number;
+  nextPutBody: unknown;
   existingPage?: any;
+  latestExistingPage?: any;
+  footerComments: any[];
+  inlineComments: any[];
   close: () => Promise<void>;
 }> {
   const requests: Array<Record<string, any>> = [];
@@ -231,7 +417,13 @@ async function createFakeConfluenceServer(): Promise<{
         webui: "/wiki/spaces/PRD/pages/999"
       }
     } as unknown,
-    existingPage: undefined as any
+    existingPage: undefined as any,
+    latestExistingPage: undefined as any,
+    nextPutStatus: 200,
+    nextPutBody: undefined as unknown,
+    footerComments: [] as any[],
+    inlineComments: [] as any[],
+    searchCount: 0
   };
   const server = createServer(async (request, response) => {
     const body = await readBody(request);
@@ -245,12 +437,33 @@ async function createFakeConfluenceServer(): Promise<{
     });
 
     if (request.method === "GET" && url.pathname === "/wiki/rest/api/content") {
-      writeJson(response, { results: state.existingPage ? [state.existingPage] : [] });
+      state.searchCount += 1;
+      const page = state.searchCount > 1 ? state.latestExistingPage ?? state.existingPage : state.existingPage;
+      writeJson(response, { results: page ? [page] : [] });
       return;
     }
 
     if (request.method === "PUT" && url.pathname.startsWith("/wiki/rest/api/content/")) {
-      writeJson(response, state.existingPage ?? state.nextBody);
+      if (state.nextPutStatus !== 200) {
+        const statusCode = state.nextPutStatus;
+        const body = state.nextPutBody ?? state.nextBody;
+        state.nextPutStatus = 200;
+        state.nextPutBody = undefined;
+        writeJson(response, body, statusCode);
+        return;
+      }
+
+      writeJson(response, state.latestExistingPage ?? state.existingPage ?? state.nextBody);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.endsWith("/footer-comments")) {
+      writeJson(response, { results: state.footerComments, _links: {} });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.endsWith("/inline-comments")) {
+      writeJson(response, { results: state.inlineComments, _links: {} });
       return;
     }
 
@@ -278,11 +491,41 @@ async function createFakeConfluenceServer(): Promise<{
     set nextBody(value: unknown) {
       state.nextBody = value;
     },
+    get nextPutStatus() {
+      return state.nextPutStatus;
+    },
+    set nextPutStatus(value: number) {
+      state.nextPutStatus = value;
+    },
+    get nextPutBody() {
+      return state.nextPutBody;
+    },
+    set nextPutBody(value: unknown) {
+      state.nextPutBody = value;
+    },
     get existingPage() {
       return state.existingPage;
     },
     set existingPage(value: any) {
       state.existingPage = value;
+    },
+    get latestExistingPage() {
+      return state.latestExistingPage;
+    },
+    set latestExistingPage(value: any) {
+      state.latestExistingPage = value;
+    },
+    get footerComments() {
+      return state.footerComments;
+    },
+    set footerComments(value: any[]) {
+      state.footerComments = value;
+    },
+    get inlineComments() {
+      return state.inlineComments;
+    },
+    set inlineComments(value: any[]) {
+      state.inlineComments = value;
     },
     close: () =>
       new Promise<void>((resolve, reject) => {

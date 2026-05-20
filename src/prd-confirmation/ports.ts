@@ -45,6 +45,27 @@ export interface WikiPublisher {
   }>;
 }
 
+export interface WikiCollectedFeedback {
+  externalId: string;
+  author?: string;
+  body: string;
+  createdAt?: string;
+  url?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WikiFeedbackCollector {
+  collectPageFeedback(input: {
+    pageId?: string;
+    pageUrl?: string;
+    limit?: number;
+    includeResolved?: boolean;
+  }): Promise<{
+    pageId: string;
+    comments: WikiCollectedFeedback[];
+  }>;
+}
+
 export interface PrdSkillExecutor {
   qualityPasses: boolean;
   execute(job: import("./domain").AgentJob, store: import("./domain").PrdConfirmationStore): Promise<{

@@ -20,14 +20,24 @@ import './App.css'
 import {
   initialEvents,
   initialWorkItems,
-  projectSummary,
-  workflowCatalog,
+  projectSummary as mockProjectSummary,
+  workflowCatalog as mockWorkflowCatalog,
   type ExecutionEvent,
   type FlowNode,
   type WorkflowRunSummary,
   type WorkItem,
   type WorkState,
 } from './data/mockWorkflow'
+import {
+  approveApiGate,
+  fetchApiDashboard,
+  recordApiFeedback,
+  requestApiRevision,
+  seedApiRun,
+  setApiQualityPasses,
+  tickApiRun,
+  type DashboardProjectSummary,
+} from './data/workflowApi'
 
 const stateLabels: Record<WorkState, string> = {
   completed: 'completed',
@@ -43,12 +53,18 @@ const visibleStates: WorkState[] = ['running', 'failed', 'waiting_approval', 'co
 function App() {
   const [items, setItems] = useState<WorkItem[]>(() => structuredClone(initialWorkItems))
   const [events, setEvents] = useState<ExecutionEvent[]>(() => structuredClone(initialEvents))
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState(workflowCatalog[0].id)
+  const [workflows, setWorkflows] = useState<WorkflowRunSummary[]>(() => structuredClone(mockWorkflowCatalog))
+  const [summary, setSummary] = useState<DashboardProjectSummary>(() => ({ ...mockProjectSummary }))
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(mockWorkflowCatalog[0].id)
   const [selectedId, setSelectedId] = useState(initialWorkItems[4].id)
   const [paused, setPaused] = useState(false)
   const [demoStarted, setDemoStarted] = useState(false)
+  const [apiMode, setApiMode] = useState(false)
+  const [apiBusy, setApiBusy] = useState(false)
+  const [apiStatus, setApiStatus] = useState('Mock snapshot loaded')
 
-  const selectedWorkflow = workflowCatalog.find((workflow) => workflow.id === selectedWorkflowId) ?? workflowCatalog[0]
+  const selectedWorkflow =
+    workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? workflows[0] ?? mockWorkflowCatalog[0]
   const visibleItemIds = useMemo(() => new Set(selectedWorkflow.itemIds), [selectedWorkflow])
   const visibleItems = useMemo(() => items.filter((item) => visibleItemIds.has(item.id)), [items, visibleItemIds])
   const visibleEvents = useMemo(() => events.filter((event) => visibleItemIds.has(event.itemId)), [events, visibleItemIds])
@@ -56,6 +72,8 @@ function App() {
   const counts = useMemo(() => summarize(visibleItems), [visibleItems])
   const progress = visibleItems.length > 0 ? Math.round((counts.completed / visibleItems.length) * 100) : 0
   const selectedEvents = visibleEvents.filter((event) => event.itemId === selected.id)
+  const selectedDocumentId = selected.documentId ?? (selected.itemKind === 'document' ? selected.id : undefined)
+  const selectedApprovalGateId = selected.approvalGateId ?? (selectedDocumentId ? `gate_${selectedDocumentId}` : undefined)
 
   function appendEvent(item: WorkItem, event: string, level: ExecutionEvent['level'], message: string) {
     setEvents((current) => [
@@ -74,10 +92,14 @@ function App() {
   function startDemoRun() {
     setItems(structuredClone(initialWorkItems))
     setEvents(structuredClone(initialEvents))
-    setSelectedWorkflowId(workflowCatalog[0].id)
+    setWorkflows(structuredClone(mockWorkflowCatalog))
+    setSummary({ ...mockProjectSummary })
+    setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId('be-spec-002')
     setPaused(false)
     setDemoStarted(true)
+    setApiMode(false)
+    setApiStatus('Mock run active')
   }
 
   function selectWorkflow(workflow: WorkflowRunSummary) {
@@ -157,10 +179,69 @@ function App() {
   function resetDemo() {
     setItems(structuredClone(initialWorkItems))
     setEvents(structuredClone(initialEvents))
-    setSelectedWorkflowId(workflowCatalog[0].id)
+    setWorkflows(structuredClone(mockWorkflowCatalog))
+    setSummary({ ...mockProjectSummary })
+    setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId(initialWorkItems[4].id)
     setPaused(false)
     setDemoStarted(false)
+    setApiMode(false)
+    setApiStatus('Mock snapshot loaded')
+  }
+
+  async function runApiAction(label: string, action: () => Promise<void>) {
+    setApiBusy(true)
+    setApiStatus(`${label}...`)
+
+    try {
+      await action()
+      const data = await fetchApiDashboard()
+      setItems(data.items)
+      setEvents(data.events)
+      setWorkflows(data.workflows)
+      setSummary(data.summary)
+      setSelectedWorkflowId(data.workflows[0]?.id ?? '')
+      setSelectedId((current) => data.items.find((item) => item.id === current)?.id ?? data.items[0]?.id ?? '')
+      setApiMode(true)
+      setDemoStarted(false)
+      setPaused(false)
+      setApiStatus(`${label} complete`)
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : 'API request failed')
+    } finally {
+      setApiBusy(false)
+    }
+  }
+
+  function loadApiRun() {
+    void runApiAction('Refresh API', async () => {})
+  }
+
+  function seedFromApi() {
+    void runApiAction('Seed API', seedApiRun)
+  }
+
+  function tickFromApi() {
+    void runApiAction('Tick API', tickApiRun)
+  }
+
+  function feedbackToApi() {
+    if (!selectedDocumentId) return
+    void runApiAction('Feedback', () => recordApiFeedback(selectedDocumentId))
+  }
+
+  function reviseFromApi() {
+    if (!selectedDocumentId) return
+    void runApiAction('Revision', () => requestApiRevision(selectedDocumentId))
+  }
+
+  function approveFromApi() {
+    if (!selectedApprovalGateId) return
+    void runApiAction('Approve', () => approveApiGate(selectedApprovalGateId))
+  }
+
+  function passQualityFromApi() {
+    void runApiAction('Quality Pass', () => setApiQualityPasses(true))
   }
 
   return (
@@ -168,16 +249,16 @@ function App() {
       <header className="topbar">
         <div>
           <div className="eyebrow">Workflow execution dashboard demo</div>
-          <h1>{projectSummary.projectKey} parent-child execution</h1>
+          <h1>{summary.projectKey} parent-child execution</h1>
         </div>
         <div className="run-meta">
-          <span>{projectSummary.workflowVersion}</span>
-          <span>{projectSummary.runId}</span>
+          <span>{summary.workflowVersion}</span>
+          <span>{summary.runId}</span>
         </div>
       </header>
 
       <section className="summary-bar" aria-label="Execution summary">
-        <Metric label="Project key" value={projectSummary.projectKey} />
+        <Metric label="Project key" value={summary.projectKey} />
         <div className="metric progress-metric">
           <div className="metric-label">Overall progress</div>
           <div className="progress-row">
@@ -190,8 +271,8 @@ function App() {
         {visibleStates.map((state) => (
           <Metric key={state} label={stateLabels[state]} value={counts[state]} accent={state} />
         ))}
-        <Metric label="Started" value={projectSummary.startedAt} />
-        <Metric label="Elapsed" value={projectSummary.elapsed} icon={<Timer size={15} />} />
+        <Metric label="Started" value={summary.startedAt} />
+        <Metric label="Elapsed" value={summary.elapsed} icon={<Timer size={15} />} />
       </section>
 
       <section className="control-strip" aria-label="Demo controls">
@@ -213,14 +294,38 @@ function App() {
         <button type="button" onClick={resetDemo}>
           <RotateCcw size={16} /> Reset Demo
         </button>
-        <span className="control-status">{paused ? 'Paused' : demoStarted ? 'Demo run active' : 'Mock snapshot loaded'}</span>
+        <span className="control-divider" />
+        <button type="button" onClick={seedFromApi} disabled={apiBusy}>
+          <Play size={16} /> Seed API
+        </button>
+        <button type="button" onClick={loadApiRun} disabled={apiBusy}>
+          <RefreshCcw size={16} /> Refresh API
+        </button>
+        <button type="button" onClick={tickFromApi} disabled={apiBusy}>
+          <StepForward size={16} /> Tick API
+        </button>
+        <button type="button" onClick={passQualityFromApi} disabled={apiBusy || !apiMode}>
+          <ShieldCheck size={16} /> Quality Pass
+        </button>
+        <button type="button" onClick={feedbackToApi} disabled={apiBusy || !apiMode || !selectedDocumentId}>
+          <FileText size={16} /> Feedback
+        </button>
+        <button type="button" onClick={reviseFromApi} disabled={apiBusy || !apiMode || !selectedDocumentId}>
+          <RefreshCcw size={16} /> Revise
+        </button>
+        <button type="button" onClick={approveFromApi} disabled={apiBusy || !apiMode || !selectedApprovalGateId}>
+          <CheckCircle2 size={16} /> Approve
+        </button>
+        <span className="control-status">
+          {apiBusy ? 'API request running' : apiMode ? apiStatus : paused ? 'Paused' : demoStarted ? 'Demo run active' : apiStatus}
+        </span>
       </section>
 
       <section className="workflow-browser" aria-label="Workflow list and connected execution map">
         <aside className="panel workflow-list-panel">
-          <PanelTitle icon={<GitBranch size={18} />} title="Workflow List" detail={`${workflowCatalog.length} mock runs`} />
+          <PanelTitle icon={<GitBranch size={18} />} title="Workflow List" detail={`${workflows.length} ${apiMode ? 'API' : 'mock'} runs`} />
           <div className="workflow-list">
-            {workflowCatalog.map((workflow) => (
+            {workflows.map((workflow) => (
               <button
                 type="button"
                 key={workflow.id}
@@ -251,16 +356,6 @@ function App() {
             title="Connected Workflow View"
             detail={`${selectedWorkflow.projectKey} / ${selectedWorkflow.runId}`}
           />
-          <div className="visibility-contrast">
-            <div>
-              <span>n8n default execution</span>
-              <strong>Child workflow state is scattered across separate execution views.</strong>
-            </div>
-            <div>
-              <span>Custom dashboard target</span>
-              <strong>Every LLD and every Spec child run stays visible in one parent execution map.</strong>
-            </div>
-          </div>
           <WorkflowCanvas workflow={selectedWorkflow} selectedWorkItemId={selected.id} onSelectWorkItem={setSelectedId} />
         </section>
       </section>
@@ -418,10 +513,23 @@ function WorkflowCanvas({
   selectedWorkItemId: string
   onSelectWorkItem: (id: string) => void
 }) {
+  const stageWidth = Math.max(835, ...workflow.nodes.map((node) => node.x + 132))
+  const stageHeight = Math.max(340, ...workflow.nodes.map((node) => node.y + 122))
+
   return (
     <div className="flow-canvas">
-      <div className="flow-stage" role="img" aria-label={`${workflow.name} connected workflow diagram`}>
-        <svg className="flow-lines" viewBox="0 0 835 340" preserveAspectRatio="none" aria-hidden="true">
+      <div
+        className="flow-stage"
+        role="img"
+        aria-label={`${workflow.name} connected workflow diagram`}
+        style={{ width: stageWidth, height: stageHeight }}
+      >
+        <svg
+          className="flow-lines"
+          viewBox={`0 0 ${stageWidth} ${stageHeight}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
           <defs>
             <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
               <path d="M0,0 L8,4 L0,8 Z" />

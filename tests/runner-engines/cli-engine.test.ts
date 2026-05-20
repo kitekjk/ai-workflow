@@ -30,6 +30,36 @@ process.stdin.on("end", () => {
     expect(result).toEqual({ received: "generate PRD" });
   });
 
+  it("returns parsed JSON with raw stdout and stderr for log retention", async () => {
+    const bin = createFakeCli(`
+console.error("model warmed up");
+console.log(JSON.stringify({ status: "ok" }));
+`);
+    const engine = new CliEngine({ command: bin, timeoutMs: 5000 });
+
+    const result = await engine.runJsonWithProcessOutput({ prompt: "generate PRD" });
+
+    expect(result).toEqual({
+      output: { status: "ok" },
+      stdout: '{"status":"ok"}\n',
+      stderr: "model warmed up\n"
+    });
+  });
+
+  it("runs the CLI process inside the configured working directory", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "cli-engine-cwd-"));
+    const bin = createFakeCli(`
+console.log(JSON.stringify({ cwd: process.cwd().replace(/\\\\/g, "/") }));
+`);
+    const engine = new CliEngine({ command: bin, timeoutMs: 5000, cwd });
+
+    const result = await engine.runJson({});
+
+    expect(result).toEqual({
+      cwd: cwd.replace(/\\/g, "/")
+    });
+  });
+
   it("includes stderr when the CLI exits non-zero", async () => {
     const bin = createFakeCli(`
 console.error("missing auth token");

@@ -1,4 +1,24 @@
 services:
+  workflow-mysql:
+    image: mysql:8.4
+    profiles: ["workflow-db"]
+    restart: unless-stopped
+    ports:
+      - "${WORKFLOW_MYSQL_BIND_ADDRESS:-127.0.0.1}:${WORKFLOW_MYSQL_PORT:-3306}:3306"
+    environment:
+      MYSQL_DATABASE: ${WORKFLOW_MYSQL_DATABASE:-ai_workflow}
+      MYSQL_USER: ${WORKFLOW_MYSQL_USER:-ai_workflow}
+      MYSQL_PASSWORD: ${WORKFLOW_MYSQL_PASSWORD:-ai_workflow}
+      MYSQL_ROOT_PASSWORD: ${WORKFLOW_MYSQL_ROOT_PASSWORD:-ai_workflow_root}
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - workflow_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -45,5 +65,6 @@ services:
       - ./workflows:/workflows
 
 volumes:
+  workflow_mysql_data:
   postgres_data:
   n8n_data:

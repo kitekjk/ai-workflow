@@ -1,4 +1,5 @@
 import type { CliEngine } from "../runner-engines/cli-engine";
+import { createJobPromptContractPayload } from "../document-core/prompt-contracts";
 import type { AgentJob, Artifact, ExternalIssue, PrdConfirmationStore } from "./domain";
 import type { PrdRepository, PrdSkillExecutor, WikiPublisher } from "./ports";
 
@@ -30,7 +31,14 @@ export class CliPrdSkills implements PrdSkillExecutor {
   }> {
     const output = await this.engine.runJson(this.buildCliInput(job, store));
 
-    if (job.jobType === "prd.evaluate_quality") {
+    if (job.jobType === "prd.evaluate_quality" || job.jobType === "document.evaluate") {
+      return {
+        output,
+        artifacts: []
+      };
+    }
+
+    if (job.jobType === "prd.route_downstream" || job.jobType === "document.fan_out") {
       return {
         output,
         artifacts: []
@@ -39,6 +47,7 @@ export class CliPrdSkills implements PrdSkillExecutor {
 
     const markdown = requireString(output.markdown, "markdown");
     this.currentDocumentMarkdownBySourceKey.set(job.primaryJiraKey, markdown);
+    const documentType = String(job.input.documentType ?? "prd");
     const gitArtifact = await this.prdRepository.commitPrd({
       jiraKey: job.primaryJiraKey,
       markdown,
@@ -48,7 +57,7 @@ export class CliPrdSkills implements PrdSkillExecutor {
           : `docs: update ${job.primaryJiraKey}`
     });
     const wikiPage = await this.wikiPublisher.publishMarkdownPage({
-      documentType: "prd",
+      documentType,
       sourceKey: job.primaryJiraKey,
       title: `${job.primaryJiraKey} Generated PRD`,
       markdown
@@ -61,7 +70,7 @@ export class CliPrdSkills implements PrdSkillExecutor {
         { jobId: job.id, ...gitArtifact },
         {
           jobId: job.id,
-          type: "prd_wiki_page",
+          type: documentType === "prd" ? "prd_wiki_page" : "document_wiki_page",
           location: wikiPage.location,
           url: wikiPage.url
         }
@@ -72,10 +81,11 @@ export class CliPrdSkills implements PrdSkillExecutor {
   private buildCliInput(job: AgentJob, store: PrdConfirmationStore): Record<string, unknown> {
     const prd = store.externalIssues.get(job.primaryJiraKey);
     const sourceRequests = getSourceRequests(prd, store);
+    const documentType = typeof job.input.documentType === "string" ? job.input.documentType : "prd";
 
     return {
       jobType: job.jobType,
-      documentType: "prd",
+      documentType,
       primaryJiraKey: job.primaryJiraKey,
       sourceKey: job.primaryJiraKey,
       prd,
@@ -83,7 +93,11 @@ export class CliPrdSkills implements PrdSkillExecutor {
       currentDocumentMarkdown: this.currentDocumentMarkdownBySourceKey.get(job.primaryJiraKey),
       currentPrdMarkdown: this.currentDocumentMarkdownBySourceKey.get(job.primaryJiraKey),
       outputLanguage: this.outputLanguage,
-      ...job.input
+      ...job.input,
+      promptContract: createJobPromptContractPayload({
+        jobType: job.jobType,
+        documentType
+      })
     };
   }
 }

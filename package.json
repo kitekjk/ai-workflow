@@ -5,7 +5,9 @@
   "scripts": {
     "test": "vitest run",
     "demo:prd": "tsx src/demo/prd-confirmation-demo.ts",
-    "start:api": "tsx src/workflow-api/main.ts"
+    "start:api": "tsx src/workflow-api/main.ts",
+    "start:local-runner": "tsx src/local-runner/main.ts",
+    "db:migrate:mysql": "tsx src/mysql/apply-migrations.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
@@ -14,6 +16,7 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.22.3"
   }
 }
