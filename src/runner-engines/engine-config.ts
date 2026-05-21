@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Runner, WorkflowJob } from "../workflow-core/domain";
 
@@ -216,24 +216,41 @@ function parseOptionalSandbox(value: string | undefined, label: string): RunnerC
 }
 
 function resolveTemplateWorkdir(workdir: string | undefined, workspaceDir: string | undefined): string | undefined {
-  const workspaceRoot = workspaceDir ? resolve(workspaceDir) : undefined;
+  const paths = pathFlavorFor(workspaceDir, workdir);
+  const workspaceRoot = workspaceDir ? paths.resolve(workspaceDir) : undefined;
 
   if (!workdir) {
     return workspaceRoot;
   }
 
-  const resolved = workspaceRoot && !isAbsolute(workdir) ? resolve(workspaceRoot, workdir) : resolve(workdir);
+  const resolved = workspaceRoot && !paths.isAbsolute(workdir) ? paths.resolve(workspaceRoot, workdir) : paths.resolve(workdir);
 
-  if (workspaceRoot && !isPathInside(workspaceRoot, resolved)) {
+  if (workspaceRoot && !isPathInside(workspaceRoot, resolved, paths)) {
     throw new Error(`runnerJobTemplate.workdir must stay inside runner workspace: ${workdir}`);
   }
 
   return resolved;
 }
 
-function isPathInside(rootDir: string, candidate: string): boolean {
-  const path = relative(rootDir, candidate);
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+interface PathFlavor {
+  resolve(...paths: string[]): string;
+  relative(from: string, to: string): string;
+  isAbsolute(path: string): boolean;
+}
+
+function pathFlavorFor(...paths: Array<string | undefined>): PathFlavor {
+  return paths.some((path) => path !== undefined && isWindowsPath(path))
+    ? win32
+    : { resolve, relative, isAbsolute };
+}
+
+function isWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path);
+}
+
+function isPathInside(rootDir: string, candidate: string, paths: PathFlavor): boolean {
+  const path = paths.relative(rootDir, candidate);
+  return path === "" || (!path.startsWith("..") && !paths.isAbsolute(path));
 }
 
 function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {

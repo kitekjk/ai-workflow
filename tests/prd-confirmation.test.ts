@@ -27,6 +27,26 @@ describe("PRD confirmation workflow", () => {
     ]);
   });
 
+  it("rejects PRD intake unless the Jira ticket is in the requested status", async () => {
+    const fixture = createPrdConfirmationFixture();
+    fixture.store.externalIssues.get("PRD-100")!.status = "drafting";
+
+    await expect(fixture.workflow.intakePrdTicket("PRD-100")).rejects.toThrow(
+      "PRD Jira ticket is not ready for intake: PRD-100"
+    );
+    expect(fixture.store.workItems).toHaveLength(0);
+    expect(fixture.store.agentJobs).toHaveLength(0);
+  });
+
+  it("accepts PRD intake from the Jira display status used in the plan", async () => {
+    const fixture = createPrdConfirmationFixture();
+    fixture.store.externalIssues.get("PRD-100")!.status = "PRD 요청";
+
+    await expect(fixture.workflow.intakePrdTicket("PRD-100")).resolves.toEqual({ status: "accepted" });
+    expect(fixture.store.workItems).toHaveLength(1);
+    expect(fixture.store.externalIssues.get("PRD-100")?.status).toBe("drafting");
+  });
+
   it("runs draft generation as one job and creates a separate quality evaluation job on the same PRD ticket", async () => {
     const fixture = createPrdConfirmationFixture();
     await fixture.workflow.intakePrdTicket("PRD-100");

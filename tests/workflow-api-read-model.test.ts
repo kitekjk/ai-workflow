@@ -42,6 +42,14 @@ describe("MysqlWorkflowApiReadModel", () => {
           updated_at: "2026-05-20T00:01:00.000Z"
         }
       ],
+      workflowJobResults: [
+        {
+          id: "result_1",
+          job_id: "job_1",
+          output_json: JSON.stringify({ status: "succeeded", summary: "Generated PRD" }),
+          created_at: "2026-05-20T00:02:00.000Z"
+        }
+      ],
       documents: [
         {
           id: "doc_wi_1",
@@ -136,11 +144,24 @@ describe("MysqlWorkflowApiReadModel", () => {
     });
     const readModel = new MysqlWorkflowApiReadModel(database);
 
+    const state = await readModel.summarizeState("PRD-100");
     const run = await readModel.summarizeWorkflowRun("run_1");
     const tree = await readModel.summarizeWorkflowRunTree("run_1");
     const current = await readModel.summarizeDocumentCurrent("doc_wi_1");
     const history = await readModel.summarizeDocumentHistory("doc_wi_1");
 
+    expect(state).toMatchObject({
+      prdJiraKey: "PRD-100",
+      prdStatus: "approval_pending",
+      jobs: [{ id: "job_1", type: "prd.generate_draft", status: "succeeded" }],
+      artifacts: [
+        { type: "document_markdown", location: "git", url: "https://git.example.com/prd/PRD-100.md" },
+        { type: "wiki_page", location: "wiki", url: "https://wiki.example.com/prd/PRD-100" }
+      ],
+      latestQualityResult: { id: "qgr_1" },
+      latestRevisionSummary: null,
+      latestResult: { status: "succeeded", summary: "Generated PRD" }
+    });
     expect(run).toMatchObject({
       run: { id: "run_1", sourceKey: "PRD-100" },
       jobs: [{ id: "job_1", jobType: "prd.generate_draft" }],
@@ -169,6 +190,7 @@ describe("MysqlWorkflowApiReadModel", () => {
 interface FakeRows {
   workflowRuns?: Row[];
   workflowJobs?: Row[];
+  workflowJobResults?: Row[];
   documents?: Row[];
   documentVersions?: Row[];
   artifacts?: Row[];
@@ -184,8 +206,19 @@ class FakeMysqlReadDatabase implements MysqlDatabase, MysqlConnection {
   async execute<T = unknown>(sql: string, params: readonly unknown[] = []): Promise<[T, unknown]> {
     const normalizedSql = normalizeSql(sql);
 
+    if (normalizedSql.includes("FROM workflow_run") && normalizedSql.includes("source_key")) {
+      return [this.rows.workflowRuns?.filter((row) => row.source_key === params[0]) as T, undefined];
+    }
+
     if (normalizedSql.includes("FROM workflow_run")) {
       return [this.rows.workflowRuns?.filter((row) => row.id === params[0]) as T, undefined];
+    }
+
+    if (normalizedSql.includes("FROM workflow_job_result")) {
+      const jobIdsForRun = new Set(
+        this.rows.workflowJobs?.filter((row) => row.run_id === params[0]).map((row) => row.id)
+      );
+      return [this.rows.workflowJobResults?.filter((row) => jobIdsForRun.has(row.job_id)) as T, undefined];
     }
 
     if (normalizedSql.includes("FROM workflow_job")) {

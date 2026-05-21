@@ -9,18 +9,25 @@ const server = await createWorkflowApiServer({
   fixture: runtime.fixture,
   scheduler: runtime.scheduler,
   documentRepository: runtime.documentRepository,
+  jiraIssueReader: runtime.jiraIssueReader,
   wikiFeedbackCollector: runtime.wikiFeedbackCollector,
   snapshotMirror: runtime.snapshotMirror,
   readModel: runtime.readModel,
   prdIntakeCommand: runtime.prdIntakeCommand,
   feedbackRevisionCommand: runtime.feedbackRevisionCommand,
   workflowResultCommand: runtime.workflowResultCommand,
-  workflowTransitionCommand: runtime.workflowTransitionCommand
+  workflowTransitionCommand: runtime.workflowTransitionCommand,
+  internalTickIntervalMs: runtime.internalTickIntervalMs
 }).listen(port);
 
 console.log(`Workflow API listening at ${server.url}`);
 console.log(`Integration mode: ${process.env.INTEGRATION_MODE ?? "stub"}`);
 console.log(`Runtime store: ${runtime.runtimeStore}`);
+console.log(
+  `Internal workflow tick: ${
+    runtime.internalTickIntervalMs === undefined ? "disabled" : `${runtime.internalTickIntervalMs}ms`
+  }`
+);
 if (restoreResult?.restored) {
   console.log(
     `Restored PRD snapshot from MySQL: ${restoreResult.workItems} work items, ${restoreResult.jobs} jobs`

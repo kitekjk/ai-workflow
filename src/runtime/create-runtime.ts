@@ -3,7 +3,7 @@ import { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
 import { PrdConfirmationWorkflow } from "../prd-confirmation/workflow";
 import { AdapterBackedPrdSkills } from "../prd-confirmation/adapter-backed-skills";
 import { CliPrdSkills } from "../prd-confirmation/cli-prd-skills";
-import type { PrdSkillExecutor } from "../prd-confirmation/ports";
+import type { JiraIssueReader, PrdSkillExecutor } from "../prd-confirmation/ports";
 import { StubPrdSkills } from "../prd-confirmation/runner-skills";
 import { ConfluenceWikiPublisher } from "../integrations/confluence-wiki";
 import type { GitHubRestClientOptions } from "../integrations/github-client";
@@ -36,15 +36,7 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv): RuntimeFixture {
   }
 
   const store = createEmptyStore();
-  const jiraReader = new JiraRestClient({
-    baseUrl: requireEnv(env, "JIRA_BASE_URL"),
-    email: env.JIRA_EMAIL,
-    apiToken: requireEnv(env, "JIRA_API_TOKEN"),
-    authMode: parseJiraAuthMode(env.JIRA_AUTH_MODE),
-    apiVersion: parseJiraApiVersion(env.JIRA_API_VERSION),
-    writebackFieldIds: jiraWritebackFieldIds(env),
-    transitionIds: jiraTransitionIds(env)
-  });
+  const jiraReader = createJiraIssueReaderFromEnv(env);
   const wikiPublisher = maybeCreateConfluenceWikiPublisher(env);
   const skills = createPrdSkills(env, wikiPublisher);
   const workflow = new PrdConfirmationWorkflow(store, { jiraReader });
@@ -70,6 +62,18 @@ export function createRuntimeFromEnv(env: NodeJS.ProcessEnv): RuntimeFixture {
       throw new Error("Runtime did not become idle");
     }
   };
+}
+
+export function createJiraIssueReaderFromEnv(env: NodeJS.ProcessEnv): JiraIssueReader {
+  return new JiraRestClient({
+    baseUrl: requireEnv(env, "JIRA_BASE_URL"),
+    email: env.JIRA_EMAIL,
+    apiToken: requireEnv(env, "JIRA_API_TOKEN"),
+    authMode: parseJiraAuthMode(env.JIRA_AUTH_MODE),
+    apiVersion: parseJiraApiVersion(env.JIRA_API_VERSION),
+    writebackFieldIds: jiraWritebackFieldIds(env),
+    transitionIds: jiraTransitionIds(env)
+  });
 }
 
 function createPrdSkills(env: NodeJS.ProcessEnv, wikiPublisher?: WikiPublisher): StubPrdSkills | PrdSkillExecutor {

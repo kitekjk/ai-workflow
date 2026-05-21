@@ -375,26 +375,28 @@ function downstreamDocumentsForFanOut(
 }
 
 function explicitDownstreamDocumentsFor(result: AgentJobResult): Array<{ type: DocumentArtifactType; title?: string }> {
-  return Array.isArray(result.output.downstreamDocuments)
-    ? result.output.downstreamDocuments
-        .map((document) => {
-          if (!isRecord(document)) {
-            return undefined;
-          }
+  if (!Array.isArray(result.output.downstreamDocuments)) {
+    return [];
+  }
 
-          const type = documentTypeOrUndefined(document.type);
+  return result.output.downstreamDocuments.flatMap((document) => {
+    if (!isRecord(document)) {
+      return [];
+    }
 
-          if (!type) {
-            return undefined;
-          }
+    const type = documentTypeOrUndefined(document.type);
 
-          return {
-            type,
-            title: typeof document.title === "string" ? document.title : undefined
-          };
-        })
-        .filter((document): document is { type: DocumentArtifactType; title?: string } => document !== undefined)
-    : [];
+    if (!type) {
+      return [];
+    }
+
+    return [
+      {
+        type,
+        title: typeof document.title === "string" ? document.title : undefined
+      }
+    ];
+  });
 }
 
 function createDownstreamWorkItem(

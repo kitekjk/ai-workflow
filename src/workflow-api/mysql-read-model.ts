@@ -5,6 +5,7 @@ import type { WorkflowJob, WorkflowRun } from "../workflow-core/domain";
 import { rowToWorkflowJob, type MysqlDatabase } from "../workflow-core/mysql-repository";
 
 export interface WorkflowApiReadModel {
+  summarizeState(sourceKey: string): Promise<Record<string, unknown> | undefined>;
   summarizeWorkflowRun(runId: string): Promise<Record<string, unknown> | undefined>;
   summarizeWorkflowRunTree(runId: string): Promise<Record<string, unknown> | undefined>;
   summarizeDocumentCurrent(documentId: string): Promise<DocumentCurrentReadModel | undefined>;
@@ -24,6 +25,51 @@ type MysqlRow = Record<string, unknown>;
 
 export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
   constructor(private readonly database: MysqlDatabase) {}
+
+  async summarizeState(sourceKey: string): Promise<Record<string, unknown> | undefined> {
+    const run = await this.getWorkflowRunBySourceKey(sourceKey);
+
+    if (!run) {
+      return undefined;
+    }
+
+    const [jobs, documents, latestResult] = await Promise.all([
+      this.listWorkflowJobs(run.id),
+      this.listDocumentsForRun(run.id),
+      this.getLatestWorkflowJobResultForRun(run.id)
+    ]);
+    const document = documents.find((candidate) => candidate.sourceKey === sourceKey) ?? documents[0];
+    const currentArtifactIds = document
+      ? [document.currentMarkdownArtifactId, document.currentWikiArtifactId].filter((id): id is string => Boolean(id))
+      : [];
+    const [currentVersion, currentArtifacts, latestQualityResult] = document
+      ? await Promise.all([
+          document.currentVersionId ? this.getDocumentVersion(document.currentVersionId) : Promise.resolve(undefined),
+          currentArtifactIds.length > 0 ? this.getArtifactsByIds(currentArtifactIds) : Promise.resolve([]),
+          this.getLatestQualityResult(document.id)
+        ])
+      : [undefined, [], undefined] as const;
+
+    return {
+      prdJiraKey: sourceKey,
+      prdStatus: document?.status ?? run.status,
+      policy: prdConfirmationWorkflowPolicy,
+      jobs: jobs.map((job) => ({
+        id: job.id,
+        type: job.jobType,
+        jira: document?.sourceKey ?? sourceKey,
+        status: job.status
+      })),
+      artifacts: currentArtifacts.map((artifact) => ({
+        type: artifact.type,
+        location: artifact.location,
+        url: artifact.uri
+      })),
+      latestQualityResult: latestQualityResult ?? null,
+      latestRevisionSummary: currentVersion?.revisionSummary ?? null,
+      latestResult: latestResult?.output ?? null
+    };
+  }
 
   async summarizeWorkflowRun(runId: string): Promise<Record<string, unknown> | undefined> {
     const run = await this.getWorkflowRun(runId);
@@ -126,6 +172,19 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     return rows[0] ? rowToWorkflowRun(rows[0]) : undefined;
   }
 
+  private async getWorkflowRunBySourceKey(sourceKey: string): Promise<WorkflowRun | undefined> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_run
+       WHERE source_key = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [sourceKey]
+    );
+
+    return rows[0] ? rowToWorkflowRun(rows[0]) : undefined;
+  }
+
   private async listWorkflowJobs(runId: string): Promise<WorkflowJob[]> {
     const [rows] = await this.database.execute<MysqlRow[]>(
       `SELECT *
@@ -136,6 +195,22 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     );
 
     return rows.map(rowToWorkflowJob);
+  }
+
+  private async getLatestWorkflowJobResultForRun(runId: string): Promise<{ output: Record<string, unknown> } | undefined> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT result.output_json
+       FROM workflow_job_result result
+       INNER JOIN workflow_job job ON job.id = result.job_id
+       WHERE job.run_id = ?
+       ORDER BY result.created_at DESC, result.id DESC
+       LIMIT 1`,
+      [runId]
+    );
+
+    const output = rows[0]?.output_json;
+
+    return output === undefined ? undefined : { output: parseJsonRecord(output) };
   }
 
   private async listDocumentsForRun(runId: string): Promise<Document[]> {

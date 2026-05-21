@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
 import { prdConfirmationWorkflowPolicy } from "../src/prd-confirmation/domain";
-import type { WikiFeedbackCollector } from "../src/prd-confirmation/ports";
+import type { JiraIssueReader, WikiFeedbackCollector } from "../src/prd-confirmation/ports";
 import type {
   RecordFeedbackCommandInput,
   RecordRevisionJobCommandInput
@@ -14,6 +14,7 @@ import type {
   RecordDocumentStateCommandInput,
   RecordWorkflowJobCommandInput
 } from "../src/workflow-api/workflow-transition-command";
+import type { RecordPrdIntakeInput } from "../src/workflow-api/prd-intake-command";
 
 describe("Workflow API", () => {
   let server: WorkflowApiServer;
@@ -21,7 +22,7 @@ describe("Workflow API", () => {
 
   beforeEach(async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
-    server = await createWorkflowApiServer({ fixture }).listen(0);
+    server = await createWorkflowApiServer({ fixture, enableTestControls: true }).listen(0);
     baseUrl = server.url;
   });
 
@@ -52,6 +53,92 @@ describe("Workflow API", () => {
     });
   });
 
+  it("returns 404 for missing fixture-backed PRD state", async () => {
+    const response = await fetch(`${baseUrl}/state/PRD-MISSING`);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "PRD state not found" });
+  });
+
+  it("returns 409 when PRD intake is requested from a non-requested Jira status", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: false });
+    fixture.store.externalIssues.get("PRD-100")!.status = "drafting";
+    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "PRD Jira ticket is not ready for intake: PRD-100"
+      });
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("returns validation errors for unreadable or incomplete PRD intake Jira data", async () => {
+    const unreadableFixture = createPrdConfirmationFixture({ qualityPasses: false });
+    unreadableFixture.store.externalIssues.delete("PRD-100");
+    const unreadableServer = await createWorkflowApiServer({ fixture: unreadableFixture }).listen(0);
+
+    try {
+      const response = await postJson(`${unreadableServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "PRD Jira ticket is not readable: PRD-100"
+      });
+    } finally {
+      await unreadableServer.close();
+    }
+
+    const incompleteFixture = createPrdConfirmationFixture({ qualityPasses: false });
+    incompleteFixture.store.externalIssues.get("PRD-100")!.linkedSourceKeys = [];
+    const incompleteServer = await createWorkflowApiServer({ fixture: incompleteFixture }).listen(0);
+
+    try {
+      const response = await postJson(`${incompleteServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "PRD Jira ticket has no linked source requests: PRD-100"
+      });
+    } finally {
+      await incompleteServer.close();
+    }
+
+    const missingSourceFixture = createPrdConfirmationFixture({ qualityPasses: false });
+    missingSourceFixture.store.externalIssues.get("PRD-100")!.linkedSourceKeys = ["OPS-MISSING"];
+    const missingSourceServer = await createWorkflowApiServer({ fixture: missingSourceFixture }).listen(0);
+
+    try {
+      const response = await postJson(`${missingSourceServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "Linked source request is not readable: OPS-MISSING"
+      });
+    } finally {
+      await missingSourceServer.close();
+    }
+  });
+
+  it("does not expose fixture test controls unless explicitly enabled", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: false });
+    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/test-controls/quality`, { qualityPasses: true });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "Not found" });
+      expect(fixture.skills.qualityPasses).toBe(false);
+    } finally {
+      await localServer.close();
+    }
+  });
+
   it("persists fixture snapshots after state-changing API actions when a mirror is configured", async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const snapshots: Array<{ runs: number; jobs: number; documents: number }> = [];
@@ -76,6 +163,29 @@ describe("Workflow API", () => {
         { runs: 1, jobs: 1, documents: 1 },
         { runs: 1, jobs: 2, documents: 1 }
       ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("skips fixture snapshot persistence for idle ticks", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: false });
+    const snapshots: unknown[] = [];
+    const localServer = await createWorkflowApiServer({
+      fixture,
+      snapshotMirror: {
+        async persist(snapshot) {
+          snapshots.push(snapshot);
+        }
+      }
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/tick`, {});
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ progressed: false });
+      expect(snapshots).toEqual([]);
     } finally {
       await localServer.close();
     }
@@ -480,6 +590,31 @@ describe("Workflow API", () => {
           ]
         };
       },
+      async summarizeState(sourceKey) {
+        return {
+          prdJiraKey: sourceKey,
+          prdStatus: "approval_pending",
+          policy: prdConfirmationWorkflowPolicy,
+          jobs: [
+            {
+              id: "job_db_1",
+              type: "prd.generate_draft",
+              jira: "PRD-DB",
+              status: "succeeded"
+            }
+          ],
+          artifacts: [
+            {
+              type: "document_markdown",
+              location: "git",
+              url: "https://git.example.com/prd/PRD-DB.md"
+            }
+          ],
+          latestQualityResult: null,
+          latestRevisionSummary: null,
+          latestResult: null
+        };
+      },
       async summarizeWorkflowRunTree(runId) {
         return {
           run: { id: runId },
@@ -543,8 +678,10 @@ describe("Workflow API", () => {
 
     try {
       const run = await getJson(`${localServer.url}/workflow-runs/run_db_1`);
+      const state = await getJson(`${localServer.url}/state/PRD-DB`);
       const tree = await getJson(`${localServer.url}/workflow-runs/run_db_1/tree`);
       const current = await getJson(`${localServer.url}/documents/doc_db_1/current`);
+      const approvalGate = await getJson(`${localServer.url}/approval-gates/gate_doc_db_1`);
       const history = await getJson(`${localServer.url}/documents/doc_db_1/versions`);
 
       expect(run).toMatchObject({
@@ -554,15 +691,620 @@ describe("Workflow API", () => {
       expect(tree).toMatchObject({
         nodes: [{ id: "job_db_1" }]
       });
+      expect(state).toMatchObject({
+        prdJiraKey: "PRD-DB",
+        prdStatus: "approval_pending",
+        jobs: [{ id: "job_db_1" }],
+        artifacts: [{ type: "document_markdown" }]
+      });
       expect(current).toMatchObject({
         document: { id: "doc_db_1", title: "Read model PRD" },
         currentVersion: { id: "docv_db_1" },
-        approvalGate: { id: "gate_doc_db_1", status: "not_ready" }
+        approvalGate: { id: "gate_doc_db_1", status: "pending", externalStatus: "awaiting_approval" }
+      });
+      expect(approvalGate).toMatchObject({
+        approvalGate: { id: "gate_doc_db_1", status: "pending", externalStatus: "awaiting_approval" }
       });
       expect(history).toMatchObject({
         documentId: "doc_db_1",
         versions: [{ id: "docv_db_1" }]
       });
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("serves read-model GET views without a compatibility fixture", async () => {
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({ readModel }).listen(0);
+
+    try {
+      await expect(getJson(`${localServer.url}/state/PRD-DB`)).resolves.toMatchObject({
+        prdJiraKey: "PRD-DB"
+      });
+      await expect(getJson(`${localServer.url}/workflow-runs/run_db_1/tree`)).resolves.toMatchObject({
+        run: { id: "run_db_1" }
+      });
+      await expect(getJson(`${localServer.url}/documents/doc_db_1/current`)).resolves.toMatchObject({
+        document: { id: "doc_db_1" },
+        approvalGate: { id: "gate_doc_db_1" }
+      });
+      await expect(getJson(`${localServer.url}/approval-gates/gate_doc_db_1`)).resolves.toMatchObject({
+        approvalGate: { id: "gate_doc_db_1" }
+      });
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("records document feedback without a compatibility fixture when a read model and command writer are configured", async () => {
+    const feedbackInputs: RecordFeedbackCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      feedbackRevisionCommand: {
+        async recordFeedback(input) {
+          feedbackInputs.push(input);
+        },
+        async recordRevisionJob() {
+          throw new Error("revision command should not be called");
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/documents/doc_db_1/feedback`, {
+        source: "app",
+        author: "planner@example.com",
+        body: " Clarify rollout owner. "
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.feedback).toMatchObject({
+        documentId: "doc_db_1",
+        workItemId: "db_1",
+        source: "app",
+        author: "planner@example.com",
+        body: "Clarify rollout owner.",
+        createdAt: "2026-05-20T00:00:00.000Z"
+      });
+      expect(payload.feedback.id).toMatch(/^fb_/);
+      expect(feedbackInputs).toEqual([{ feedback: payload.feedback }]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("records document revision jobs without a compatibility fixture when pending feedback is in the read model", async () => {
+    const revisionInputs: RecordRevisionJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "needs_revision",
+            currentVersionId: "docv_db_1",
+            currentMarkdownArtifactId: "art_db_1",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: {
+            id: "docv_db_1",
+            documentId,
+            version: 1,
+            producerJobId: "job_generate_1",
+            createdAt: "2026-05-20T00:00:00.000Z"
+          },
+          latestQualityResult: null,
+          currentArtifacts: [
+            {
+              id: "art_db_1",
+              documentId,
+              documentVersionId: "docv_db_1",
+              producerJobId: "job_generate_1",
+              type: "document_markdown",
+              location: "git",
+              uri: "https://git.example.com/prd/PRD-DB.md",
+              metadata: {},
+              createdAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          pendingFeedback: [
+            {
+              id: "fb_db_1",
+              workItemId: "db_1",
+              documentId,
+              source: "app",
+              author: "planner@example.com",
+              body: "Clarify rollout owner.",
+              createdAt: "2026-05-20T00:00:00.000Z"
+            }
+          ]
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      feedbackRevisionCommand: {
+        async recordFeedback() {
+          throw new Error("feedback command should not be called");
+        },
+        async recordRevisionJob(input) {
+          revisionInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/documents/doc_db_1/revisions`, {
+        requestedBy: "planner@example.com",
+        feedbackItemIds: ["fb_db_1"]
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(202);
+      expect(payload).toMatchObject({
+        status: "accepted",
+        revisionJob: {
+          jobType: "prd.apply_feedback_revision",
+          status: "pending"
+        },
+        feedbackItemIds: ["fb_db_1"]
+      });
+      expect(payload.revisionJob.id).toMatch(/^job_/);
+      expect(revisionInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          job: {
+            id: payload.revisionJob.id,
+            workItemId: "db_1",
+            jobType: "prd.apply_feedback_revision",
+            primaryJiraKey: "PRD-DB",
+            status: "pending",
+            input: {
+              requestedBy: "planner@example.com",
+              documentType: "prd",
+              feedback: "- [app by planner@example.com] Clarify rollout owner.",
+              feedbackItemIds: ["fb_db_1"],
+              sourceDocumentId: "doc_db_1",
+              currentDocumentVersionId: "docv_db_1",
+              currentDocumentVersionProducerJobId: "job_generate_1",
+              currentDocumentArtifactUrl: "https://git.example.com/prd/PRD-DB.md"
+            }
+          },
+          feedbackItems: [
+            {
+              id: "fb_db_1",
+              revisionJobId: payload.revisionJob.id
+            }
+          ],
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("imports wiki feedback without a compatibility fixture when a read model and collector are configured", async () => {
+    const feedbackInputs: RecordFeedbackCommandInput[] = [];
+    const wikiFeedbackCollector: WikiFeedbackCollector = {
+      async collectPageFeedback(input) {
+        expect(input).toMatchObject({
+          pageUrl: "https://wiki.example.com/pages/PRD-DB",
+          limit: 10
+        });
+
+        return {
+          pageId: "999",
+          comments: [
+            {
+              externalId: "confluence-comment:c-1",
+              author: "reviewer@example.com",
+              body: "Add launch KPI.",
+              createdAt: "2026-05-20T01:00:00.000Z",
+              url: "https://wiki.example.com/comment/c-1",
+              metadata: {
+                inline: true
+              }
+            }
+          ]
+        };
+      }
+    };
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            currentWikiArtifactId: "art_wiki_1",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [
+            {
+              id: "art_wiki_1",
+              documentId,
+              producerJobId: "job_generate_1",
+              type: "wiki_page",
+              location: "wiki",
+              uri: "https://wiki.example.com/pages/PRD-DB",
+              metadata: {},
+              createdAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      wikiFeedbackCollector,
+      feedbackRevisionCommand: {
+        async recordFeedback(input) {
+          feedbackInputs.push(input);
+        },
+        async recordRevisionJob() {
+          throw new Error("revision command should not be called");
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/documents/doc_db_1/wiki-feedback`, {
+        limit: 10
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload).toMatchObject({
+        pageId: "999",
+        importedCount: 1,
+        duplicateCount: 0,
+        feedbackItems: [
+          {
+            documentId: "doc_db_1",
+            workItemId: "db_1",
+            source: "wiki",
+            author: "reviewer@example.com",
+            body: "Add launch KPI.",
+            externalId: "confluence-comment:c-1",
+            externalUrl: "https://wiki.example.com/comment/c-1",
+            createdAt: "2026-05-20T01:00:00.000Z",
+            metadata: {
+              inline: true,
+              confluencePageId: "999"
+            }
+          }
+        ]
+      });
+      expect(payload.feedbackItems[0].id).toMatch(/^fb_/);
+      expect(feedbackInputs).toEqual([{ feedback: payload.feedbackItems[0] }]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("approves a read-model approval gate without a compatibility fixture and records downstream routing", async () => {
+    const documentInputs: RecordDocumentStateCommandInput[] = [];
+    const jobInputs: RecordWorkflowJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState(input) {
+          documentInputs.push(input);
+        },
+        async recordWorkflowJob(input) {
+          jobInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/approval-gates/gate_doc_db_1/approve`, {
+        requestedBy: "planner@example.com",
+        reason: "Looks good"
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toMatchObject({
+        approvalGate: {
+          id: "gate_doc_db_1",
+          status: "approved",
+          externalStatus: "approved",
+          lastAction: {
+            type: "jira_transition",
+            sourceOfTruth: "jira_status",
+            actor: "planner@example.com",
+            reason: "Looks good",
+            fromExternalStatus: "awaiting_approval",
+            toExternalStatus: "approved"
+          }
+        },
+        routingJob: {
+          jobType: "prd.route_downstream",
+          status: "pending"
+        },
+        routingStatus: "accepted"
+      });
+      expect(payload.routingJob.id).toMatch(/^job_/);
+      expect(documentInputs).toMatchObject([
+        {
+          document: {
+            id: "doc_db_1",
+            status: "approved",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+      expect(jobInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          job: {
+            id: payload.routingJob.id,
+            workItemId: "db_1",
+            jobType: "prd.route_downstream",
+            primaryJiraKey: "PRD-DB",
+            status: "pending",
+            input: {
+              requestedBy: "planner@example.com",
+              approvedAt: "2026-05-20T00:00:00.000Z",
+              sourceDocumentId: "doc_db_1"
+            }
+          },
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("intakes PRD Jira tickets without a compatibility fixture when a Jira reader and command writer are configured", async () => {
+    const commandInputs: RecordPrdIntakeInput[] = [];
+    const jiraIssueReader: JiraIssueReader = {
+      async loadPrdWithSources(prdJiraKey) {
+        expect(prdJiraKey).toBe("PRD-DB");
+
+        return {
+          prd: {
+            key: "PRD-DB",
+            issueType: "prd",
+            status: "prd_requested",
+            summary: "Read model PRD",
+            linkedSourceKeys: ["OPS-1"]
+          },
+          sources: [
+            {
+              key: "OPS-1",
+              issueType: "operational_request",
+              status: "open",
+              summary: "Source request"
+            }
+          ]
+        };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      jiraIssueReader,
+      prdIntakeCommand: {
+        async recordIntake(input) {
+          commandInputs.push(input);
+
+          return {
+            runId: input.runId,
+            documentId: `doc_${input.workItemId}`,
+            jobId: input.jobId
+          };
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/prd/intake`, {
+        prdJiraKey: "PRD-DB"
+      });
+
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({ status: "accepted" });
+      expect(commandInputs).toHaveLength(1);
+      expect(commandInputs[0]).toMatchObject({
+        prdJiraKey: "PRD-DB",
+        title: "Read model PRD",
+        now: new Date("2026-05-20T00:00:00.000Z")
+      });
+      expect(commandInputs[0].runId).toMatch(/^run_/);
+      expect(commandInputs[0].workItemId).toMatch(/^wi_/);
+      expect(commandInputs[0].jobId).toMatch(/^job_/);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("fails compatibility transition routes closed when no fixture is configured", async () => {
+    const localServer = await createWorkflowApiServer({}).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      expect(response.status).toBe(501);
+      expect(await response.json()).toEqual({
+        error: "Compatibility fixture workflow is not configured"
+      });
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("does not fall back to fixture state when the configured read model has no PRD state", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: true });
+    await fixture.workflow.intakePrdTicket("PRD-100");
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun() {
+        return undefined;
+      },
+      async summarizeState() {
+        return undefined;
+      },
+      async summarizeWorkflowRunTree() {
+        return undefined;
+      },
+      async summarizeDocumentCurrent() {
+        return undefined;
+      },
+      async summarizeDocumentHistory() {
+        return undefined;
+      }
+    };
+    const localServer = await createWorkflowApiServer({ fixture, readModel }).listen(0);
+
+    try {
+      const response = await fetch(`${localServer.url}/state/PRD-100`);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "PRD state not found" });
     } finally {
       await localServer.close();
     }
@@ -600,6 +1342,34 @@ describe("Workflow API", () => {
       qualityFailureAction: "human_clarification",
       autoRevisionScheduled: false
     });
+  });
+
+  it("advances compatibility workflows through the internal tick loop when configured", async () => {
+    const fixture = createPrdConfirmationFixture({ qualityPasses: false });
+    const localServer = await createWorkflowApiServer({
+      fixture,
+      internalTickIntervalMs: 5
+    }).listen(0);
+
+    try {
+      await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
+
+      const state = await waitFor(
+        () => getJson(`${localServer.url}/state/PRD-100`),
+        (candidate) => candidate.prdStatus === "needs_revision"
+      );
+
+      expect(state.jobs.map((job: { type: string }) => job.type)).toEqual([
+        "prd.generate_draft",
+        "prd.evaluate_quality"
+      ]);
+      expect(state.latestQualityResult).toMatchObject({
+        evaluatorJobId: "job_2",
+        status: "needs_revision"
+      });
+    } finally {
+      await localServer.close();
+    }
   });
 
   it("accepts explicit feedback revision and reaches approval-ready state", async () => {
@@ -1334,15 +2104,36 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<Res
   });
 }
 
-async function getJson(url: string): Promise<Record<string, unknown>> {
+async function getJson<T extends Record<string, any> = Record<string, any>>(url: string): Promise<T> {
   const response = await fetch(url);
 
   expect(response.status).toBe(200);
-  return response.json() as Promise<Record<string, unknown>>;
+  return response.json() as Promise<T>;
 }
 
 async function tickMany(baseUrl: string, count: number): Promise<void> {
   for (let i = 0; i < count; i += 1) {
     await postJson(`${baseUrl}/tick`, {});
   }
+}
+
+async function waitFor<T>(
+  load: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  timeoutMs = 750
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let lastValue: T | undefined;
+
+  while (Date.now() <= deadline) {
+    lastValue = await load();
+
+    if (predicate(lastValue)) {
+      return lastValue;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Timed out waiting for condition. Last value: ${JSON.stringify(lastValue)}`);
 }

@@ -91,4 +91,79 @@ describe("createCliEngineConfig", () => {
       )
     ).toThrow(/must stay inside runner workspace/);
   });
+
+  it("resolves Windows workspace paths without depending on the host OS", () => {
+    const config = createCliEngineConfig(
+      {
+        RUNNER_ENGINE: "codex",
+        CODEX_CLI_PATH: "codex"
+      },
+      {
+        workspaceDir: "C:\\runner\\job_1",
+        job: {
+          input: {
+            runnerJobTemplate: {
+              runner: {
+                workdir: "implementation"
+              }
+            }
+          }
+        }
+      }
+    );
+
+    expect(config.cwd).toBe("C:\\runner\\job_1\\implementation");
+    expect(config.args).toEqual(
+      expect.arrayContaining(["--workdir", "C:\\runner\\job_1\\implementation"])
+    );
+  });
+
+  it("rejects Windows absolute workdirs outside the prepared runner workspace on any host OS", () => {
+    expect(() =>
+      createCliEngineConfig(
+        {
+          RUNNER_ENGINE: "codex",
+          CODEX_CLI_PATH: "codex"
+        },
+        {
+          workspaceDir: "C:\\runner\\job_1",
+          job: {
+            input: {
+              runnerJobTemplate: {
+                runner: {
+                  workdir: "D:\\runner\\job_2"
+                }
+              }
+            }
+          }
+        }
+      )
+    ).toThrow(/must stay inside runner workspace/);
+  });
+
+  it("resolves Windows UNC workspace paths with slash variants on any host OS", () => {
+    const config = createCliEngineConfig(
+      {
+        RUNNER_ENGINE: "codex",
+        CODEX_CLI_PATH: "codex"
+      },
+      {
+        workspaceDir: "//runner-host/share/job_1",
+        job: {
+          input: {
+            runnerJobTemplate: {
+              runner: {
+                workdir: "implementation"
+              }
+            }
+          }
+        }
+      }
+    );
+
+    expect(config.cwd).toBe("\\\\runner-host\\share\\job_1\\implementation");
+    expect(config.args).toEqual(
+      expect.arrayContaining(["--workdir", "\\\\runner-host\\share\\job_1\\implementation"])
+    );
+  });
 });

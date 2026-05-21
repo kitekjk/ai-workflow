@@ -23,7 +23,7 @@ import type {
 } from "./repository";
 
 export interface MysqlQueryExecutor {
-  execute<T = unknown>(sql: string, params?: readonly unknown[]): Promise<[T, unknown]>;
+  execute<T = unknown>(sql: string, params?: unknown[]): Promise<[T, unknown]>;
 }
 
 export interface MysqlConnection extends MysqlQueryExecutor {
@@ -35,6 +35,7 @@ export interface MysqlConnection extends MysqlQueryExecutor {
 
 export interface MysqlDatabase extends MysqlQueryExecutor {
   getConnection(): Promise<MysqlConnection>;
+  end?(): Promise<void>;
 }
 
 export interface MysqlWorkflowRepositoryOptions {

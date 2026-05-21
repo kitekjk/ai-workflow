@@ -21,28 +21,49 @@ Important readiness note:
 - `memory` is the default fixture-backed local mode.
 - `mysql` wires the runner/scheduler APIs and document artifact APIs to
   `MysqlWorkflowRepository` and `MysqlDocumentRepository`.
+- `WORKFLOW_COMPATIBILITY_FIXTURE=disabled` is supported only with
+  `WORKFLOW_RUNTIME_STORE=mysql`. In that mode, runner APIs plus generic
+  workflow/document/approval GET views run without the legacy PRD fixture.
+  Repository-backed PRD intake, document feedback, wiki-feedback import,
+  explicit revision, and approval approve/reject/refresh POST routes also run
+  without the fixture when the Jira reader, read model, and command writers are
+  configured. Compatibility-engine endpoints return `501` until the
+  repository-backed transition engine replaces them.
 - The PRD/document workflow intake slice still uses the compatibility fixture
-  for transitions, but state-changing API actions mirror the generic workflow
-  snapshot into MySQL read-model tables.
+  for transitions. While that fixture is enabled, the API process advances it
+  with an internal workflow tick loop and state-changing actions mirror the
+  generic workflow snapshot into MySQL read-model tables.
+- `WORKFLOW_INTERNAL_TICK_MS` controls the compatibility tick loop. It defaults
+  to `1000` ms when the fixture is enabled; set it to `0` or `disabled` to use
+  only the manual development/test `POST /tick` trigger.
 - On API startup in MySQL mode, the compatibility fixture is hydrated from the
   MySQL read-model snapshot before HTTP routes are served.
-- In MySQL mode, generic workflow/document GET views read workflow runs, jobs,
-  documents, versions, quality results, artifacts, and feedback directly from
-  the MySQL read model.
-- PRD intake is also recorded through a MySQL write command for the initial
-  workflow run, PRD document, and draft-generation job. Feedback storage and
-  explicit revision requests are recorded through MySQL write commands for
-  `feedback_item` and revision `workflow_job` rows. Approval state changes and
-  downstream routing/fan-out/implementation scheduling are recorded through
-  MySQL write commands for affected `document` and `workflow_job` rows.
-  Engine-created document state changes and follow-up jobs are recorded through
-  one command transaction during `/tick`, including an explicit engine
-  transition type plus work item and external issue before/after state metadata
-  and affected work item/document ids for later repository-backed engine
-  migration. Runner result processing records a MySQL run projection for
-  `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`,
-  and current document pointers while the remaining transition logic still runs
-  through the compatibility fixture.
+- In MySQL mode, the PRD state view plus generic workflow/document/approval
+  gate GET views read workflow runs, jobs, documents, versions, quality
+  results, artifacts, feedback, and approval gate status directly from the
+  MySQL read model. Missing PRD state returns `404` instead of falling back to
+  the compatibility fixture.
+- PRD intake is guarded by Jira status and only starts from `prd_requested`
+  or the Jira display status `PRD 요청`; unreadable PRD/source tickets return
+  `404`, missing linked source requests return `400`, and other PRD statuses
+  return `409`.
+- PRD intake, feedback/revision requests, approval/routing/fan-out job
+  scheduling, compatibility engine transition projection, and runner result
+  projection now produce `WorkflowMutation` objects that are applied by
+  `MysqlWorkflowMutationApplier` in one transaction. This shared path owns the
+  MySQL upsert/event insert order for workflow runs, documents, jobs, job
+  results, document versions, artifacts, quality results, feedback, and current
+  document pointers while the remaining transition logic still runs through the
+  compatibility fixture.
+- With the compatibility fixture disabled, document-scoped feedback/revision
+  actions now build feedback items and revision jobs directly from the MySQL
+  read model and record them through the shared command writer. Approval
+  approve/reject actions update document state through the command writer, and
+  PRD approval schedules the downstream routing job without fixture state.
+- With real integration config, PRD intake loads the PRD and linked source
+  requests through the Jira reader, validates the same requested-status/source
+  requirements as the fixture workflow, and records the initial run/document/job
+  through the shared command writer.
 
 ## Target Topology
 
@@ -255,10 +276,16 @@ curl -X POST http://127.0.0.1:3000/prd/intake \
   -H 'content-type: application/json' \
   -d '{"prdJiraKey":"PRD-100"}'
 
-curl -X POST http://127.0.0.1:3000/tick
-
 curl http://127.0.0.1:3000/state/PRD-100
 ```
+
+The fixture-backed API normally advances through its internal tick loop. Use
+`POST /tick` only for development/test harnesses or when
+`WORKFLOW_INTERNAL_TICK_MS=0`.
+
+Fixture-only test controls such as `POST /test-controls/quality` are disabled
+by default on the API entrypoint and should only be enabled in automated tests
+or explicit local harnesses.
 
 Runner/API checks:
 
@@ -308,12 +335,22 @@ Operators should monitor these workflow events:
 | `job.retry_scheduled` | Retryable failure was rescheduled | `severity=warning`, `metric=workflow_job_retries_total` |
 | `job.failed` | Final or non-retryable job failure | `severity=critical`, `alert=true`, `retryExhausted=true` |
 | `job.lease_expired` | A claimed job exceeded its lease | `severity=warning`, `alert=true`, `metric=workflow_job_lease_expirations_total` |
+| `workflow.prd_intake` | PRD intake workflow/document/draft job was recorded | run id, document id, draft job id, PRD Jira key, title |
+| `workflow.feedback_recorded` | Document feedback was recorded | feedback id, document id, work item id, source, author, linked revision job id |
+| `workflow.revision_job_recorded` | Feedback revision job was recorded | job id, job type, source key, status, feedback item ids |
+| `workflow.document_state` | Direct document state command was recorded | document id, document type, source key, status |
+| `workflow.job_recorded` | Direct workflow job command was recorded | job id, job type, source key, status |
+| `workflow.engine_transition` | Compatibility engine applied a workflow transition | `transitionType`, processed result summary, affected/created work item ids, affected document ids, before/after work item and external issue status |
+| `workflow.result_projection` | Runner result projection was recorded in the MySQL read model | projected job, result, document, version, artifact, and quality result ids |
 
 Use:
 
 ```bash
 curl http://127.0.0.1:3000/workflow-runs/<runId>/events?limit=50
 ```
+
+Event and runner-log cursors share the same cursor contract. Invalid cursors
+return `400` with `Invalid event cursor`.
 
 ## Credential Policy
 
@@ -346,6 +383,8 @@ Before treating the system as production-backed, complete these gates:
 - Replace the remaining compatibility fixture transition layer with repository
   backed workflow commands once the generic engine owns PRD/document state
   directly.
+- Keep any new workflow write paths on the shared workflow mutation applier so
+  use cases do not reintroduce duplicate MySQL upsert SQL.
 - Decide whether the scheduler remains in-process with the API or moves to a
   separate worker process.
 - Add authentication and authorization for Workflow App and runner APIs.

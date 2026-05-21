@@ -69,6 +69,10 @@ export class PrdConfirmationWorkflow {
       throw new Error(`PRD Jira ticket is not readable: ${prdJiraKey}`);
     }
 
+    if (!isPrdIntakeRequestedStatus(issue.status)) {
+      throw new Error(`PRD Jira ticket is not ready for intake: ${prdJiraKey}`);
+    }
+
     if (!issue.linkedSourceKeys?.length) {
       throw new Error(`PRD Jira ticket has no linked source requests: ${prdJiraKey}`);
     }
@@ -419,6 +423,10 @@ export class PrdConfirmationWorkflow {
 
 function documentIdForWorkItem(workItem: WorkItem): string {
   return `doc_${workItem.id}`;
+}
+
+function isPrdIntakeRequestedStatus(status: string): boolean {
+  return status === "prd_requested" || status === "PRD 요청";
 }
 
 function implementationBranchNameFor(sourceKey: string): string {

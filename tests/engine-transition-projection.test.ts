@@ -19,6 +19,7 @@ describe("engine transition projection", () => {
       transitionType: "prd_draft_generated",
       affectedWorkItemIds: ["wi_1"],
       affectedDocumentIds: ["doc_wi_1"],
+      createdWorkItemIds: [],
       workItemState: {
         workItemId: "wi_1",
         before: "draft_requested",
@@ -28,6 +29,12 @@ describe("engine transition projection", () => {
         issueKey: "PRD-100",
         before: "drafting",
         after: "drafting"
+      },
+      processedResult: {
+        jobId: "job_1",
+        jobType: "prd.generate_draft",
+        primaryJiraKey: "PRD-100",
+        status: "succeeded"
       },
       documents: [
         {

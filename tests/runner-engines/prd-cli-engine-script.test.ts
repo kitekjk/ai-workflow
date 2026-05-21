@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -130,7 +130,7 @@ process.stdin.on("end", () => {
     expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual(
       expect.arrayContaining(["--sandbox", "workspace-write"])
     );
-    expect(readFileSync(cwdFile, "utf8")).toBe(dir.replace(/\\/g, "/"));
+    expect(readFileSync(cwdFile, "utf8")).toBe(portableRealPath(dir));
   });
 
   it("asks the model to return Korean draft and quality output when outputLanguage is ko", () => {
@@ -191,3 +191,7 @@ process.stdin.on("end", () => {
     expect(prompt).toContain("Output JSON Schema");
   });
 });
+
+function portableRealPath(path: string): string {
+  return realpathSync(path).replace(/\\/g, "/");
+}

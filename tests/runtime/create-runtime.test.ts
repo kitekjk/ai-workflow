@@ -165,6 +165,7 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.runtimeStore).toBe("memory");
       expect(runtime.scheduler).toBeUndefined();
       expect(runtime.documentRepository).toBeUndefined();
+      expect(runtime.internalTickIntervalMs).toBe(1_000);
     } finally {
       await runtime.close();
     }
@@ -189,6 +190,72 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.feedbackRevisionCommand).toBeDefined();
       expect(runtime.workflowResultCommand).toBeDefined();
       expect(runtime.workflowTransitionCommand).toBeDefined();
+      expect(runtime.internalTickIntervalMs).toBe(1_000);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("allows the compatibility internal tick interval to be disabled or tuned", async () => {
+    const disabledRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_INTERNAL_TICK_MS: "0"
+    });
+    const tunedRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_INTERNAL_TICK_MS: "250"
+    });
+
+    try {
+      expect(disabledRuntime.internalTickIntervalMs).toBeUndefined();
+      expect(tunedRuntime.internalTickIntervalMs).toBe(250);
+    } finally {
+      await disabledRuntime.close();
+      await tunedRuntime.close();
+    }
+  });
+
+  it("can start the MySQL API runtime without the compatibility fixture", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled"
+    });
+
+    try {
+      expect(runtime.runtimeStore).toBe("mysql");
+      expect(runtime.fixture).toBeUndefined();
+      expect(runtime.jiraIssueReader).toBeUndefined();
+      expect(runtime.wikiFeedbackCollector).toBeUndefined();
+      expect(runtime.snapshotMirror).toBeUndefined();
+      expect(runtime.snapshotLoader).toBeUndefined();
+      expect(runtime.restorePrdSnapshot).toBeUndefined();
+      expect(runtime.scheduler).toBeDefined();
+      expect(runtime.documentRepository).toBeDefined();
+      expect(runtime.readModel).toBeDefined();
+      expect(runtime.prdIntakeCommand).toBeDefined();
+      expect(runtime.feedbackRevisionCommand).toBeDefined();
+      expect(runtime.workflowResultCommand).toBeDefined();
+      expect(runtime.workflowTransitionCommand).toBeDefined();
+      expect(runtime.internalTickIntervalMs).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("wires a Jira issue reader for real MySQL runtime without the compatibility fixture", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      ...realEnv(),
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled"
+    });
+
+    try {
+      expect(runtime.runtimeStore).toBe("mysql");
+      expect(runtime.fixture).toBeUndefined();
+      expect(runtime.jiraIssueReader).toBeDefined();
+      expect(runtime.prdIntakeCommand).toBeDefined();
+      expect(runtime.internalTickIntervalMs).toBeUndefined();
     } finally {
       await runtime.close();
     }

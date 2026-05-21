@@ -1,10 +1,11 @@
 import type { Document } from "../document-core/domain";
 import { createGenericPrdSnapshot } from "../prd-confirmation/generic-adapter";
-import type { AgentJob, PrdConfirmationStore } from "../prd-confirmation/domain";
+import type { AgentJob, AgentJobResult, PrdConfirmationStore } from "../prd-confirmation/domain";
 import type { WorkflowEngineStepResult } from "../prd-confirmation/workflow-engine";
 import type {
   RecordEngineTransitionCommandInput,
-  RecordWorkflowJobCommandInput
+  RecordWorkflowJobCommandInput,
+  WorkflowEngineProcessedResultSummary
 } from "./workflow-transition-command";
 
 export function createEngineTransitionCommandInput(
@@ -24,8 +25,10 @@ export function createEngineTransitionCommandInput(
     transitionType: engineStep.transitionType,
     affectedWorkItemIds: engineStep.affectedWorkItemIds,
     affectedDocumentIds: engineStep.affectedDocumentIds,
+    createdWorkItemIds: engineStep.createdWorkItemIds,
     workItemState: engineStep.workItemState,
     externalIssueStatus: engineStep.externalIssueStatus,
+    processedResult: processedResultSummary(engineStep.processedResult),
     documents,
     jobs,
     now
@@ -76,4 +79,23 @@ function cloneAgentJob(job: AgentJob): AgentJob {
     ...job,
     input: { ...job.input }
   };
+}
+
+function processedResultSummary(
+  result: AgentJobResult | undefined
+): WorkflowEngineProcessedResultSummary | undefined {
+  if (!result) {
+    return undefined;
+  }
+
+  return {
+    jobId: result.jobId,
+    jobType: result.jobType,
+    primaryJiraKey: result.primaryJiraKey,
+    status: stringOrUndefined(result.output.status)
+  };
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }

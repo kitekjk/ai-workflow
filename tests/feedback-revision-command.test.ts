@@ -6,7 +6,7 @@ import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-
 describe("MysqlFeedbackRevisionCommand", () => {
   it("records standalone document feedback as a direct MySQL command", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlFeedbackRevisionCommand(database);
+    const command = new MysqlFeedbackRevisionCommand(database, { idGenerator: fixedIds("event_1") });
 
     await command.recordFeedback({
       feedback: feedbackItem({
@@ -16,7 +16,8 @@ describe("MysqlFeedbackRevisionCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
-      expect.stringContaining("INSERT INTO feedback_item")
+      expect.stringContaining("INSERT INTO feedback_item"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toEqual(
       expect.arrayContaining([
@@ -29,11 +30,29 @@ describe("MysqlFeedbackRevisionCommand", () => {
         null
       ])
     );
+    expect(database.statements[1].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        null,
+        "workflow.feedback_recorded",
+        "Feedback recorded: fb_1",
+        "2026-05-20T00:00:00.000Z",
+        "doc_wi_1"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[1].params[4]))).toEqual({
+      feedbackId: "fb_1",
+      documentId: "doc_wi_1",
+      workItemId: "wi_1",
+      source: "app",
+      author: "planner@example.com",
+      revisionJobId: null
+    });
   });
 
   it("records revision jobs before feedback rows that point at the job", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlFeedbackRevisionCommand(database);
+    const command = new MysqlFeedbackRevisionCommand(database, { idGenerator: fixedIds("event_1", "event_2") });
     const job: AgentJob = {
       id: "job_2",
       workItemId: "wi_1",
@@ -60,7 +79,9 @@ describe("MysqlFeedbackRevisionCommand", () => {
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
       expect.stringContaining("INSERT INTO workflow_job"),
-      expect.stringContaining("INSERT INTO feedback_item")
+      expect.stringContaining("INSERT INTO feedback_item"),
+      expect.stringContaining("INSERT INTO workflow_event"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toEqual(
       expect.arrayContaining([
@@ -76,6 +97,32 @@ describe("MysqlFeedbackRevisionCommand", () => {
       ])
     );
     expect(database.statements[1].params).toContain("job_2");
+    expect(database.statements[2].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "job_2",
+        "workflow.feedback_recorded",
+        "Feedback recorded: fb_1",
+        "2026-05-20T00:00:00.000Z",
+        "doc_wi_1"
+      ])
+    );
+    expect(database.statements[3].params).toEqual(
+      expect.arrayContaining([
+        "event_2",
+        "run_1",
+        "job_2",
+        "workflow.revision_job_recorded",
+        "Revision job recorded: job_2"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[3].params[5]))).toEqual({
+      jobId: "job_2",
+      jobType: "document.revise",
+      status: "pending",
+      sourceKey: "PRD-100-HLD-1",
+      feedbackItemIds: ["fb_1"]
+    });
   });
 
   it("rolls back and releases the connection when revision recording fails", async () => {
@@ -156,4 +203,10 @@ class FakeMysqlDatabase implements MysqlDatabase, MysqlConnection {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, " ").trim();
+}
+
+function fixedIds(...ids: string[]): () => string {
+  let index = 0;
+
+  return () => ids[index++] ?? ids.at(-1) ?? "generated_id";
 }

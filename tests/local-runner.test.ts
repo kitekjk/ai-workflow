@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -349,6 +349,70 @@ describe("local runner loop", () => {
           relativePath: "out/spec.md",
           sizeBytes: 17
         }
+      }
+    ]);
+  });
+
+  it("accepts generated absolute file paths from a canonical workspace directory", async () => {
+    const workspace = await createCanonicalWorkspaceFixture();
+    workspaceRoots.push(...workspace.cleanupRoots);
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.generate",
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["spec.generate"],
+      requiredEngine: "codex",
+      now
+    });
+    const engine: LocalRunnerEngine = {
+      async run({ workspaceDir }) {
+        expect(workspaceDir).toBeTruthy();
+        const canonicalWorkspaceDir = await realpath(workspaceDir ?? "");
+        await mkdir(join(canonicalWorkspaceDir, "out"), { recursive: true });
+        const absoluteGeneratedPath = join(canonicalWorkspaceDir, "out", "spec.md");
+        await writeFile(absoluteGeneratedPath, "# Generated Spec\n");
+
+        return {
+          output: {
+            status: "generated"
+          },
+          generatedFiles: [
+            {
+              path: absoluteGeneratedPath
+            }
+          ]
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["spec.generate"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      workspace: {
+        rootDir: workspace.rootDir
+      },
+      now
+    });
+
+    expect(result.status).toBe("completed");
+    expect(documentRepository.artifacts).toMatchObject([
+      {
+        producerJobId: "job_1",
+        uri: "local-workspace:out/spec.md"
       }
     ]);
   });
@@ -734,6 +798,26 @@ fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
     expect(JSON.parse(await readFile(argsFile, "utf8"))).toEqual(
       expect.arrayContaining(["--sandbox", "workspace-write"])
     );
-    expect(await readFile(cwdFile, "utf8")).toBe(workspaceRoot.replace(/\\/g, "/"));
+    expect(await readFile(cwdFile, "utf8")).toBe((await realpath(workspaceRoot)).replace(/\\/g, "/"));
   });
 });
+
+async function createCanonicalWorkspaceFixture(): Promise<{ rootDir: string; cleanupRoots: string[] }> {
+  const actualWorkspaceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-runner-real-"));
+
+  if (process.platform === "win32") {
+    return {
+      rootDir: actualWorkspaceRoot,
+      cleanupRoots: [actualWorkspaceRoot]
+    };
+  }
+
+  const linkedWorkspaceParent = await mkdtemp(join(tmpdir(), "ai-workflow-runner-link-parent-"));
+  const linkedWorkspaceRoot = join(linkedWorkspaceParent, "workspace");
+  await symlink(actualWorkspaceRoot, linkedWorkspaceRoot, "dir");
+
+  return {
+    rootDir: linkedWorkspaceRoot,
+    cleanupRoots: [linkedWorkspaceParent, actualWorkspaceRoot]
+  };
+}

@@ -7,7 +7,7 @@ import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-
 describe("MysqlWorkflowResultCommand", () => {
   it("records runner result projections in read-model dependency order", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlWorkflowResultCommand(database);
+    const command = new MysqlWorkflowResultCommand(database, { idGenerator: fixedIds("event_1") });
 
     await command.recordResultProjection({
       jobId: "job_1",
@@ -21,19 +21,20 @@ describe("MysqlWorkflowResultCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO workflow_job"),
       expect.stringContaining("INSERT INTO workflow_job"),
       expect.stringContaining("INSERT INTO workflow_job_result"),
-      expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO document_version"),
       expect.stringContaining("INSERT INTO artifact"),
       expect.stringContaining("UPDATE document SET status"),
-      expect.stringContaining("INSERT INTO quality_gate_result")
+      expect.stringContaining("INSERT INTO quality_gate_result"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
-    expect(database.statements[0].params).toEqual(
+    expect(database.statements[1].params).toEqual(
       expect.arrayContaining(["job_1", "run_1", "prd.generate_draft", "succeeded"])
     );
-    expect(database.statements[2].params).toEqual(
+    expect(database.statements[3].params).toEqual(
       expect.arrayContaining(["result_1", "job_1", 1, "succeeded", JSON.stringify({ status: "succeeded" })])
     );
     expect(database.statements[4].params).toEqual(
@@ -42,6 +43,24 @@ describe("MysqlWorkflowResultCommand", () => {
     expect(database.statements[7].params).toEqual(
       expect.arrayContaining(["qgr_1", "doc_wi_1", "docv_1", "job_2", "passed"])
     );
+    expect(database.statements[8].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_1",
+        "job_1",
+        "workflow.result_projection",
+        "Workflow result projection recorded for job job_1"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[8].params[5]))).toEqual({
+      jobId: "job_1",
+      jobIds: ["job_1", "job_2"],
+      jobResultIds: ["result_1"],
+      documentIds: ["doc_wi_1"],
+      documentVersionIds: ["docv_1"],
+      artifactIds: ["art_1"],
+      qualityResultIds: ["qgr_1"]
+    });
   });
 
   it("rolls back and releases the connection when projection recording fails", async () => {
@@ -193,4 +212,10 @@ class FakeMysqlDatabase implements MysqlDatabase, MysqlConnection {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, " ").trim();
+}
+
+function fixedIds(...ids: string[]): () => string {
+  let index = 0;
+
+  return () => ids[index++] ?? ids.at(-1) ?? "generated_id";
 }

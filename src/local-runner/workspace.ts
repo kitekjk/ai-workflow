@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ArtifactType } from "../document-core/domain";
 import type { WorkflowJob } from "../workflow-core/domain";
@@ -27,21 +27,22 @@ export async function prepareJobWorkspace(input: {
   job: WorkflowJob;
   workspace: LocalRunnerWorkspaceOptions;
 }): Promise<PreparedJobWorkspace> {
-  const rootDir = resolve(input.workspace.rootDir);
+  const requestedRootDir = resolve(input.workspace.rootDir);
+  await mkdir(requestedRootDir, { recursive: true });
+  const rootDir = await realpath(requestedRootDir);
   const workspaceDir = resolve(rootDir, sanitizePathSegment(input.job.id));
 
   assertPathInside(rootDir, workspaceDir, "workspaceDir");
-  await mkdir(rootDir, { recursive: true });
-
   if (input.workspace.clean ?? true) {
     await rm(workspaceDir, { recursive: true, force: true });
   }
 
   await mkdir(workspaceDir, { recursive: true });
+  const canonicalWorkspaceDir = await realpath(workspaceDir);
 
   return {
     rootDir,
-    workspaceDir
+    workspaceDir: canonicalWorkspaceDir
   };
 }
 
@@ -49,11 +50,11 @@ export async function collectGeneratedFileArtifacts(input: {
   workspaceDir: string;
   files: GeneratedFileReference[];
 }): Promise<RunnerArtifactUpload[]> {
-  const workspaceDir = resolve(input.workspaceDir);
+  const workspaceDir = await realpath(resolve(input.workspaceDir));
   const artifacts: RunnerArtifactUpload[] = [];
 
   for (const file of input.files) {
-    const filePath = resolveWorkspaceFile(workspaceDir, file.path);
+    const filePath = await resolveWorkspaceFile(workspaceDir, file.path);
     const fileStat = await stat(filePath);
 
     if (!fileStat.isFile()) {
@@ -82,13 +83,13 @@ export async function collectGeneratedFileArtifacts(input: {
 }
 
 export async function listWorkspaceFiles(workspaceDir: string): Promise<string[]> {
-  const rootDir = resolve(workspaceDir);
+  const rootDir = await realpath(resolve(workspaceDir));
   const files: string[] = [];
   await walk(rootDir, rootDir, files);
   return files.sort();
 }
 
-function resolveWorkspaceFile(workspaceDir: string, requestedPath: string): string {
+async function resolveWorkspaceFile(workspaceDir: string, requestedPath: string): Promise<string> {
   if (!requestedPath || requestedPath.includes("\0")) {
     throw new Error("Generated file path is required");
   }
@@ -98,7 +99,9 @@ function resolveWorkspaceFile(workspaceDir: string, requestedPath: string): stri
     : resolve(workspaceDir, requestedPath);
 
   assertPathInside(workspaceDir, resolvedPath, requestedPath);
-  return resolvedPath;
+  const canonicalPath = await realpath(resolvedPath);
+  assertPathInside(workspaceDir, canonicalPath, requestedPath);
+  return canonicalPath;
 }
 
 async function walk(rootDir: string, currentDir: string, files: string[]): Promise<void> {

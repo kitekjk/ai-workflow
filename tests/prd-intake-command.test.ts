@@ -5,7 +5,7 @@ import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-
 describe("MysqlPrdIntakeCommand", () => {
   it("records PRD intake as a direct MySQL workflow/document/job command", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlPrdIntakeCommand(database);
+    const command = new MysqlPrdIntakeCommand(database, { idGenerator: fixedIds("event_1") });
 
     const result = await command.recordIntake({
       runId: "run_1",
@@ -25,7 +25,8 @@ describe("MysqlPrdIntakeCommand", () => {
     expect(database.statements.map((statement) => statement.sql)).toEqual([
       expect.stringContaining("INSERT INTO workflow_run"),
       expect.stringContaining("INSERT INTO document"),
-      expect.stringContaining("INSERT INTO workflow_job")
+      expect.stringContaining("INSERT INTO workflow_job"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toContain("PRD-100");
     expect(database.statements[1].params).toEqual(
@@ -34,6 +35,22 @@ describe("MysqlPrdIntakeCommand", () => {
     expect(database.statements[2].params).toEqual(
       expect.arrayContaining(["job_1", "run_1", "prd.generate_draft", "pending", "planner", "local_allowed"])
     );
+    expect(database.statements[3].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_1",
+        "job_1",
+        "workflow.prd_intake",
+        "PRD intake recorded: PRD-100"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[3].params[5]))).toEqual({
+      runId: "run_1",
+      documentId: "doc_wi_1",
+      jobId: "job_1",
+      prdJiraKey: "PRD-100",
+      title: "FAQ automation PRD"
+    });
   });
 
   it("rolls back and releases the connection when recording intake fails", async () => {
@@ -92,4 +109,10 @@ class FakeMysqlDatabase implements MysqlDatabase, MysqlConnection {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, " ").trim();
+}
+
+function fixedIds(...ids: string[]): () => string {
+  let index = 0;
+
+  return () => ids[index++] ?? ids.at(-1) ?? "generated_id";
 }

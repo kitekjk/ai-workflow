@@ -200,6 +200,8 @@ describe("Runner API", () => {
     expect(repository.workflowJobs.map((job) => job.status)).toEqual(["succeeded", "retrying"]);
 
     const events = await getJson(`${baseUrl}/workflow-runs/${run.id}/events?type=job.retry_scheduled`);
+    const invalidRunCursor = await fetch(`${baseUrl}/workflow-runs/${run.id}/events?cursor=not-a-cursor`);
+
     expect(events).toMatchObject({
       events: [
         {
@@ -219,6 +221,8 @@ describe("Runner API", () => {
         }
       ]
     });
+    expect(invalidRunCursor.status).toBe(400);
+    expect(await invalidRunCursor.json()).toEqual({ error: "Invalid event cursor" });
   });
 
   it("records runner logs as workflow events and reads them back with a limit", async () => {
@@ -299,6 +303,7 @@ describe("Runner API", () => {
     });
     expect(secondPage.nextCursor).toBeUndefined();
     expect(invalidCursor.status).toBe(400);
+    expect(await invalidCursor.json()).toEqual({ error: "Invalid event cursor" });
   });
 
   it("redacts secrets from runner logs and failure callbacks before storing them", async () => {

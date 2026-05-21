@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm test",
     "demo:prd": "tsx src/demo/prd-confirmation-demo.ts",
     "start:api": "tsx src/workflow-api/main.ts",
     "start:local-runner": "tsx src/local-runner/main.ts",

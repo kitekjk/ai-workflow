@@ -82,7 +82,7 @@ export class WorkflowScheduler {
     return this.repository.getWorkflowJob(jobId);
   }
 
-  completeJob(input: {
+  async completeJob(input: {
     jobId: string;
     runnerId: string;
     output: Record<string, unknown>;
@@ -312,5 +312,5 @@ function decodeWorkflowEventCursor(cursor: string | undefined): WorkflowEventCur
     // Fall through to a normalized public error below.
   }
 
-  throw new Error("Invalid log cursor");
+  throw new Error("Invalid event cursor");
 }

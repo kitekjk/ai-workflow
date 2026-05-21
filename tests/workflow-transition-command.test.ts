@@ -7,7 +7,7 @@ import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-
 describe("MysqlWorkflowTransitionCommand", () => {
   it("records document approval state as a direct MySQL command", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlWorkflowTransitionCommand(database);
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
 
     await command.recordDocumentState({
       document: document({
@@ -18,7 +18,8 @@ describe("MysqlWorkflowTransitionCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
-      expect.stringContaining("INSERT INTO document")
+      expect.stringContaining("INSERT INTO document"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toEqual(
       expect.arrayContaining([
@@ -31,11 +32,40 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "2026-05-20T00:00:00.000Z"
       ])
     );
+    expect(database.statements[1].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_1",
+        "workflow.document_state",
+        "Document state recorded: doc_wi_1"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[1].params[5]))).toEqual({
+      documentId: "doc_wi_1",
+      documentType: "prd",
+      sourceKey: "PRD-100",
+      status: "approved"
+    });
+  });
+
+  it("uses the document update time for direct document state events when no command time is provided", async () => {
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
+
+    await command.recordDocumentState({
+      document: document({
+        status: "approved",
+        updatedAt: "2026-05-20T00:02:00.000Z"
+      })
+    });
+
+    expect(database.statements[0].params).toContain("2026-05-20T00:02:00.000Z");
+    expect(database.statements[1].params.at(-1)).toBe("2026-05-20T00:02:00.000Z");
   });
 
   it("records routing jobs with scheduler claim metadata", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlWorkflowTransitionCommand(database);
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
     const job: AgentJob = {
       id: "job_3",
       workItemId: "wi_1",
@@ -55,7 +85,8 @@ describe("MysqlWorkflowTransitionCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
-      expect.stringContaining("INSERT INTO workflow_job")
+      expect.stringContaining("INSERT INTO workflow_job"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toEqual(
       expect.arrayContaining([
@@ -69,6 +100,21 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "local_allowed"
       ])
     );
+    expect(database.statements[1].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_1",
+        "job_3",
+        "workflow.job_recorded",
+        "Workflow job recorded: job_3"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[1].params[5]))).toEqual({
+      jobId: "job_3",
+      jobType: "prd.route_downstream",
+      status: "pending",
+      sourceKey: "PRD-100"
+    });
   });
 
   it("uses implementation job capabilities for local runner matching", async () => {
@@ -96,7 +142,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
 
   it("records engine document states and follow-up jobs in one transaction", async () => {
     const database = new FakeMysqlDatabase();
-    const command = new MysqlWorkflowTransitionCommand(database);
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
     const job: AgentJob = {
       id: "job_2",
       workItemId: "wi_1",
@@ -108,6 +154,25 @@ describe("MysqlWorkflowTransitionCommand", () => {
 
     await command.recordEngineTransition({
       transitionType: "prd_draft_generated",
+      affectedWorkItemIds: ["wi_1"],
+      affectedDocumentIds: ["doc_wi_1"],
+      createdWorkItemIds: ["wi_2"],
+      workItemState: {
+        workItemId: "wi_1",
+        before: "draft_requested",
+        after: "evaluating"
+      },
+      externalIssueStatus: {
+        issueKey: "PRD-100",
+        before: "drafting",
+        after: "drafting"
+      },
+      processedResult: {
+        jobId: "job_1",
+        jobType: "prd.generate_draft",
+        primaryJiraKey: "PRD-100",
+        status: "succeeded"
+      },
       documents: [
         document({
           status: "quality_review"
@@ -133,7 +198,8 @@ describe("MysqlWorkflowTransitionCommand", () => {
     expect(database.statements.map((statement) => statement.sql)).toEqual([
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO document"),
-      expect.stringContaining("INSERT INTO workflow_job")
+      expect.stringContaining("INSERT INTO workflow_job"),
+      expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[2].params).toEqual(
       expect.arrayContaining([
@@ -146,6 +212,38 @@ describe("MysqlWorkflowTransitionCommand", () => {
         JSON.stringify(["document.evaluate"])
       ])
     );
+    expect(database.statements[3].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_1",
+        "workflow.engine_transition",
+        "Workflow engine transition: prd_draft_generated"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[3].params[5]))).toEqual({
+      transitionType: "prd_draft_generated",
+      affectedWorkItemIds: ["wi_1"],
+      affectedDocumentIds: ["doc_wi_1"],
+      createdWorkItemIds: ["wi_2"],
+      workItemState: {
+        workItemId: "wi_1",
+        before: "draft_requested",
+        after: "evaluating"
+      },
+      externalIssueStatus: {
+        issueKey: "PRD-100",
+        before: "drafting",
+        after: "drafting"
+      },
+      processedResult: {
+        jobId: "job_1",
+        jobType: "prd.generate_draft",
+        primaryJiraKey: "PRD-100",
+        status: "succeeded"
+      },
+      documentIds: ["doc_wi_1", "doc_wi_2"],
+      createdJobIds: ["job_2"]
+    });
   });
 
   it("rolls back and releases the connection when transition recording fails", async () => {
@@ -231,4 +329,10 @@ class FakeMysqlDatabase implements MysqlDatabase, MysqlConnection {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, " ").trim();
+}
+
+function fixedIds(...ids: string[]): () => string {
+  let index = 0;
+
+  return () => ids[index++] ?? ids.at(-1) ?? "generated_id";
 }

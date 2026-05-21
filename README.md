@@ -89,7 +89,11 @@ In MySQL mode, PRD compatibility workflow actions are also mirrored into the
 workflow/document read-model tables after state-changing API calls. API startup
 then hydrates the PRD compatibility fixture from those MySQL read-model rows
 before routes are served. Generic workflow and document GET views read directly
-from the MySQL read model when `WORKFLOW_RUNTIME_STORE=mysql`. PRD intake is
+from the MySQL read model when `WORKFLOW_RUNTIME_STORE=mysql`. Set
+`WORKFLOW_COMPATIBILITY_FIXTURE=disabled` with MySQL mode to run the
+read-model-backed GET views and runner APIs without the legacy PRD fixture;
+remaining PRD transition endpoints return `501` until the repository-backed
+transition engine replaces them. PRD intake is
 also written through a MySQL command path for the initial run, document, and
 draft job. Workflow/App, Jira, and Wiki feedback plus explicit revision
 requests are also written through a MySQL command path for `feedback_item` and
@@ -97,10 +101,13 @@ revision `workflow_job` rows. Approval state changes and downstream
 routing/fan-out/implementation job scheduling have a MySQL command path for the
 affected `document` and `workflow_job` rows. Engine-created document state
 changes and follow-up jobs are recorded through one command transaction during
-`/tick`, including an explicit engine transition type plus work item and
-external issue before/after state metadata and affected work item/document ids
-for later repository-backed engine migration. Runner result processing also
-records the run projection for
+the internal compatibility workflow tick loop, including an explicit engine
+transition type plus work item and external issue before/after state metadata
+and affected work item/document ids for later repository-backed engine
+migration. The loop defaults to `WORKFLOW_INTERNAL_TICK_MS=1000` while the
+compatibility fixture is enabled; set it to `0` or `disabled` to keep only the
+manual dev/test `POST /tick` trigger. Runner result processing also records the
+run projection for
 `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`,
 and current document pointers.
 
@@ -111,10 +118,12 @@ curl -X POST http://127.0.0.1:3000/prd/intake \
   -H 'content-type: application/json' \
   -d '{"prdJiraKey":"PRD-100"}'
 
-curl -X POST http://127.0.0.1:3000/tick
-
 curl http://127.0.0.1:3000/state/PRD-100
 ```
+
+`POST /tick` remains available as a manual development/test trigger, but the
+normal fixture-backed API process advances the workflow through its internal
+tick loop.
 
 Run with real Jira, PRD repo, and Confluence adapters:
 

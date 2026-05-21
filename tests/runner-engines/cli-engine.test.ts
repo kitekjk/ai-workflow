@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -56,7 +56,7 @@ console.log(JSON.stringify({ cwd: process.cwd().replace(/\\\\/g, "/") }));
     const result = await engine.runJson({});
 
     expect(result).toEqual({
-      cwd: cwd.replace(/\\/g, "/")
+      cwd: portableRealPath(cwd)
     });
   });
 
@@ -97,4 +97,8 @@ function createFakeCli(source: string): string {
   writeFileSync(bin, `#!/usr/bin/env node\n${source}\n`);
   chmodSync(bin, 0o755);
   return bin;
+}
+
+function portableRealPath(path: string): string {
+  return realpathSync(path).replace(/\\/g, "/");
 }

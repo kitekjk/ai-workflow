@@ -202,7 +202,7 @@ function createDocumentVersions(store: PrdConfirmationStore): DocumentVersion[] 
     const job = store.agentJobs.find((candidate) => candidate.id === artifact.jobId);
     const workItem = job ? requireWorkItem(store, job.workItemId) : undefined;
 
-    if (!workItem) {
+    if (!job || !workItem) {
       continue;
     }
 

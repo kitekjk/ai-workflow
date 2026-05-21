@@ -10,7 +10,7 @@ export interface MysqlPoolEnv {
 }
 
 export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase {
-  return mysql.createPool({
+  const pool = mysql.createPool({
     host: env.WORKFLOW_MYSQL_HOST ?? "127.0.0.1",
     port: Number(env.WORKFLOW_MYSQL_PORT ?? 3306),
     database: env.WORKFLOW_MYSQL_DATABASE ?? "ai_workflow",
@@ -19,4 +19,26 @@ export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase
     waitForConnections: true,
     connectionLimit: 10
   });
+
+  return {
+    async execute<T = unknown>(sql: string, params?: unknown[]): Promise<[T, unknown]> {
+      const [rows, fields] = await pool.execute(sql, params as any);
+      return [rows as T, fields];
+    },
+    async getConnection() {
+      const connection = await pool.getConnection();
+
+      return {
+        async execute<T = unknown>(sql: string, params?: unknown[]): Promise<[T, unknown]> {
+          const [rows, fields] = await connection.execute(sql, params as any);
+          return [rows as T, fields];
+        },
+        beginTransaction: () => connection.beginTransaction(),
+        commit: () => connection.commit(),
+        rollback: () => connection.rollback(),
+        release: () => connection.release()
+      };
+    },
+    end: () => pool.end()
+  };
 }

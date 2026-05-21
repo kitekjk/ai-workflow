@@ -15,7 +15,7 @@
 현재 브랜치의 구현은 PRD confirmation vertical slice로 동작한다.
 
 - `src/prd-confirmation/*`: PRD intake, job 생성, scheduler, runner worker, engine transition, in-memory store를 포함한다.
-- `src/workflow-api/server.ts`: `/prd/intake`, `/prd/feedback-revision`, `/tick`, `/state/:prdJiraKey` 중심의 데모 API를 제공한다.
+- `src/workflow-api/server.ts`: `/prd/intake`, `/prd/feedback-revision`, `/state/:prdJiraKey`와 수동 개발/테스트용 `/tick` API를 제공한다.
 - `src/runner-engines/*`: Claude CLI/Codex CLI를 실행하고 JSON 결과를 파싱하는 runner engine 초안을 제공한다.
 - `scripts/prd-cli-engine.mjs`: PRD 생성/평가/수정 prompt bridge 역할을 한다.
 - `src/integrations/confluence-wiki.ts`: PRD 전용 메서드를 유지하면서도 generic `publishMarkdownPage()`를 제공한다.
@@ -23,7 +23,7 @@
 
 검증된 사실은 다음과 같다.
 
-- PRD confirmation vertical slice는 manual tick 기반으로 동작한다.
+- PRD confirmation vertical slice는 runtime에서 내부 tick loop로 자동 진행되며, `/tick`은 개발/테스트용 수동 trigger로 남아 있다.
 - Claude CLI/Codex CLI를 통해 실제 markdown 문서를 생성할 수 있다.
 - 생성 markdown을 Git repo에 저장하고 Confluence wiki에 publish/update할 수 있다.
 - document/result의 한국어 출력은 CLI prompt contract로 제어 가능하다.
@@ -1031,22 +1031,26 @@ POST /workflow-runs
 }
 ```
 
-### 10.2 Tick/Worker Execution or Background Scheduler
+### 10.2 Worker Execution and Background Scheduler
 
 개발/테스트:
 
 ```text
-POST /internal/tick
+POST /tick
 ```
 
 운영:
 
 ```text
+Internal workflow tick loop
 Scheduler process
 Runner worker process
 ```
 
-운영 API는 tick을 public API로 노출하지 않는다.
+현재 compatibility fixture runtime은 API process 내부 tick loop가 scheduler,
+runner worker, engine step을 반복 호출한다. `POST /tick`은 수동 점검과
+테스트 harness용으로만 사용한다. fixture 제거 후에는 repository-backed
+transition engine이 같은 역할을 별도 worker/scheduler 경계로 넘겨받는다.
 
 ### 10.2.1 Runner Registration and Claim
 
@@ -1561,10 +1565,13 @@ Acceptance criteria:
 - Scheduler는 runner 실패를 `job.retry_scheduled` 또는 `job.failed` event로 기록한다. `job.failed`는 `severity=critical`, `alert=true`, `retryExhausted=true`를 포함한다.
 - Lease timeout recovery는 `job.lease_expired` event로 기록하고 `alert=true`, `metric=workflow_job_lease_expirations_total` metadata를 남긴다.
 - 운영자는 `GET /workflow-runs/{runId}/events`에서 run 단위 event stream을 조회하고 `type`, `limit`, `cursor`로 필터링/페이지네이션할 수 있다.
+- PRD intake는 Jira 상태가 `prd_requested` 또는 표시 상태 `PRD 요청`일 때만 허용하고, 그 외 상태는 API에서 `409`로 응답한다.
+- MySQL write side는 `WorkflowMutation`을 만들고 `MysqlWorkflowMutationApplier`가 transaction/upsert/event insert를 담당하는 공용 경로로 수렴했다. PRD intake, feedback/revision, approval/routing/fan-out job scheduling, compatibility engine transition projection, runner result projection command는 SQL/transaction을 직접 소유하지 않고 mutation만 생성한다. 새 write path는 이 applier를 우선 사용해야 한다.
+- MySQL runtime can now be started with `WORKFLOW_COMPATIBILITY_FIXTURE=disabled`; runner APIs, read-model-backed workflow/document/approval GET views, PRD intake with a configured Jira reader, document feedback/wiki-feedback/revision POST routes, and approval approve/reject/refresh POST routes no longer require the legacy PRD fixture when the read model and command writers are configured. Endpoints that still need the compatibility engine fail closed with `501` until the repository-backed transition engine lands.
 - Deployment topology, local runner scope, MySQL migration, smoke check, rollback, and production readiness gates are documented in `docs/deployment-runbook.md`.
 - `src/workflow-api/main.ts` can now boot with `WORKFLOW_RUNTIME_STORE=mysql`, wiring runner/scheduler APIs and document artifact APIs to MySQL repositories while the PRD workflow compatibility fixture remains in place.
-- MySQL mode now mirrors PRD compatibility fixture snapshots into `workflow_run`, `workflow_job`, `workflow_job_result`, `document`, `document_version`, `artifact`, `quality_gate_result`, and `feedback_item` read-model tables after state-changing API actions, API startup hydrates the PRD compatibility fixture back from those read-model rows before routes are served, generic workflow/document GET views read directly from the MySQL read model when configured, PRD intake is recorded through a MySQL write command for the initial run/document/draft job, feedback/revision requests are recorded through a MySQL write command for `feedback_item` plus revision `workflow_job` rows, approval/routing/fan-out/implementation scheduling is recorded through a MySQL write command for affected `document` and `workflow_job` rows, engine-created document state changes and follow-up jobs are recorded through one command transaction during `/tick` with an explicit engine transition type, work item and external issue before/after state metadata, and affected work item/document ids for later repository-backed engine migration, and runner result processing records a MySQL run projection for `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`, and current document pointers.
-- Engine transition command input assembly now lives in `src/workflow-api/engine-transition-projection.ts`, keeping `/tick` orchestration focused on scheduling, execution, engine stepping, and command dispatch.
+- MySQL mode now mirrors PRD compatibility fixture snapshots into `workflow_run`, `workflow_job`, `workflow_job_result`, `document`, `document_version`, `artifact`, `quality_gate_result`, and `feedback_item` read-model tables after state-changing API actions, API startup hydrates the PRD compatibility fixture back from those read-model rows before routes are served, generic workflow/document/approval gate GET views read directly from the MySQL read model when configured without state-view fallback to the compatibility fixture, PRD intake is recorded through a MySQL write command for the initial run/document/draft job plus `workflow.prd_intake` event, feedback/revision requests are recorded through a MySQL write command for `feedback_item` plus revision `workflow_job` rows and `workflow.feedback_recorded`/`workflow.revision_job_recorded` events, approval/routing/fan-out/implementation scheduling is recorded through MySQL write commands and `workflow.document_state`/`workflow.job_recorded` events for affected `document` and `workflow_job` rows, engine-created document state changes and follow-up jobs are recorded through one command transaction during the compatibility workflow tick with a `workflow.engine_transition` event containing explicit engine transition type, processed result summary, work item and external issue before/after state metadata, affected work item/document ids, and created work item ids for later repository-backed engine migration, and runner result processing records a MySQL run projection plus a `workflow.result_projection` event for `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`, and current document pointers.
+- Engine transition command input assembly now lives in `src/workflow-api/engine-transition-projection.ts`, keeping compatibility workflow tick orchestration focused on scheduling, execution, engine stepping, and command dispatch. The API runtime now starts this tick loop automatically when the compatibility fixture is enabled; `WORKFLOW_INTERNAL_TICK_MS=0` or `disabled` keeps only the manual development/test trigger.
 
 ## 13. 우선순위와 리스크
 

@@ -647,10 +647,14 @@ function findLast<T>(values: T[], predicate: (value: T) => boolean): T | undefin
 function parseJsonRecord(value: unknown): Record<string, unknown> {
   if (typeof value === "string") {
     const parsed = JSON.parse(value);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   }
 
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
