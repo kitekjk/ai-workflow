@@ -21,6 +21,8 @@ import {
   MysqlWorkflowTransitionCommand,
   type WorkflowTransitionCommand
 } from "../workflow-api/workflow-transition-command";
+import { MysqlRepositoryTransitionWorkReader } from "../workflow-api/repository-transition-work-reader";
+import type { RepositoryTransitionPendingResultReader } from "../workflow-api/repository-transition-processor";
 import { createJiraIssueReaderFromEnv, createRuntimeFromEnv, type RuntimeFixture } from "./create-runtime";
 
 export interface WorkflowApiRuntime {
@@ -37,6 +39,8 @@ export interface WorkflowApiRuntime {
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
+  repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
+  repositoryTransitionIntervalMs?: number;
   internalTickIntervalMs?: number;
   runtimeStore: WorkflowRuntimeStore;
   close(): Promise<void>;
@@ -49,6 +53,9 @@ export interface WorkflowApiRuntimeEnv extends NodeJS.ProcessEnv, MysqlPoolEnv {
   WORKFLOW_JOB_LEASE_MS?: string;
   WORKFLOW_COMPATIBILITY_FIXTURE?: string;
   WORKFLOW_INTERNAL_TICK_MS?: string;
+  WORKFLOW_REPOSITORY_TRANSITION_MS?: string;
+  WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID?: string;
+  WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS?: string;
 }
 
 export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): WorkflowApiRuntime {
@@ -84,6 +91,15 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
   const feedbackRevisionCommand = new MysqlFeedbackRevisionCommand(database);
   const workflowResultCommand = new MysqlWorkflowResultCommand(database);
   const workflowTransitionCommand = new MysqlWorkflowTransitionCommand(database);
+  const repositoryTransitionResultReader = fixture
+    ? undefined
+    : new MysqlRepositoryTransitionWorkReader(database, {
+        workerId: env.WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID,
+        leaseMs: parseRepositoryTransitionLeaseMs(env.WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS)
+      });
+  const repositoryTransitionIntervalMs = fixture
+    ? undefined
+    : parseRepositoryTransitionIntervalMs(env.WORKFLOW_REPOSITORY_TRANSITION_MS);
   const jiraIssueReader = !fixture && env.INTEGRATION_MODE === "real" ? createJiraIssueReaderFromEnv(env) : undefined;
 
   return {
@@ -100,6 +116,8 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     feedbackRevisionCommand,
     workflowResultCommand,
     workflowTransitionCommand,
+    repositoryTransitionResultReader,
+    repositoryTransitionIntervalMs,
     internalTickIntervalMs,
     runtimeStore,
     close: () => closeMysqlDatabase(database)
@@ -161,6 +179,38 @@ function parseInternalTickIntervalMs(value: string | undefined): number | undefi
 
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`WORKFLOW_INTERNAL_TICK_MS must be a positive integer, 0, or "disabled", got: ${value}`);
+  }
+
+  return parsed;
+}
+
+function parseRepositoryTransitionIntervalMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return 1_000;
+  }
+
+  if (value === "0" || value === "disabled") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`WORKFLOW_REPOSITORY_TRANSITION_MS must be a positive integer, 0, or "disabled", got: ${value}`);
+  }
+
+  return parsed;
+}
+
+function parseRepositoryTransitionLeaseMs(value: string | undefined): number {
+  if (!value) {
+    return 30_000;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS must be a positive integer, got: ${value}`);
   }
 
   return parsed;

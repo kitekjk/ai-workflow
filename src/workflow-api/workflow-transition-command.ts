@@ -6,6 +6,7 @@ import type {
   WorkflowEngineWorkItemState
 } from "../prd-confirmation/workflow-engine";
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
+import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 import {
   MysqlWorkflowMutationApplier,
   type WorkflowMutation,
@@ -39,6 +40,11 @@ export interface RecordEngineTransitionCommandInput {
   now?: Date;
 }
 
+export interface RecordRepositoryTransitionCommandInput {
+  transitionType?: WorkflowEngineTransitionType;
+  mutation: WorkflowMutation;
+}
+
 export interface WorkflowEngineProcessedResultSummary {
   jobId: string;
   jobType: JobType;
@@ -50,6 +56,7 @@ export interface WorkflowTransitionCommand {
   recordDocumentState(input: RecordDocumentStateCommandInput): Promise<void>;
   recordWorkflowJob(input: RecordWorkflowJobCommandInput): Promise<void>;
   recordEngineTransition?(input: RecordEngineTransitionCommandInput): Promise<void>;
+  recordRepositoryTransition?(input: RecordRepositoryTransitionCommandInput): Promise<void>;
 }
 
 export interface MysqlWorkflowTransitionCommandOptions {
@@ -100,6 +107,10 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
       events: engineEvent ? [engineEvent] : []
     });
   }
+
+  async recordRepositoryTransition(input: RecordRepositoryTransitionCommandInput): Promise<void> {
+    await this.mutationApplier.apply(input.mutation);
+  }
 }
 
 function documentStateForInput(input: RecordDocumentStateCommandInput): Document {
@@ -111,22 +122,16 @@ function documentStateForInput(input: RecordDocumentStateCommandInput): Document
 }
 
 function workflowJobForInput(input: RecordWorkflowJobCommandInput): NonNullable<WorkflowMutation["workflowJobs"]>[number] {
-  const now = toIso(input.now);
-  return {
+  return createWorkflowJobRecord({
     id: input.job.id,
     runId: input.runId,
     jobType: input.job.jobType,
     status: input.job.status,
     input: input.job.input,
-    priority: 0,
     projectId: "prd-confirmation",
     repositoryId: "prd-docs",
-    requiredRole: roleForJobType(input.job.jobType),
-    requiredCapabilities: capabilitiesForJobType(input.job.jobType),
-    executionPolicy: "local_allowed",
-    createdAt: now,
-    updatedAt: now
-  };
+    now: input.now
+  });
 }
 
 function engineTransitionEvent(
@@ -190,43 +195,6 @@ function workflowJobRecordedEvent(input: RecordWorkflowJobCommandInput): NonNull
     },
     createdAt: toIso(input.now)
   };
-}
-
-function capabilitiesForJobType(jobType: AgentJob["jobType"]): string[] {
-  if (jobType === "implementation.open_pr" || jobType === "implementation.collect_pr_status") {
-    return [jobType];
-  }
-
-  if (jobType === "prd.evaluate_quality" || jobType === "document.evaluate") {
-    return ["document.evaluate"];
-  }
-
-  if (jobType === "prd.route_downstream") {
-    return ["workflow.route"];
-  }
-
-  if (jobType === "document.fan_out") {
-    return ["workflow.fanout"];
-  }
-
-  if (jobType === "document.revise") {
-    return ["document.revise"];
-  }
-
-  return ["document.generate"];
-}
-
-function roleForJobType(jobType: AgentJob["jobType"]): string {
-  if (
-    jobType.startsWith("implementation.") ||
-    jobType === "prd.evaluate_quality" ||
-    jobType === "prd.route_downstream" ||
-    jobType.startsWith("document.")
-  ) {
-    return "developer";
-  }
-
-  return "planner";
 }
 
 function toIso(date: Date | undefined): string {

@@ -17,6 +17,8 @@ const server = await createWorkflowApiServer({
   feedbackRevisionCommand: runtime.feedbackRevisionCommand,
   workflowResultCommand: runtime.workflowResultCommand,
   workflowTransitionCommand: runtime.workflowTransitionCommand,
+  repositoryTransitionResultReader: runtime.repositoryTransitionResultReader,
+  repositoryTransitionIntervalMs: runtime.repositoryTransitionIntervalMs,
   internalTickIntervalMs: runtime.internalTickIntervalMs
 }).listen(port);
 
@@ -26,6 +28,11 @@ console.log(`Runtime store: ${runtime.runtimeStore}`);
 console.log(
   `Internal workflow tick: ${
     runtime.internalTickIntervalMs === undefined ? "disabled" : `${runtime.internalTickIntervalMs}ms`
+  }`
+);
+console.log(
+  `Repository transition loop: ${
+    runtime.repositoryTransitionIntervalMs === undefined ? "disabled" : `${runtime.repositoryTransitionIntervalMs}ms`
   }`
 );
 if (restoreResult?.restored) {

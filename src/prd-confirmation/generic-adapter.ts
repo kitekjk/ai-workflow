@@ -9,6 +9,7 @@ import {
 } from "./domain";
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
 import type { WorkflowJob, WorkflowJobResult, WorkflowRun } from "../workflow-core/domain";
+import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 
 export interface GenericPrdSnapshot {
   workflowRuns: WorkflowRun[];
@@ -28,29 +29,17 @@ export function createGenericPrdSnapshot(store: PrdConfirmationStore): GenericPr
     const workItem = requireWorkItem(store, job.workItemId);
     const createdAt = "2026-01-01T00:00:00.000Z";
 
-    return {
+    return createWorkflowJobRecord({
       id: job.id,
       runId: workItem.runId,
       jobType: job.jobType,
       status: job.status,
       input: job.input,
-      priority: 0,
       projectId: "prd-confirmation",
       repositoryId: "prd-docs",
-      assignedUserId: undefined,
-      assignedTeamId: undefined,
-      requiredRole: roleForJobType(job.jobType),
-      requiredCapabilities: capabilitiesForJobType(job.jobType),
-      preferredEngine: undefined,
-      requiredEngine: undefined,
-      executionPolicy: "local_allowed",
-      assignedRunnerId: undefined,
-      claimedByRunnerId: undefined,
-      claimedAt: undefined,
-      leaseExpiresAt: undefined,
       createdAt,
       updatedAt: createdAt
-    } satisfies WorkflowJob;
+    });
   });
   const workflowJobResults = createWorkflowJobResults(store);
   const documentVersions = createDocumentVersions(store);
@@ -351,46 +340,6 @@ function documentStatusForWorkItem(workItem: WorkItem): Document["status"] {
   }
 
   return "draft";
-}
-
-function capabilitiesForJobType(jobType: string): string[] {
-  if (jobType === "implementation.open_pr" || jobType === "implementation.collect_pr_status") {
-    return [jobType];
-  }
-
-  if (jobType === "prd.evaluate_quality") {
-    return ["document.evaluate"];
-  }
-
-  if (jobType === "prd.route_downstream") {
-    return ["workflow.route"];
-  }
-
-  if (jobType === "document.fan_out") {
-    return ["workflow.fanout"];
-  }
-
-  if (jobType === "document.evaluate") {
-    return ["document.evaluate"];
-  }
-
-  if (jobType === "document.revise") {
-    return ["document.revise"];
-  }
-
-  return ["document.generate"];
-}
-
-function roleForJobType(jobType: string): string {
-  if (jobType.startsWith("implementation.")) {
-    return "developer";
-  }
-
-  if (jobType === "prd.evaluate_quality" || jobType === "prd.route_downstream" || jobType.startsWith("document.")) {
-    return "developer";
-  }
-
-  return "planner";
 }
 
 function isQualityJob(jobType: string): boolean {

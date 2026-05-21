@@ -8,6 +8,7 @@
     "verify": "npm run typecheck && npm test",
     "demo:prd": "tsx src/demo/prd-confirmation-demo.ts",
     "start:api": "tsx src/workflow-api/main.ts",
+    "start:repository-transition-worker": "tsx src/workflow-api/repository-transition-worker-main.ts",
     "start:local-runner": "tsx src/local-runner/main.ts",
     "db:migrate:mysql": "tsx src/mysql/apply-migrations.ts"
   },

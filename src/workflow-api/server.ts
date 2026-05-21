@@ -18,13 +18,18 @@ import {
 } from "../prd-confirmation/domain";
 import type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../prd-confirmation/ports";
 import { redactSecrets } from "../runtime/secrets";
-import type { RunnerMode, WorkflowJob } from "../workflow-core/domain";
+import type { RunnerMode, WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
 import type { WorkflowScheduler } from "../workflow-core/scheduler";
 import {
   createEngineTransitionCommandInput,
   workflowJobCommandInputForFixtureJob
 } from "./engine-transition-projection";
 import type { DocumentCurrentReadModel, WorkflowApiReadModel } from "./mysql-read-model";
+import {
+  RepositoryTransitionProcessor,
+  type RepositoryTransitionPendingResultReader
+} from "./repository-transition-processor";
+import { runRepositoryTransitionWorkerOnce } from "./repository-transition-worker";
 import type { PrdIntakeCommand } from "./prd-intake-command";
 import type { FeedbackRevisionCommand } from "./feedback-revision-command";
 import type { WorkflowResultCommand } from "./workflow-result-command";
@@ -50,6 +55,8 @@ export interface CreateWorkflowApiServerInput {
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
+  repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
+  repositoryTransitionIntervalMs?: number;
   internalTickIntervalMs?: number;
   enableTestControls?: boolean;
   now?: () => Date;
@@ -67,6 +74,8 @@ export function createWorkflowApiServer({
   feedbackRevisionCommand,
   workflowResultCommand,
   workflowTransitionCommand,
+  repositoryTransitionResultReader,
+  repositoryTransitionIntervalMs,
   internalTickIntervalMs,
   enableTestControls = false,
   now = () => new Date()
@@ -74,6 +83,8 @@ export function createWorkflowApiServer({
   let baseUrl = "";
   let internalTickTimer: ReturnType<typeof setInterval> | undefined;
   let internalTickPromise: Promise<unknown> | undefined;
+  let repositoryTransitionTimer: ReturnType<typeof setInterval> | undefined;
+  let repositoryTransitionPromise: Promise<unknown> | undefined;
 
   const context: WorkflowApiRequestContext = {
     fixture,
@@ -87,6 +98,13 @@ export function createWorkflowApiServer({
     feedbackRevisionCommand,
     workflowResultCommand,
     workflowTransitionCommand,
+    repositoryTransitionResultReader,
+    repositoryTransitionLoopEnabled: Boolean(
+      !fixture &&
+        repositoryTransitionResultReader &&
+        repositoryTransitionIntervalMs !== undefined &&
+        repositoryTransitionIntervalMs >= 1
+    ),
     enableTestControls,
     now
   };
@@ -121,6 +139,18 @@ export function createWorkflowApiServer({
       });
   };
 
+  const runRepositoryTransitionLoop = () => {
+    if (repositoryTransitionPromise) {
+      return;
+    }
+
+    repositoryTransitionPromise = processNextRepositoryTransitionResult(context)
+      .catch(() => undefined)
+      .finally(() => {
+        repositoryTransitionPromise = undefined;
+      });
+  };
+
   const startInternalTickLoop = () => {
     if (
       !context.fixture ||
@@ -136,6 +166,24 @@ export function createWorkflowApiServer({
     runInternalTick();
   };
 
+  const startRepositoryTransitionLoop = () => {
+    if (
+      context.fixture ||
+      !context.repositoryTransitionResultReader ||
+      !context.readModel ||
+      !context.workflowTransitionCommand?.recordRepositoryTransition ||
+      repositoryTransitionIntervalMs === undefined ||
+      repositoryTransitionIntervalMs < 1 ||
+      repositoryTransitionTimer
+    ) {
+      return;
+    }
+
+    repositoryTransitionTimer = setInterval(runRepositoryTransitionLoop, repositoryTransitionIntervalMs);
+    repositoryTransitionTimer.unref?.();
+    runRepositoryTransitionLoop();
+  };
+
   const stopInternalTickLoop = () => {
     if (!internalTickTimer) {
       return;
@@ -143,6 +191,15 @@ export function createWorkflowApiServer({
 
     clearInterval(internalTickTimer);
     internalTickTimer = undefined;
+  };
+
+  const stopRepositoryTransitionLoop = () => {
+    if (!repositoryTransitionTimer) {
+      return;
+    }
+
+    clearInterval(repositoryTransitionTimer);
+    repositoryTransitionTimer = undefined;
   };
 
   return {
@@ -159,6 +216,7 @@ export function createWorkflowApiServer({
         if (port !== 0 || !isFetchBlockedPort(address.port)) {
           baseUrl = `http://127.0.0.1:${address.port}`;
           startInternalTickLoop();
+          startRepositoryTransitionLoop();
           return this;
         }
 
@@ -170,7 +228,9 @@ export function createWorkflowApiServer({
 
     async close() {
       stopInternalTickLoop();
+      stopRepositoryTransitionLoop();
       await internalTickPromise;
+      await repositoryTransitionPromise;
       await closeServer(server);
     }
   };
@@ -188,6 +248,8 @@ interface WorkflowApiRequestContext {
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
+  repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
+  repositoryTransitionLoopEnabled: boolean;
   enableTestControls: boolean;
   now: () => Date;
 }
@@ -364,12 +426,19 @@ async function routeRequest(
 
     if (method === "POST" && action === "results") {
       const body = await readJsonBody<RunnerJobResultBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      const completedAt = parseNow(body.now, context.now);
+      const jobBeforeCompletion =
+        !context.fixture && context.workflowTransitionCommand?.recordRepositoryTransition
+          ? await scheduler.requireClaimedJob(decodedJobId, runnerId)
+          : undefined;
       const result = await scheduler.completeJob({
         jobId: decodedJobId,
-        runnerId: requireString(body.runnerId, "runnerId"),
+        runnerId,
         output: redactSecrets(optionalRecord(body.output, "output")),
-        now: parseNow(body.now, context.now)
+        now: completedAt
       });
+      await recordRepositoryTransitionCommand(context, jobBeforeCompletion, result, completedAt);
 
       writeJson(response, 200, { result });
       return;
@@ -895,6 +964,52 @@ async function runCompatibilityWorkflowTick(
   }
 
   return { progressed };
+}
+
+async function recordRepositoryTransitionCommand(
+  context: WorkflowApiRequestContext,
+  job: WorkflowJob | undefined,
+  result: WorkflowJobResult,
+  now: Date
+): Promise<void> {
+  if (
+    context.fixture ||
+    context.repositoryTransitionLoopEnabled ||
+    !job ||
+    !context.readModel ||
+    !context.workflowTransitionCommand?.recordRepositoryTransition
+  ) {
+    return;
+  }
+
+  await new RepositoryTransitionProcessor({
+    readModel: context.readModel,
+    workflowTransitionCommand: context.workflowTransitionCommand
+  }).processJobResult({
+    job,
+    jobResult: result,
+    now
+  });
+}
+
+async function processNextRepositoryTransitionResult(
+  context: WorkflowApiRequestContext
+): Promise<{ processed: boolean; transitionType?: string }> {
+  if (
+    context.fixture ||
+    !context.repositoryTransitionResultReader ||
+    !context.readModel ||
+    !context.workflowTransitionCommand?.recordRepositoryTransition
+  ) {
+    return { processed: false };
+  }
+
+  return runRepositoryTransitionWorkerOnce({
+    readModel: context.readModel,
+    workflowTransitionCommand: context.workflowTransitionCommand,
+    repositoryTransitionResultReader: context.repositoryTransitionResultReader,
+    now: context.now()
+  });
 }
 
 async function recordPrdIntakeCommand(context: WorkflowApiRequestContext, prdJiraKey: string): Promise<void> {

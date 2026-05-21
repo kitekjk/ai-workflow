@@ -237,7 +237,54 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.feedbackRevisionCommand).toBeDefined();
       expect(runtime.workflowResultCommand).toBeDefined();
       expect(runtime.workflowTransitionCommand).toBeDefined();
+      expect(runtime.repositoryTransitionResultReader).toBeDefined();
+      expect(runtime.repositoryTransitionIntervalMs).toBe(1_000);
       expect(runtime.internalTickIntervalMs).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("allows the repository transition interval to be disabled or tuned", async () => {
+    const disabledRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled",
+      WORKFLOW_REPOSITORY_TRANSITION_MS: "0"
+    });
+    const tunedRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled",
+      WORKFLOW_REPOSITORY_TRANSITION_MS: "250"
+    });
+
+    try {
+      expect(disabledRuntime.repositoryTransitionIntervalMs).toBeUndefined();
+      expect(tunedRuntime.repositoryTransitionIntervalMs).toBe(250);
+    } finally {
+      await disabledRuntime.close();
+      await tunedRuntime.close();
+    }
+  });
+
+  it("wires repository transition worker identity and lease configuration", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled",
+      WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID: "transition-worker-a",
+      WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS: "45000"
+    });
+
+    try {
+      const reader = runtime.repositoryTransitionResultReader as unknown as {
+        workerId: string;
+        leaseMs: number;
+      };
+
+      expect(reader.workerId).toBe("transition-worker-a");
+      expect(reader.leaseMs).toBe(45_000);
     } finally {
       await runtime.close();
     }

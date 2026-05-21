@@ -36,6 +36,13 @@ Important readiness note:
 - `WORKFLOW_INTERNAL_TICK_MS` controls the compatibility tick loop. It defaults
   to `1000` ms when the fixture is enabled; set it to `0` or `disabled` to use
   only the manual development/test `POST /tick` trigger.
+- `WORKFLOW_REPOSITORY_TRANSITION_MS` controls the repository-backed runner
+  result transition loop when the compatibility fixture is disabled. It
+  defaults to `1000` ms in MySQL no-fixture mode; set it to `0` or `disabled`
+  when a separate worker process owns result transitions.
+- `WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID` and
+  `WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS` identify repository transition
+  workers and control the MySQL claim lease for pending runner results.
 - On API startup in MySQL mode, the compatibility fixture is hydrated from the
   MySQL read-model snapshot before HTTP routes are served.
 - In MySQL mode, the PRD state view plus generic workflow/document/approval
@@ -64,6 +71,20 @@ Important readiness note:
   requests through the Jira reader, validates the same requested-status/source
   requirements as the fixture workflow, and records the initial run/document/job
   through the shared command writer.
+- With the compatibility fixture disabled, runner result submission and the
+  internal repository transition loop now plan repository-backed transitions
+  for PRD/document generate, evaluate, revise, downstream routing, fan-out, and
+  implementation PR status jobs, then record the resulting `WorkflowMutation`
+  through the transition command. The loop reads terminal job results that do
+  not yet have a matching `workflow.engine_transition` event for
+  `processedResult.resultId`. When the loop is enabled, runner result requests
+  only persist the result and the loop owns workflow state transitions to avoid
+  duplicate processing. If the loop is disabled, the API keeps request-time
+  transition processing as a fallback. The same transition core can run as
+  `npm run start:repository-transition-worker`; the next production gap is a
+  production stress test for multiple transition workers sharing the MySQL
+  `workflow_transition_claim` lease table. Successfully applied transitions
+  mark their claim row as `processed`.
 
 ## Target Topology
 
@@ -103,6 +124,7 @@ workflows remain in the repository only as historical migration reference.
 | Workflow App | Human-facing dashboard and control plane | `ui-execution-dashboard-demo` |
 | Workflow API | Intake, state APIs, runner APIs, logs, events | `npm run start:api` |
 | Scheduler | Claim, lease, retry, cancellation, recovery | In-process in current API fixture |
+| Repository Transition Worker | Processes completed runner results into workflow transitions | `npm run start:repository-transition-worker` |
 | MySQL | Target persistent workflow/document store | `docker compose --profile workflow-db up -d workflow-mysql` |
 | Local Runner | Executes assigned jobs on a developer/planner PC | `npm run start:local-runner` |
 | Jira | Source of truth for intake and approval status | `JIRA_*` env |
@@ -188,6 +210,9 @@ Required environment variables:
 ```bash
 WORKFLOW_RUNTIME_STORE=mysql
 WORKFLOW_JOB_LEASE_MS=30000
+WORKFLOW_REPOSITORY_TRANSITION_MS=1000
+WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID=repository-transition-worker
+WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS=30000
 WORKFLOW_MYSQL_HOST=127.0.0.1
 WORKFLOW_MYSQL_PORT=3306
 WORKFLOW_MYSQL_DATABASE=ai_workflow
@@ -234,12 +259,42 @@ show tables like 'document_version';
 show tables like 'artifact';
 show tables like 'quality_gate_result';
 show tables like 'feedback_item';
+show tables like 'workflow_transition_claim';
 ```
 
 7. Start or restart the Workflow API after migrations are complete. In MySQL
    mode, startup logs should include the restored work-item/job counts when
    snapshot rows are present.
 8. Start local runners only after the API has passed smoke checks.
+
+To run repository-backed result transitions outside the API process, start the
+API with `WORKFLOW_REPOSITORY_TRANSITION_MS=0` and run a separate worker process
+with MySQL no-fixture runtime enabled:
+
+```bash
+WORKFLOW_RUNTIME_STORE=mysql \
+WORKFLOW_COMPATIBILITY_FIXTURE=disabled \
+WORKFLOW_REPOSITORY_TRANSITION_MS=1000 \
+WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID=transition-worker-a \
+npm run start:repository-transition-worker
+```
+
+For a one-shot smoke check, add:
+
+```bash
+WORKFLOW_REPOSITORY_TRANSITION_ONCE=true
+```
+
+Operational checks:
+
+```sql
+select status, count(*)
+from workflow_transition_claim
+group by status;
+```
+
+`claimed` rows with expired `lease_expires_at` can be retried by another
+worker. `processed` rows indicate a transition was applied successfully.
 
 Rollback rule:
 
@@ -340,7 +395,7 @@ Operators should monitor these workflow events:
 | `workflow.revision_job_recorded` | Feedback revision job was recorded | job id, job type, source key, status, feedback item ids |
 | `workflow.document_state` | Direct document state command was recorded | document id, document type, source key, status |
 | `workflow.job_recorded` | Direct workflow job command was recorded | job id, job type, source key, status |
-| `workflow.engine_transition` | Compatibility engine applied a workflow transition | `transitionType`, processed result summary, affected/created work item ids, affected document ids, before/after work item and external issue status |
+| `workflow.engine_transition` | Compatibility or repository-backed engine applied a workflow transition | `transitionType`, processed result summary, affected/created work item ids or document/job ids, before/after work item and external issue status when available |
 | `workflow.result_projection` | Runner result projection was recorded in the MySQL read model | projected job, result, document, version, artifact, and quality result ids |
 
 Use:
@@ -385,8 +440,10 @@ Before treating the system as production-backed, complete these gates:
   directly.
 - Keep any new workflow write paths on the shared workflow mutation applier so
   use cases do not reintroduce duplicate MySQL upsert SQL.
-- Decide whether the scheduler remains in-process with the API or moves to a
-  separate worker process.
+- Decide whether scheduler claim/recovery remains in-process with the API or
+  moves to a separate worker process.
+- Add a stronger concurrent claim contract for multiple repository transition
+  workers.
 - Add authentication and authorization for Workflow App and runner APIs.
 - Decide whether environment variables remain the credential source or whether
   a secret manager becomes mandatory.

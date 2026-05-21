@@ -1,4 +1,5 @@
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
+import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 import {
   MysqlWorkflowMutationApplier,
   type WorkflowMutation,
@@ -77,21 +78,16 @@ export class MysqlPrdIntakeCommand implements PrdIntakeCommand {
         }
       ],
       workflowJobs: [
-        {
+        createWorkflowJobRecord({
           id: input.jobId,
           runId: input.runId,
           jobType: "prd.generate_draft",
-          status: "pending",
           input: {},
-          priority: 0,
           projectId: "prd-confirmation",
           repositoryId: "prd-docs",
-          requiredRole: "planner",
-          requiredCapabilities: ["document.generate"],
-          executionPolicy: "local_allowed",
           createdAt: now,
           updatedAt: now
-        }
+        })
       ],
       events: [
         {

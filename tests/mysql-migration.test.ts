@@ -11,6 +11,10 @@ describe("MySQL core workflow migration", () => {
     join(process.cwd(), "migrations", "mysql", "002_workflow_snapshot_read_model.sql"),
     "utf8"
   );
+  const transitionClaimMigration = readFileSync(
+    join(process.cwd(), "migrations", "mysql", "003_workflow_transition_claim.sql"),
+    "utf8"
+  );
 
   it("creates the core workflow, runner, document, and artifact tables", () => {
     for (const table of [
@@ -77,6 +81,14 @@ describe("MySQL core workflow migration", () => {
     expect(readModelMigration).toContain("auto_revision_scheduled");
     expect(readModelMigration).toContain("CREATE TABLE IF NOT EXISTS feedback_item");
     expect(readModelMigration).toContain("uq_feedback_external");
+  });
+
+  it("adds repository transition claim storage for concurrent workers", () => {
+    expect(transitionClaimMigration).toContain("CREATE TABLE IF NOT EXISTS workflow_transition_claim");
+    expect(transitionClaimMigration).toContain("workflow_job_result_id VARCHAR(64) PRIMARY KEY");
+    expect(transitionClaimMigration).toContain("claimed_by_worker_id");
+    expect(transitionClaimMigration).toContain("lease_expires_at");
+    expect(transitionClaimMigration).toContain("fk_workflow_transition_claim_result");
   });
 });
 

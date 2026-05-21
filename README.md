@@ -109,7 +109,25 @@ compatibility fixture is enabled; set it to `0` or `disabled` to keep only the
 manual dev/test `POST /tick` trigger. Runner result processing also records the
 run projection for
 `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`,
-and current document pointers.
+and current document pointers. With the compatibility fixture disabled,
+repository-backed result transitions also run from an internal repository loop
+controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS` so completed runner results
+can advance workflow state without a manual `/tick`. When that loop is enabled,
+runner result requests only persist the result; the loop owns the workflow
+state transition to avoid duplicate processing. If the loop is disabled, the
+API keeps the request-time transition path as a fallback.
+
+To run that transition loop outside the API process, set
+`WORKFLOW_REPOSITORY_TRANSITION_MS=0` on the API and run:
+
+```bash
+WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID=transition-worker-a \
+npm run start:repository-transition-worker
+```
+
+Multiple transition workers coordinate through the MySQL
+`workflow_transition_claim` lease table. Successful transitions close the claim
+as `processed`.
 
 Example API calls:
 
