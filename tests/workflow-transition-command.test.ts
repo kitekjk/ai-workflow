@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Document } from "../src/document-core/domain";
-import type { AgentJob } from "../src/prd-confirmation/domain";
-import { MysqlWorkflowTransitionCommand } from "../src/workflow-api/workflow-transition-command";
-import type { WorkflowTask } from "../src/workflow-core/domain";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import type { Document } from "../backend/src/document-core/domain";
+import type { AgentJob } from "../backend/src/prd-confirmation/domain";
+import { MysqlWorkflowTransitionCommand } from "../backend/src/workflow-api/workflow-transition-command";
+import type { WorkflowTask } from "../backend/src/workflow-core/domain";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowTransitionCommand", () => {
   it("records document approval state as a direct MySQL command", async () => {

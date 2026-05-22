@@ -3,7 +3,7 @@ import {
   createJobPromptContractPayload,
   documentPromptContracts,
   outputSchemaForJob
-} from "../src/document-core/prompt-contracts";
+} from "../backend/src/document-core/prompt-contracts";
 
 describe("document prompt contracts", () => {
   it("defines required sections for every document type used in the pipeline", () => {

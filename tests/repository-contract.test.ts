@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { DocumentRepository } from "../src/document-core/repository";
-import { getDocumentCurrentView } from "../src/document-core/views";
-import { InMemoryDocumentRepository } from "../src/document-core/in-memory-repository";
-import type { WorkflowRepository } from "../src/workflow-core/repository";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
-import { WorkflowScheduler } from "../src/workflow-core/scheduler";
+import type { DocumentRepository } from "../backend/src/document-core/repository";
+import { getDocumentCurrentView } from "../backend/src/document-core/views";
+import { InMemoryDocumentRepository } from "../backend/src/document-core/in-memory-repository";
+import type { WorkflowRepository } from "../backend/src/workflow-core/repository";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
+import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
 
 describe("repository contracts", () => {
   it("lets the scheduler depend on the workflow repository interface", async () => {

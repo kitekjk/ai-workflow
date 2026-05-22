@@ -27,18 +27,18 @@ Runner Skill
 
 ## Implemented Files
 
-- `src/workflow-api/server.ts`: HTTP API for PRD intake, feedback revision,
+- `backend/src/workflow-api/server.ts`: HTTP API for PRD intake, feedback revision,
   ticks, state lookup, and quality test control.
-- `src/workflow-api/main.ts`: runtime entrypoint.
-- `src/runtime/create-runtime.ts`: creates stub or real integration runtime
+- `backend/src/workflow-api/main.ts`: runtime entrypoint.
+- `backend/src/runtime/create-runtime.ts`: creates stub or real integration runtime
   from environment variables.
-- `src/prd-confirmation/*`: in-memory workflow state, engine, scheduler,
+- `backend/src/prd-confirmation/*`: in-memory workflow state, engine, scheduler,
   runner worker, stub skill, adapter-backed PRD skill, and ports.
-- `src/integrations/jira-client.ts`: Jira REST reader for PRD ticket plus linked
+- `backend/src/integrations/jira-client.ts`: Jira REST reader for PRD ticket plus linked
   source requests.
-- `src/integrations/local-git-prd-repository.ts`: commits PRD markdown directly
+- `backend/src/integrations/local-git-prd-repository.ts`: commits PRD markdown directly
   to the configured local Git repo.
-- `src/integrations/confluence-wiki.ts`: publishes PRD markdown as a Confluence
+- `backend/src/integrations/confluence-wiki.ts`: publishes PRD markdown as a Confluence
   page under a configured parent page.
 - `tests/*`: TDD coverage for workflow behavior, API behavior, and integration
   adapters.

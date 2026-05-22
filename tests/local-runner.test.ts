@@ -3,19 +3,19 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { InMemoryDocumentRepository } from "../src/document-core/in-memory-repository";
+import { InMemoryDocumentRepository } from "../backend/src/document-core/in-memory-repository";
 import {
   CliLocalRunnerEngine,
   JobTemplateCliLocalRunnerEngine,
   normalizeLocalRunnerCliResult
-} from "../src/local-runner/cli-engine-adapter";
-import { runLocalRunnerDrain, runLocalRunnerOnce, type LocalRunnerEngine } from "../src/local-runner/local-runner";
-import { RunnerResultValidationError } from "../src/local-runner/result-schema";
-import { WorkflowApiRunnerClient } from "../src/local-runner/runner-client";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
-import { WorkflowScheduler } from "../src/workflow-core/scheduler";
-import { createWorkflowApiServer, type WorkflowApiServer } from "../src/workflow-api/server";
+} from "../backend/src/local-runner/cli-engine-adapter";
+import { runLocalRunnerDrain, runLocalRunnerOnce, type LocalRunnerEngine } from "../backend/src/local-runner/local-runner";
+import { RunnerResultValidationError } from "../backend/src/local-runner/result-schema";
+import { WorkflowApiRunnerClient } from "../backend/src/local-runner/runner-client";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
+import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
+import { createWorkflowApiServer, type WorkflowApiServer } from "../backend/src/workflow-api/server";
 
 const now = new Date("2026-05-20T00:00:00.000Z");
 

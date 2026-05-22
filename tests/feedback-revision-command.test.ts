@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AgentJob, FeedbackItem } from "../src/prd-confirmation/domain";
-import { MysqlFeedbackRevisionCommand } from "../src/workflow-api/feedback-revision-command";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import type { AgentJob, FeedbackItem } from "../backend/src/prd-confirmation/domain";
+import { MysqlFeedbackRevisionCommand } from "../backend/src/workflow-api/feedback-revision-command";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlFeedbackRevisionCommand", () => {
   it("records standalone document feedback as a direct MySQL command", async () => {

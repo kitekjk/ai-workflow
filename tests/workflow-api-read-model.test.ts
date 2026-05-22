@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MysqlWorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { MysqlWorkflowApiReadModel } from "../backend/src/workflow-api/mysql-read-model";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowApiReadModel", () => {
   it("summarizes workflow and document views directly from MySQL read-model rows", async () => {

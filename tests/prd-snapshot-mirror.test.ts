@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { createGenericPrdSnapshot } from "../src/prd-confirmation/generic-adapter";
-import { MysqlPrdSnapshotMirror } from "../src/prd-confirmation/mysql-snapshot-mirror";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { createGenericPrdSnapshot } from "../backend/src/prd-confirmation/generic-adapter";
+import { MysqlPrdSnapshotMirror } from "../backend/src/prd-confirmation/mysql-snapshot-mirror";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdSnapshotMirror", () => {
   it("mirrors fixture workflow snapshots into MySQL read-model tables in dependency order", async () => {

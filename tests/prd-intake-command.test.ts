@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MysqlPrdIntakeCommand } from "../src/workflow-api/prd-intake-command";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { MysqlPrdIntakeCommand } from "../backend/src/workflow-api/prd-intake-command";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdIntakeCommand", () => {
   it("records PRD intake as a direct MySQL workflow/document/job command", async () => {

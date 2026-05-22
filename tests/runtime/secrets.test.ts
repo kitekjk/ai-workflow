@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configuredCredentialEnvKeys, credentialEnvAllowlist, redactSecrets } from "../../src/runtime/secrets";
+import { configuredCredentialEnvKeys, credentialEnvAllowlist, redactSecrets } from "../../backend/src/runtime/secrets";
 
 describe("runtime secret handling", () => {
   it("keeps credential environment keys on an explicit allowlist", () => {

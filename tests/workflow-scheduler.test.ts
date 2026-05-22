@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
-import { WorkflowScheduler } from "../src/workflow-core/scheduler";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
+import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
 
 const now = new Date("2026-05-20T00:00:00.000Z");
 

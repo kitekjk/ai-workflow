@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fromMysqlDateTime, toMysqlDateTime, toNullableMysqlDateTime } from "../src/mysql/datetime";
+import { fromMysqlDateTime, toMysqlDateTime, toNullableMysqlDateTime } from "../backend/src/mysql/datetime";
 
 describe("MySQL datetime formatting", () => {
   it("formats ISO timestamps for DATETIME(3) parameters", () => {

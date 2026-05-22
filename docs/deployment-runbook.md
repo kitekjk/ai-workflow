@@ -18,7 +18,7 @@ The repository already contains:
 
 Important readiness note:
 
-- `src/workflow-api/main.ts` supports `WORKFLOW_RUNTIME_STORE=memory` and
+- `backend/src/workflow-api/main.ts` supports `WORKFLOW_RUNTIME_STORE=memory` and
   `WORKFLOW_RUNTIME_STORE=mysql`.
 - `memory` is the default fixture-backed local mode.
 - `mysql` wires the runner/scheduler APIs and document artifact APIs to
@@ -147,7 +147,7 @@ workflows remain in the repository only as historical migration reference.
 
 | Role | Responsibility | Current entrypoint |
 | --- | --- | --- |
-| Workflow App | Human-facing dashboard and control plane | `ui-execution-dashboard-demo` |
+| Workflow App | Human-facing dashboard and control plane | `apps/workflow-app` |
 | Workflow API | Intake, state APIs, runner APIs, logs, events | `npm run start:api` |
 | Scheduler | Claim, lease, retry, cancellation, recovery | In-process in current API fixture |
 | Repository Transition Worker | Processes completed runner results into workflow transitions | `npm run start:repository-transition-worker` |
@@ -174,8 +174,8 @@ npm run start:api
 Start the dashboard:
 
 ```bash
-npm --prefix ui-execution-dashboard-demo install
-npm --prefix ui-execution-dashboard-demo run dev
+npm --prefix apps/workflow-app install
+npm --prefix apps/workflow-app run dev
 ```
 
 Start a local runner in another terminal:
@@ -651,7 +651,7 @@ Allowed credential keys:
 
 Do not add new token/password environment variable names without updating:
 
-- `src/runtime/secrets.ts`
+- `backend/src/runtime/secrets.ts`
 - redaction tests
 - `.env.example`
 - this runbook

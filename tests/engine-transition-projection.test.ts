@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { runRunnerWorkerOnce } from "../src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../src/prd-confirmation/scheduler";
-import { runEngineStep } from "../src/prd-confirmation/workflow-engine";
-import { createEngineTransitionCommandInput } from "../src/workflow-api/engine-transition-projection";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
+import { runEngineStep } from "../backend/src/prd-confirmation/workflow-engine";
+import { createEngineTransitionCommandInput } from "../backend/src/workflow-api/engine-transition-projection";
 
 describe("engine transition projection", () => {
   it("projects engine step metadata into one transition command input", async () => {

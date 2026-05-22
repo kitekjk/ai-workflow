@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { InMemoryDocumentRepository } from "../src/document-core/in-memory-repository";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
-import { WorkflowScheduler } from "../src/workflow-core/scheduler";
-import { createWorkflowApiServer, type WorkflowApiServer } from "../src/workflow-api/server";
+import { InMemoryDocumentRepository } from "../backend/src/document-core/in-memory-repository";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
+import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
+import { createWorkflowApiServer, type WorkflowApiServer } from "../backend/src/workflow-api/server";
 
 const now = "2026-05-20T00:00:00.000Z";
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 import {
   MysqlDocumentRepository,
   rowToArtifact,
   rowToDocument,
   rowToDocumentVersion
-} from "../src/document-core/mysql-repository";
+} from "../backend/src/document-core/mysql-repository";
 
 describe("MysqlDocumentRepository", () => {
   it("inserts documents with draft status", async () => {

@@ -1,20 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { prdConfirmationWorkflowPolicy } from "../src/prd-confirmation/domain";
-import type { JiraIssueReader, WikiFeedbackCollector } from "../src/prd-confirmation/ports";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { prdConfirmationWorkflowPolicy } from "../backend/src/prd-confirmation/domain";
+import type { JiraIssueReader, WikiFeedbackCollector } from "../backend/src/prd-confirmation/ports";
 import type {
   RecordFeedbackCommandInput,
   RecordRevisionJobCommandInput
-} from "../src/workflow-api/feedback-revision-command";
-import type { WorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
-import type { RecordWorkflowResultProjectionInput } from "../src/workflow-api/workflow-result-command";
-import { createWorkflowApiServer, type WorkflowApiServer } from "../src/workflow-api/server";
+} from "../backend/src/workflow-api/feedback-revision-command";
+import type { WorkflowApiReadModel } from "../backend/src/workflow-api/mysql-read-model";
+import type { RecordWorkflowResultProjectionInput } from "../backend/src/workflow-api/workflow-result-command";
+import { createWorkflowApiServer, type WorkflowApiServer } from "../backend/src/workflow-api/server";
 import type {
   RecordEngineTransitionCommandInput,
   RecordDocumentStateCommandInput,
   RecordWorkflowJobCommandInput
-} from "../src/workflow-api/workflow-transition-command";
-import type { RecordPrdIntakeInput } from "../src/workflow-api/prd-intake-command";
+} from "../backend/src/workflow-api/workflow-transition-command";
+import type { RecordPrdIntakeInput } from "../backend/src/workflow-api/prd-intake-command";
 
 describe("Workflow API", () => {
   let server: WorkflowApiServer;

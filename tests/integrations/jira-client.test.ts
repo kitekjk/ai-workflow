@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JiraRestClient } from "../../src/integrations/jira-client";
+import { JiraRestClient } from "../../backend/src/integrations/jira-client";
 
 describe("JiraRestClient", () => {
   let server: Awaited<ReturnType<typeof createFakeJiraServer>>;

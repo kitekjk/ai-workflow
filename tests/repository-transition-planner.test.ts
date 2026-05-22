@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../src/workflow-core/domain";
-import { planRepositoryWorkflowTransition } from "../src/workflow-api/repository-transition-planner";
+import type { Document } from "../backend/src/document-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../backend/src/workflow-core/domain";
+import { planRepositoryWorkflowTransition } from "../backend/src/workflow-api/repository-transition-planner";
 
 describe("repository transition planner", () => {
   it("plans a PRD draft-generated transition without fixture state", () => {

@@ -3,8 +3,8 @@ import {
   createSmokeLocalRunnerSetup,
   smokeImplementationModeFor,
   type MysqlNoFixtureSmokeConfig
-} from "../src/smoke/mysql-no-fixture-smoke";
-import type { WorkflowJob } from "../src/workflow-core/domain";
+} from "../backend/src/smoke/mysql-no-fixture-smoke";
+import type { WorkflowJob } from "../backend/src/workflow-core/domain";
 
 describe("mysql no-fixture smoke setup", () => {
   it("keeps stub implementation mode as the default", () => {

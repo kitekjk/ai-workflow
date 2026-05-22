@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { createGenericPrdSnapshot } from "../src/prd-confirmation/generic-adapter";
-import { runEngineOnce, runEngineStep } from "../src/prd-confirmation/workflow-engine";
-import { runRunnerWorkerOnce } from "../src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../src/prd-confirmation/scheduler";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { createGenericPrdSnapshot } from "../backend/src/prd-confirmation/generic-adapter";
+import { runEngineOnce, runEngineStep } from "../backend/src/prd-confirmation/workflow-engine";
+import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
 
 describe("PRD confirmation workflow", () => {
   it("creates a PRD draft job from an existing planner-owned PRD Jira ticket", async () => {

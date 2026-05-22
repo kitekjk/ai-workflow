@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../src/document-core/domain";
-import { MysqlWorkflowResultCommand } from "../src/workflow-api/workflow-result-command";
-import type { WorkflowJob, WorkflowJobResult, WorkflowTask } from "../src/workflow-core/domain";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../backend/src/document-core/domain";
+import { MysqlWorkflowResultCommand } from "../backend/src/workflow-api/workflow-result-command";
+import type { WorkflowJob, WorkflowJobResult, WorkflowTask } from "../backend/src/workflow-core/domain";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowResultCommand", () => {
   it("records runner result projections in read-model dependency order", async () => {

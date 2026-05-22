@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../src/workflow-core/domain";
-import type { WorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
-import { runRepositoryTransitionWorkerOnce } from "../src/workflow-api/repository-transition-worker";
-import type { WorkflowMutation } from "../src/workflow-api/workflow-mutation-applier";
+import type { Document } from "../backend/src/document-core/domain";
+import type { WorkflowJob, WorkflowJobResult } from "../backend/src/workflow-core/domain";
+import type { WorkflowApiReadModel } from "../backend/src/workflow-api/mysql-read-model";
+import { runRepositoryTransitionWorkerOnce } from "../backend/src/workflow-api/repository-transition-worker";
+import type { WorkflowMutation } from "../backend/src/workflow-api/workflow-mutation-applier";
 
 describe("runRepositoryTransitionWorkerOnce", () => {
   it("processes one pending repository transition result", async () => {

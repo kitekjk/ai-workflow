@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../src/workflow-core/domain";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
-import { WorkflowScheduler } from "../src/workflow-core/scheduler";
-import type { WorkflowMutation } from "../src/workflow-api/workflow-mutation-applier";
-import type { WorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
-import type { RepositoryTransitionPendingResultReader } from "../src/workflow-api/repository-transition-processor";
-import { createWorkflowApiServer } from "../src/workflow-api/server";
+import type { Document } from "../backend/src/document-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../backend/src/workflow-core/domain";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
+import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
+import type { WorkflowMutation } from "../backend/src/workflow-api/workflow-mutation-applier";
+import type { WorkflowApiReadModel } from "../backend/src/workflow-api/mysql-read-model";
+import type { RepositoryTransitionPendingResultReader } from "../backend/src/workflow-api/repository-transition-processor";
+import { createWorkflowApiServer } from "../backend/src/workflow-api/server";
 
 describe("repository transition API integration", () => {
   it("records repository-backed document transitions after no-fixture runner results", async () => {

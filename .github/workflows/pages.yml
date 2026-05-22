@@ -28,14 +28,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: ui-execution-dashboard-demo/package-lock.json
+          cache-dependency-path: apps/workflow-app/package-lock.json
 
       - name: Install dependencies
-        working-directory: ui-execution-dashboard-demo
+        working-directory: apps/workflow-app
         run: npm ci
 
       - name: Build
-        working-directory: ui-execution-dashboard-demo
+        working-directory: apps/workflow-app
         run: npm run build
 
       - name: Configure GitHub Pages
@@ -46,7 +46,7 @@ jobs:
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: ui-execution-dashboard-demo/dist
+          path: apps/workflow-app/dist
 
   deploy:
     environment:

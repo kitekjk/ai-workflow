@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 import {
   MysqlWorkflowRepository,
   rowToRunner,
   rowToWorkflowEvent,
   rowToWorkflowJob,
   rowToWorkflowTask
-} from "../src/workflow-core/mysql-repository";
+} from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowRepository", () => {
   it("inserts workflow runs and jobs through the repository contract", async () => {

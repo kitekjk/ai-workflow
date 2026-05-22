@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { runLocalRunnerPreflight } from "../src/local-runner/preflight";
+import { runLocalRunnerPreflight } from "../backend/src/local-runner/preflight";
 
 describe("local runner preflight", () => {
   const cleanupRoots: string[] = [];

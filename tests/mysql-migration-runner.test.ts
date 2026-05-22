@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
-import { applyMysqlMigrations, splitMysqlStatements, type MysqlMigration } from "../src/mysql/migrations";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
+import { applyMysqlMigrations, splitMysqlStatements, type MysqlMigration } from "../backend/src/mysql/migrations";
 
 describe("MySQL migration runner", () => {
   it("splits SQL statements while preserving semicolons inside strings", () => {

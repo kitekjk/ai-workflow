@@ -4,7 +4,7 @@
 
 **Goal:** Replace the stub PRD generation and quality evaluation logic with runner skills that execute Claude CLI or Codex CLI and return standardized PRD artifacts and gate results.
 
-**Architecture:** Keep the existing Workflow API, Engine, Scheduler, and Runner Worker unchanged. Add engine adapters under `src/runner-engines`, job adapters under `src/prd-confirmation`, and tests that execute deterministic fake CLI binaries before wiring real `claude` or `codex` commands through environment configuration.
+**Architecture:** Keep the existing Workflow API, Engine, Scheduler, and Runner Worker unchanged. Add engine adapters under `backend/src/runner-engines`, job adapters under `backend/src/prd-confirmation`, and tests that execute deterministic fake CLI binaries before wiring real `claude` or `codex` commands through environment configuration.
 
 **Tech Stack:** TypeScript, Node.js child_process, Vitest, existing in-memory workflow slice, existing Jira/Git/Confluence adapters.
 
@@ -12,15 +12,15 @@
 
 ## File Structure
 
-- Create `src/runner-engines/cli-engine.ts`: generic process runner for CLI
+- Create `backend/src/runner-engines/cli-engine.ts`: generic process runner for CLI
   engines with timeout, stdout/stderr capture, JSON result parsing, and clear
   errors.
-- Create `src/runner-engines/engine-config.ts`: reads `RUNNER_ENGINE`,
+- Create `backend/src/runner-engines/engine-config.ts`: reads `RUNNER_ENGINE`,
   `CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, timeout, and model/prompt settings.
-- Create `src/prd-confirmation/cli-prd-skills.ts`: PRD skill executor that uses
+- Create `backend/src/prd-confirmation/cli-prd-skills.ts`: PRD skill executor that uses
   the CLI engine for `prd.generate_draft`, `prd.evaluate_quality`, and
   `prd.apply_feedback_revision`.
-- Modify `src/runtime/create-runtime.ts`: choose stub, adapter-backed, or CLI
+- Modify `backend/src/runtime/create-runtime.ts`: choose stub, adapter-backed, or CLI
   PRD skill based on environment.
 - Modify `.env.example`: document CLI runner configuration.
 - Add `tests/runner-engines/cli-engine.test.ts`: verifies process execution,
@@ -32,7 +32,7 @@
 ## Task 1: CLI Engine
 
 **Files:**
-- Create: `src/runner-engines/cli-engine.ts`
+- Create: `backend/src/runner-engines/cli-engine.ts`
 - Test: `tests/runner-engines/cli-engine.test.ts`
 
 - [ ] **Step 1: Write the failing process success test**
@@ -42,7 +42,7 @@ import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CliEngine } from "../../src/runner-engines/cli-engine";
+import { CliEngine } from "../../backend/src/runner-engines/cli-engine";
 
 it("runs a CLI command and parses JSON stdout", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cli-engine-"));
@@ -65,7 +65,7 @@ Run:
 npm test -- tests/runner-engines/cli-engine.test.ts
 ```
 
-Expected: fail because `src/runner-engines/cli-engine.ts` does not exist.
+Expected: fail because `backend/src/runner-engines/cli-engine.ts` does not exist.
 
 - [ ] **Step 3: Implement minimal `CliEngine`**
 
@@ -128,7 +128,7 @@ Expected: all CLI engine tests pass.
 ## Task 2: CLI PRD Skill Executor
 
 **Files:**
-- Create: `src/prd-confirmation/cli-prd-skills.ts`
+- Create: `backend/src/prd-confirmation/cli-prd-skills.ts`
 - Test: `tests/prd-confirmation-cli-skills.test.ts`
 
 - [ ] **Step 1: Write the failing PRD draft test**
@@ -214,8 +214,8 @@ Expected: all CLI PRD skill tests pass.
 ## Task 3: Runtime Configuration
 
 **Files:**
-- Create: `src/runner-engines/engine-config.ts`
-- Modify: `src/runtime/create-runtime.ts`
+- Create: `backend/src/runner-engines/engine-config.ts`
+- Modify: `backend/src/runtime/create-runtime.ts`
 - Modify: `.env.example`
 - Test: `tests/runtime/create-runtime.test.ts`
 

@@ -102,7 +102,7 @@ function buildBridgeArgs(options: {
 
 function bridgeScriptPath(): string {
   const currentDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(currentDir, "../../scripts/document-runner-engine.mjs");
+  return resolve(currentDir, "../../../scripts/document-runner-engine.mjs");
 }
 
 function selectRunnerEngine(

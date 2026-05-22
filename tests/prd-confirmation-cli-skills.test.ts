@@ -3,13 +3,13 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LocalGitPrdRepository } from "../src/integrations/local-git-prd-repository";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { CliPrdSkills } from "../src/prd-confirmation/cli-prd-skills";
-import { runRunnerWorkerOnce } from "../src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../src/prd-confirmation/scheduler";
-import { runEngineOnce } from "../src/prd-confirmation/workflow-engine";
-import { CliEngine } from "../src/runner-engines/cli-engine";
+import { LocalGitPrdRepository } from "../backend/src/integrations/local-git-prd-repository";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { CliPrdSkills } from "../backend/src/prd-confirmation/cli-prd-skills";
+import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
+import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
+import { CliEngine } from "../backend/src/runner-engines/cli-engine";
 
 describe("CliPrdSkills", () => {
   it("generates a PRD draft through CLI output and publishes artifacts", async () => {

@@ -220,6 +220,10 @@ PRD intake
   Status` and `Local Runner Onboarding` no longer render on the current detail
   page, and runner setup/status is reserved for a future settings or runner
   management screen.
+- Repository layout was clarified before the next feature slice:
+  frontend code moved from `ui-execution-dashboard-demo` to
+  `apps/workflow-app`, while backend/domain/runner code moved from root `src`
+  to `backend/src`.
 
 ## Next Work
 
@@ -238,7 +242,7 @@ Current good after the full slice:
 - `npm run smoke:mysql:no-fixture` passed through PRD/HLD/LLD/Spec approval,
   implementation PR creation/status collection, final workflow-run completion,
   4 completed Code tasks, and 8 pull request artifacts with 28 processed jobs
-- `npm --prefix ui-execution-dashboard-demo run build`
+- `npm --prefix apps/workflow-app run build`
 - `npx vitest run tests/local-runner-preflight.test.ts tests/local-runner-github-implementation.test.ts tests/local-runner.test.ts`
 - `npm test -- tests/local-runner-github-implementation.test.ts tests/repository-transition-planner.test.ts`
 - `npm test -- tests/runner-api.test.ts`
@@ -292,3 +296,9 @@ Current good after the full slice:
   Workflow List, Connected Workflow View, Task Delivery Map, Selected Item, and
   Status Events, has no horizontal body overflow, and reports no console
   errors.
+- Repository layout rename validation passed: `npm run typecheck`,
+  `npm test`, and `npm --prefix apps/workflow-app run build` all passed after
+  moving backend code to `backend/src` and the frontend to
+  `apps/workflow-app`. Browser reload at `http://127.0.0.1:5173/ai-workflow/`
+  rendered the same dashboard panels with title `workflow-app`, no horizontal
+  overflow, and no console errors.

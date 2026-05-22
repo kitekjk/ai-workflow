@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LocalGitPrdRepository } from "../../src/integrations/local-git-prd-repository";
+import { LocalGitPrdRepository } from "../../backend/src/integrations/local-git-prd-repository";
 
 describe("LocalGitPrdRepository", () => {
   it("commits PRD markdown directly to the current branch", async () => {

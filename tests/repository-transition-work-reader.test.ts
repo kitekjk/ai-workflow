@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MysqlRepositoryTransitionWorkReader } from "../src/workflow-api/repository-transition-work-reader";
-import type { MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { MysqlRepositoryTransitionWorkReader } from "../backend/src/workflow-api/repository-transition-work-reader";
+import type { MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlRepositoryTransitionWorkReader", () => {
   it("reads the oldest terminal job result that has not been transitioned", async () => {

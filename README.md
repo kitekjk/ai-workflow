@@ -21,10 +21,11 @@ historical experiments and reference material.
 
 ```text
 ai-workflow/
+  apps/workflow-app/            Workflow App frontend
+  backend/src/                  Workflow API, scheduler, runner, domain code
   docs/                         Requirements, notes, and design decisions
   scripts/                      Local runner demos and helper scripts
   skills/                       Versioned skill package experiments
-  ui-execution-dashboard-demo/  Frontend execution dashboard demo
   workflows/experiments/n8n/    Archived n8n workflow experiments
 ```
 
@@ -46,8 +47,8 @@ operations.
 
 ## Existing Demos
 
-- `ui-execution-dashboard-demo/`: frontend-only mock dashboard for nested
-  workflow execution visibility.
+- `apps/workflow-app/`: React Workflow App for execution visibility and
+  control-plane actions.
 - `scripts/agent-runner-demo.mjs`: local demo runner that executes the
   `skills/prd.simple` package through Claude CLI.
 - `npm run demo:prd`: TypeScript vertical slice for PRD confirmation workflow

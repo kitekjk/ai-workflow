@@ -69,7 +69,7 @@ The dashboard still ships with a mock execution tree, and it can also connect to
 ## Run Locally
 
 ```powershell
-cd ui-execution-dashboard-demo
+cd apps/workflow-app
 npm install
 npm run dev
 ```

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyStore } from "../src/prd-confirmation/domain";
-import { MysqlPrdSnapshotLoader } from "../src/prd-confirmation/mysql-snapshot-loader";
-import { runEngineOnce } from "../src/prd-confirmation/workflow-engine";
-import { PrdConfirmationWorkflow } from "../src/prd-confirmation/workflow";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { createEmptyStore } from "../backend/src/prd-confirmation/domain";
+import { MysqlPrdSnapshotLoader } from "../backend/src/prd-confirmation/mysql-snapshot-loader";
+import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
+import { PrdConfirmationWorkflow } from "../backend/src/prd-confirmation/workflow";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdSnapshotLoader", () => {
   it("restores the PRD compatibility store from MySQL read-model rows without replaying processed results", async () => {

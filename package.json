@@ -6,13 +6,13 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm test",
-    "demo:prd": "tsx src/demo/prd-confirmation-demo.ts",
-    "start:api": "tsx src/workflow-api/main.ts",
-    "start:repository-transition-worker": "tsx src/workflow-api/repository-transition-worker-main.ts",
-    "start:local-runner": "tsx src/local-runner/main.ts",
-    "doctor:local-runner": "tsx src/local-runner/preflight-main.ts",
-    "db:migrate:mysql": "tsx src/mysql/apply-migrations.ts",
-    "smoke:mysql:no-fixture": "tsx src/smoke/mysql-no-fixture-smoke.ts"
+    "demo:prd": "tsx backend/src/demo/prd-confirmation-demo.ts",
+    "start:api": "tsx backend/src/workflow-api/main.ts",
+    "start:repository-transition-worker": "tsx backend/src/workflow-api/repository-transition-worker-main.ts",
+    "start:local-runner": "tsx backend/src/local-runner/main.ts",
+    "doctor:local-runner": "tsx backend/src/local-runner/preflight-main.ts",
+    "db:migrate:mysql": "tsx backend/src/mysql/apply-migrations.ts",
+    "smoke:mysql:no-fixture": "tsx backend/src/smoke/mysql-no-fixture-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",

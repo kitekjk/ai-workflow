@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryDocumentRepository } from "../src/document-core/in-memory-repository";
-import { getDocumentCurrentView, getDocumentHistoryView } from "../src/document-core/views";
+import { InMemoryDocumentRepository } from "../backend/src/document-core/in-memory-repository";
+import { getDocumentCurrentView, getDocumentHistoryView } from "../backend/src/document-core/views";
 
 describe("document-core current and history views", () => {
   it("keeps current artifact pointers separate from immutable history", () => {

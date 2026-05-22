@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Runner } from "../src/workflow-core/domain";
-import { canRunnerClaimJob } from "../src/workflow-core/domain";
-import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
+import type { Runner } from "../backend/src/workflow-core/domain";
+import { canRunnerClaimJob } from "../backend/src/workflow-core/domain";
+import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
 
 const now = new Date("2026-05-20T00:00:00.000Z");
 

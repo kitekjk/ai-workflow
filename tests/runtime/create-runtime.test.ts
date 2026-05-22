@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AdapterBackedPrdSkills } from "../../src/prd-confirmation/adapter-backed-skills";
-import { CliPrdSkills } from "../../src/prd-confirmation/cli-prd-skills";
-import { StubPrdSkills } from "../../src/prd-confirmation/runner-skills";
+import { AdapterBackedPrdSkills } from "../../backend/src/prd-confirmation/adapter-backed-skills";
+import { CliPrdSkills } from "../../backend/src/prd-confirmation/cli-prd-skills";
+import { StubPrdSkills } from "../../backend/src/prd-confirmation/runner-skills";
 import {
   createWorkflowApiRuntimeFromEnv,
   parseLeaseMs,
   parseRunnerOfflineAfterMs,
   parseWorkflowApiAuthConfig,
   parseWorkflowRuntimeStore
-} from "../../src/runtime/create-workflow-api-runtime";
+} from "../../backend/src/runtime/create-workflow-api-runtime";
 import {
   confluenceParentPageIdsByDocumentType,
   createRuntimeFromEnv,
@@ -16,7 +16,7 @@ import {
   githubRuntimeConfig,
   jiraTransitionIds,
   jiraWritebackFieldIds
-} from "../../src/runtime/create-runtime";
+} from "../../backend/src/runtime/create-runtime";
 
 describe("createRuntimeFromEnv", () => {
   it("uses seeded stub runtime when integration mode is not real", () => {

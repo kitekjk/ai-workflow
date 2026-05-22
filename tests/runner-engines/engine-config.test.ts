@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCliEngineConfig } from "../../src/runner-engines/engine-config";
+import { createCliEngineConfig } from "../../backend/src/runner-engines/engine-config";
 
 describe("createCliEngineConfig", () => {
   it("gives the bridge process more time than the selected CLI child timeout", () => {

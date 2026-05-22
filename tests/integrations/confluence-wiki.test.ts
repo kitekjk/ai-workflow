@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfluenceWikiPublisher } from "../../src/integrations/confluence-wiki";
+import { ConfluenceWikiPublisher } from "../../backend/src/integrations/confluence-wiki";
 
 describe("ConfluenceWikiPublisher", () => {
   let server: Awaited<ReturnType<typeof createFakeConfluenceServer>>;

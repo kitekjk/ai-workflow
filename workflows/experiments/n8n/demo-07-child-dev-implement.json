@@ -48,7 +48,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "await new Promise(resolve => setTimeout(resolve, 9000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'code_implemented', files_changed: ['src/orders/create-order.ts', 'tests/orders/create-order.spec.ts'] } }));"
+        "jsCode": "await new Promise(resolve => setTimeout(resolve, 9000));\nreturn items.map(item => ({ json: { ...item.json, current_stage: 'code_implemented', files_changed: ['backend/src/orders/create-order.ts', 'tests/orders/create-order.spec.ts'] } }));"
       },
       "id": "7fdb8e12-f8f4-417f-8c50-ee31c016090f",
       "name": "Implement code placeholder",

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyStore } from "../src/prd-confirmation/domain";
-import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
-import { createGenericPrdSnapshot } from "../src/prd-confirmation/generic-adapter";
+import { createEmptyStore } from "../backend/src/prd-confirmation/domain";
+import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { createGenericPrdSnapshot } from "../backend/src/prd-confirmation/generic-adapter";
 
 describe("PRD generic adapter", () => {
   it("projects the existing PRD vertical slice into generic workflow and document views", async () => {

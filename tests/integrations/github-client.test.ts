@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GitHubRestClient } from "../../src/integrations/github-client";
+import { GitHubRestClient } from "../../backend/src/integrations/github-client";
 
 describe("GitHubRestClient", () => {
   let server: Awaited<ReturnType<typeof createFakeGitHubServer>>;

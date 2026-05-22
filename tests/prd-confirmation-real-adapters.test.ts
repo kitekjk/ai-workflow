@@ -3,14 +3,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ExternalIssue } from "../src/prd-confirmation/domain";
-import { createEmptyStore } from "../src/prd-confirmation/domain";
-import { AdapterBackedPrdSkills } from "../src/prd-confirmation/adapter-backed-skills";
-import { runRunnerWorkerOnce } from "../src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../src/prd-confirmation/scheduler";
-import { PrdConfirmationWorkflow } from "../src/prd-confirmation/workflow";
-import { runEngineOnce } from "../src/prd-confirmation/workflow-engine";
-import { LocalGitPrdRepository } from "../src/integrations/local-git-prd-repository";
+import type { ExternalIssue } from "../backend/src/prd-confirmation/domain";
+import { createEmptyStore } from "../backend/src/prd-confirmation/domain";
+import { AdapterBackedPrdSkills } from "../backend/src/prd-confirmation/adapter-backed-skills";
+import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
+import { PrdConfirmationWorkflow } from "../backend/src/prd-confirmation/workflow";
+import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
+import { LocalGitPrdRepository } from "../backend/src/integrations/local-git-prd-repository";
 
 describe("PRD confirmation with real adapter boundaries", () => {
   it("hydrates an unseeded PRD Jira key through Jira reader during manual intake", async () => {

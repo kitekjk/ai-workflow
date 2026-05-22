@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CliEngine, CliEngineError } from "../../src/runner-engines/cli-engine";
+import { CliEngine, CliEngineError } from "../../backend/src/runner-engines/cli-engine";
 
 describe("CliEngine", () => {
   it("runs a CLI command and parses JSON stdout", async () => {

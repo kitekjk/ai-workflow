@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MysqlWorkflowMutationApplier } from "../src/workflow-api/workflow-mutation-applier";
-import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
+import { MysqlWorkflowMutationApplier } from "../backend/src/workflow-api/workflow-mutation-applier";
+import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowMutationApplier", () => {
   it("applies workflow run, document, job, and event mutations in one transaction", async () => {
