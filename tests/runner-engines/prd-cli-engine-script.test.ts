@@ -197,7 +197,8 @@ process.stdin.on("end", () => {
     });
     expect(prompt).toContain("updating an existing implementation pull request");
     expect(prompt).toContain("current working directory");
-    expect(prompt).toContain("Commit the change");
+    expect(prompt).toContain("Implementation PR Updater");
+    expect(prompt).toContain("Commit the code change locally");
     expect(prompt).toContain("implementation.update_pr");
     expect(prompt).toContain("pullRequestNumber");
     expect(prompt).not.toContain('"markdown":"# ..."');
@@ -220,7 +221,9 @@ process.stdin.on("end", () => {
   fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
     status: "implemented",
     latestCommitSha: "initial-sha",
-    summary: "Implemented initial PR"
+    summary: "Implemented initial PR",
+    pullRequestTitle: "Implement SPEC-100",
+    pullRequestBody: "## Summary\\n- Implemented initial PR.\\n\\n## Tests\\n- Not run."
   }));
 });
 `
@@ -261,7 +264,10 @@ process.stdin.on("end", () => {
     });
     expect(prompt).toContain("implementing an approved Spec");
     expect(prompt).toContain("preparing its first pull request");
-    expect(prompt).toContain("Commit the change");
+    expect(prompt).toContain("Implementation PR Author");
+    expect(prompt).toContain("Commit the code change locally");
+    expect(prompt).toContain("pullRequestTitle");
+    expect(prompt).toContain("pullRequestBody");
     expect(prompt).toContain("implementation.open_pr");
     expect(prompt).not.toContain('"markdown":"# ..."');
   });

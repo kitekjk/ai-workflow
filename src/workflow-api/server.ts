@@ -326,6 +326,20 @@ interface WorkflowApiRequestContext {
   now: () => Date;
 }
 
+type ReadModelScheduledWork =
+  | {
+      status: "accepted";
+      job: AgentJob;
+      taskId?: string;
+      workflowTask?: WorkflowTask;
+      shouldRecord: true;
+    }
+  | {
+      status: "already_scheduled";
+      job: WorkflowJob;
+      shouldRecord: false;
+    };
+
 async function routeRequest(
   context: WorkflowApiRequestContext,
   request: IncomingMessage,
@@ -358,15 +372,18 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/prd/feedback-revision") {
-    const fixture = requireCompatibilityFixture(context);
-    const body = await readJsonBody<{
-      prdJiraKey?: string;
-      requestedBy?: string;
-      feedback?: string;
-      now?: unknown;
-    }>(request);
+    const body = await readJsonBody<PrdFeedbackRevisionBody>(request);
+    const prdJiraKey = requireString(body.prdJiraKey, "prdJiraKey");
     const requestedAt = parseNow(body.now, context.now);
-    const result = await fixture.workflow.requestFeedbackRevision(requireString(body.prdJiraKey, "prdJiraKey"), {
+
+    if (!context.fixture && context.readModel && context.feedbackRevisionCommand) {
+      const result = await requestPrdFeedbackRevisionWithoutFixture(context, prdJiraKey, body, requestedAt);
+      writeJson(response, 202, result);
+      return;
+    }
+
+    const fixture = requireCompatibilityFixture(context);
+    const result = await fixture.workflow.requestFeedbackRevision(prdJiraKey, {
       requestedBy: requireString(body.requestedBy, "requestedBy"),
       feedback: requireString(body.feedback, "feedback"),
       now: requestedAt
@@ -782,7 +799,7 @@ async function routeRequest(
       await requireFeedbackRevisionCommand(context).recordRevisionJob({
         runId: current.document.workflowRunId,
         job: revisionJob,
-        taskId: current.document.workflowTaskId,
+        taskId: workflowTaskIdForCurrent(current),
         feedbackItems: feedbackItemsForCommand,
         now: requestedAt
       });
@@ -851,6 +868,35 @@ async function routeRequest(
         importedCount,
         duplicateCount,
         feedbackItems
+      });
+      return;
+    }
+
+    if (method === "POST" && child === "fan-out" && context.readModel && !context.fixture) {
+      const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
+
+      if (!current) {
+        writeJson(response, 404, { error: "Document not found" });
+        return;
+      }
+
+      const body = await readJsonBody<DocumentFanOutBody>(request);
+      const requestedAt = parseNow(body.now, context.now);
+      const fanOutWork = await explicitFanOutWorkForReadModelDocument(context, current, body, requestedAt);
+
+      if (fanOutWork.shouldRecord) {
+        await requireWorkflowTransitionCommand(context).recordWorkflowJob({
+          runId: current.document.workflowRunId,
+          job: fanOutWork.job,
+          taskId: fanOutWork.taskId,
+          now: requestedAt
+        });
+      }
+
+      writeJson(response, 202, {
+        status: fanOutWork.status,
+        fanOutJob: fanOutWork.job,
+        fanOutStatus: fanOutWork.status
       });
       return;
     }
@@ -997,7 +1043,28 @@ async function routeRequest(
       }
 
       if (action === "refresh") {
-        writeJson(response, 200, { approvalGate: approvalGateForReadModelDocument(current.document) });
+        const refreshedAt = context.now();
+        const downstreamWork =
+          current.document.status === "approved"
+            ? await downstreamWorkForApprovedReadModelDocument(context, current, {}, refreshedAt)
+            : undefined;
+
+        if (downstreamWork?.shouldRecord) {
+          await requireWorkflowTransitionCommand(context).recordWorkflowJob({
+            runId: current.document.workflowRunId,
+            job: downstreamWork.job,
+            taskId: downstreamWork.taskId,
+            workflowTask: downstreamWork.workflowTask,
+            now: refreshedAt
+          });
+        }
+
+        writeJson(response, 200, {
+          approvalGate: approvalGateForReadModelDocument(current.document),
+          routingJob: downstreamWork?.job,
+          routingTask: downstreamWork?.shouldRecord ? downstreamWork.workflowTask : undefined,
+          routingStatus: downstreamWork?.status
+        });
         return;
       }
 
@@ -1009,15 +1076,16 @@ async function routeRequest(
 
       await command.recordDocumentState({
         document: updatedDocument,
+        workflowTask: current.workflowTask ?? undefined,
         actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
         reason: optionalString(body.reason, "reason"),
         now: actedAt
       });
 
       const downstreamWork =
-        action === "approve" ? downstreamWorkForApprovedReadModelDocument(current, body, actedAt) : undefined;
+        action === "approve" ? await downstreamWorkForApprovedReadModelDocument(context, current, body, actedAt) : undefined;
 
-      if (downstreamWork) {
+      if (downstreamWork?.shouldRecord) {
         await command.recordWorkflowJob({
           runId: updatedDocument.workflowRunId,
           job: downstreamWork.job,
@@ -1030,8 +1098,8 @@ async function routeRequest(
       writeJson(response, 200, {
         approvalGate: approvalGateForReadModelAction(current.document, updatedDocument, body),
         routingJob: downstreamWork?.job,
-        routingTask: downstreamWork?.workflowTask,
-        routingStatus: downstreamWork ? "accepted" : undefined
+        routingTask: downstreamWork?.shouldRecord ? downstreamWork.workflowTask : undefined,
+        routingStatus: downstreamWork?.status
       });
       return;
     }
@@ -1492,6 +1560,65 @@ async function recordFeedbackCommand(
   }
 }
 
+async function requestPrdFeedbackRevisionWithoutFixture(
+  context: WorkflowApiRequestContext,
+  prdJiraKey: string,
+  body: PrdFeedbackRevisionBody,
+  requestedAt: Date
+): Promise<{ status: "accepted"; jobId: string; feedbackItemIds: string[] }> {
+  const readModel = context.readModel;
+  const summary = await readModel?.summarizeState(prdJiraKey);
+  const documentId = stringOrUndefined(summary?.documentId);
+
+  if (!readModel || !documentId) {
+    throw new HttpError(404, `PRD state not found: ${prdJiraKey}`);
+  }
+
+  const current = await readModel.summarizeDocumentCurrent(documentId);
+
+  if (!current || current.document.type !== "prd") {
+    throw new HttpError(404, `PRD document not found: ${prdJiraKey}`);
+  }
+
+  const requestedBy = requireString(body.requestedBy, "requestedBy");
+  const feedback = feedbackItemForReadModelDocument(
+    current.document,
+    {
+      source: "app",
+      author: requestedBy,
+      body: body.feedback
+    },
+    requestedAt
+  );
+  const revisionJob = revisionJobForReadModelDocument(
+    current,
+    {
+      requestedBy,
+      now: requestedAt.toISOString()
+    },
+    [feedback]
+  );
+
+  await requireFeedbackRevisionCommand(context).recordRevisionJob({
+    runId: current.document.workflowRunId,
+    job: revisionJob,
+    taskId: workflowTaskIdForCurrent(current),
+    feedbackItems: [
+      {
+        ...feedback,
+        revisionJobId: revisionJob.id
+      }
+    ],
+    now: requestedAt
+  });
+
+  return {
+    status: "accepted",
+    jobId: revisionJob.id,
+    feedbackItemIds: [feedback.id]
+  };
+}
+
 async function recordRevisionJobCommand(
   context: WorkflowApiRequestContext,
   jobId: string,
@@ -1518,6 +1645,7 @@ async function recordRevisionJobCommand(
   await context.feedbackRevisionCommand.recordRevisionJob({
     runId: workItem.runId,
     job,
+    taskId: `task_${workItem.id}`,
     feedbackItems: feedbackItemsForRevision(context, feedbackItemIds),
     now
   });
@@ -1552,9 +1680,8 @@ async function recordDocumentStateCommand(
   }
 
   const fixture = requireCompatibilityFixture(context);
-  const document = createGenericPrdSnapshot(fixture.store).documents.find(
-    (candidate) => candidate.id === documentId
-  );
+  const snapshot = createGenericPrdSnapshot(fixture.store);
+  const document = snapshot.documents.find((candidate) => candidate.id === documentId);
 
   if (!document) {
     throw new Error(`Workflow transition command could not find fixture document state: ${documentId}`);
@@ -1562,6 +1689,9 @@ async function recordDocumentStateCommand(
 
   await context.workflowTransitionCommand.recordDocumentState({
     document,
+    workflowTask:
+      snapshot.workflowTasks.find((task) => task.id === document.workflowTaskId) ??
+      snapshot.workflowTasks.find((task) => task.currentDocumentId === documentId),
     actor: metadata.actor,
     reason: metadata.reason,
     now
@@ -1603,8 +1733,18 @@ async function recordEngineTransitionCommands(
     return;
   }
 
+  const taskByDocumentId = new Map(
+    (commandInput.workflowTasks ?? [])
+      .filter((task) => task.currentDocumentId)
+      .map((task) => [task.currentDocumentId as string, task])
+  );
+
   for (const document of commandInput.documents) {
-    await context.workflowTransitionCommand.recordDocumentState({ document, now });
+    await context.workflowTransitionCommand.recordDocumentState({
+      document,
+      workflowTask: taskByDocumentId.get(document.id),
+      now
+    });
   }
 
   for (const job of commandInput.jobs) {
@@ -1647,6 +1787,7 @@ function resultProjectionForRun(snapshot: GenericPrdSnapshot, runId: string) {
   return {
     jobs,
     jobResults: snapshot.workflowJobResults.filter((result) => jobIds.has(result.jobId)),
+    workflowTasks: snapshot.workflowTasks.filter((task) => task.runId === runId),
     documents,
     documentVersions: snapshot.documentVersions.filter((version) => documentIds.has(version.documentId)),
     artifacts: snapshot.artifacts.filter(
@@ -1724,6 +1865,13 @@ interface RunnerJobArtifactBody extends RunnerJobActionBody {
   externalVersion?: unknown;
   contentHash?: unknown;
   metadata?: unknown;
+}
+
+interface PrdFeedbackRevisionBody {
+  prdJiraKey?: unknown;
+  requestedBy?: unknown;
+  feedback?: unknown;
+  now?: unknown;
 }
 
 interface DocumentFeedbackBody {
@@ -1830,7 +1978,7 @@ function summarizeWorkflowRun(snapshot: GenericPrdSnapshot, runId: string): Reco
   return {
     run,
     policy: snapshot.policy,
-    tasks: tasksForDocuments(snapshot.documents.filter((document) => document.workflowRunId === runId)),
+    tasks: snapshot.workflowTasks.filter((task) => task.runId === runId),
     jobs: snapshot.workflowJobs.filter((job) => job.runId === runId),
     documents: snapshot.documents.filter((document) => document.workflowRunId === runId)
   };
@@ -1845,7 +1993,7 @@ function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): 
 
   const jobs = snapshot.workflowJobs.filter((job) => job.runId === runId);
   const documents = snapshot.documents.filter((document) => document.workflowRunId === runId);
-  const tasks = tasksForDocuments(documents);
+  const tasks = snapshot.workflowTasks.filter((task) => task.runId === runId);
 
   return {
     run: summary.run,
@@ -1855,6 +2003,7 @@ function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): 
       ...tasks.map((task) => ({
         id: task.id,
         type: "workflow_task",
+        parentTaskId: task.parentTaskId,
         taskType: task.taskType,
         status: task.status,
         currentDocumentId: task.currentDocumentId
@@ -1868,34 +2017,51 @@ function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): 
         primaryDocumentId: primaryDocumentIdForJob(job, documents)
       }))
     ],
+    edges: workflowRunTreeEdges(tasks, jobs),
     documents
   };
-}
-
-function tasksForDocuments(documents: Document[]): WorkflowTask[] {
-  return documents.map((document) => ({
-    id: document.workflowTaskId ?? taskIdForDocument(document.id),
-    runId: document.workflowRunId,
-    parentTaskId: document.parentDocumentId ? taskIdForDocument(document.parentDocumentId) : undefined,
-    taskType: document.type,
-    sourceKey: document.sourceKey,
-    title: document.title,
-    status: document.status,
-    currentDocumentId: document.id,
-    metadata: {
-      documentId: document.id
-    },
-    createdAt: document.createdAt,
-    updatedAt: document.updatedAt
-  }));
 }
 
 function taskIdForWorkflowJob(job: WorkflowJob): string | undefined {
   return job.taskId ?? stringOrUndefined(job.input.taskId);
 }
 
-function taskIdForDocument(documentId: string): string {
-  return documentId.startsWith("doc_") ? `task_${documentId.slice("doc_".length)}` : `task_${documentId}`;
+type WorkflowRunTreeEdge = {
+  id: string;
+  type: "workflow_task_parent" | "workflow_task_job";
+  from: string;
+  to: string;
+};
+
+function workflowRunTreeEdges(tasks: WorkflowTask[], jobs: WorkflowJob[]): WorkflowRunTreeEdge[] {
+  const parentEdges = tasks.flatMap((task): WorkflowRunTreeEdge[] =>
+    task.parentTaskId
+      ? [
+          {
+            id: `edge_${task.parentTaskId}_${task.id}`,
+            type: "workflow_task_parent",
+            from: task.parentTaskId,
+            to: task.id
+          }
+        ]
+      : []
+  );
+  const jobEdges = jobs.flatMap((job): WorkflowRunTreeEdge[] => {
+    const taskId = taskIdForWorkflowJob(job);
+
+    return taskId
+      ? [
+          {
+            id: `edge_${taskId}_${job.id}`,
+            type: "workflow_task_job",
+            from: taskId,
+            to: job.id
+          }
+        ]
+      : [];
+  });
+
+  return [...parentEdges, ...jobEdges];
 }
 
 function summarizeDocumentCurrent(
@@ -1915,6 +2081,10 @@ function summarizeDocumentCurrent(
 
   return {
     document,
+    workflowTask:
+      snapshot.workflowTasks.find((task) => task.id === document.workflowTaskId) ??
+      snapshot.workflowTasks.find((task) => task.currentDocumentId === documentId) ??
+      null,
     policy: snapshot.policy,
     currentVersion:
       snapshot.documentVersions.find((version) => version.id === document.currentVersionId) ?? null,
@@ -2482,12 +2652,23 @@ function revisionJobForReadModelDocument(
   };
 }
 
-function downstreamWorkForApprovedReadModelDocument(
+async function downstreamWorkForApprovedReadModelDocument(
+  context: WorkflowApiRequestContext,
   current: DocumentCurrentReadModel,
   body: ApprovalActionBody,
   approvedAt: Date
-): { job: AgentJob; taskId?: string; workflowTask?: WorkflowTask } | undefined {
+): Promise<ReadModelScheduledWork | undefined> {
   const document = current.document;
+  const existing = await existingDownstreamWorkForReadModelDocument(context, document, body);
+
+  if (existing) {
+    return {
+      status: "already_scheduled",
+      job: existing,
+      shouldRecord: false
+    };
+  }
+
   const requestedBy = optionalString(body.requestedBy ?? body.actor, "requestedBy");
   const common = {
     id: `job_${randomUUID()}`,
@@ -2498,6 +2679,7 @@ function downstreamWorkForApprovedReadModelDocument(
 
   if (document.type === "prd") {
     return {
+      status: "accepted",
       job: {
         ...common,
         jobType: "prd.route_downstream",
@@ -2507,12 +2689,16 @@ function downstreamWorkForApprovedReadModelDocument(
           sourceDocumentId: document.id
         }
       },
-      taskId: document.workflowTaskId
+      taskId: workflowTaskIdForCurrent(current),
+      shouldRecord: true
     };
   }
 
   if (document.type === "hld" || document.type === "lld") {
+    const fanOutPlan = await fanOutPlanForReadModelDocument(context, document, body);
+
     return {
+      status: "accepted",
       job: {
         ...common,
         jobType: "document.fan_out",
@@ -2522,21 +2708,23 @@ function downstreamWorkForApprovedReadModelDocument(
           sourceDocumentId: document.id,
           parentDocumentType: document.type,
           targetDocumentType: document.type === "hld" ? "lld" : "spec",
-          includeAdr: optionalBoolean(body.includeAdr, "includeAdr") === true,
+          includeAdr: fanOutPlan.includeAdr,
           adrTitle: optionalString(body.adrTitle, "adrTitle"),
-          adrOnly: false
+          adrOnly: fanOutPlan.adrOnly
         }
       },
-      taskId: document.workflowTaskId
+      taskId: workflowTaskIdForCurrent(current),
+      shouldRecord: true
     };
   }
 
   if (document.type === "spec") {
     const taskId = `task_${document.id}_code`;
+    const parentTaskId = workflowTaskIdForCurrent(current);
     const workflowTask: WorkflowTask = {
       id: taskId,
       runId: document.workflowRunId,
-      parentTaskId: document.workflowTaskId,
+      parentTaskId,
       taskType: "code",
       sourceKey: document.sourceKey,
       title: `Code Implementation for ${document.sourceKey}`,
@@ -2551,6 +2739,7 @@ function downstreamWorkForApprovedReadModelDocument(
     };
 
     return {
+      status: "accepted",
       job: {
         ...common,
         jobType: "implementation.open_pr",
@@ -2563,6 +2752,7 @@ function downstreamWorkForApprovedReadModelDocument(
           documentVersionProducerJobId: current.currentVersion?.producerJobId,
           sourceDocumentId: document.id,
           currentDocumentArtifactUrl: currentArtifactUrlForRevision(current),
+          runnerSkill: implementationPrAuthorSkill(),
           branchName: implementationBranchNameFor(document.sourceKey),
           baseBranch: "main",
           title: `Implement ${document.sourceKey}: ${document.title ?? document.sourceKey}`,
@@ -2574,11 +2764,148 @@ function downstreamWorkForApprovedReadModelDocument(
         }
       },
       taskId,
-      workflowTask
+      workflowTask,
+      shouldRecord: true
     };
   }
 
   return undefined;
+}
+
+async function explicitFanOutWorkForReadModelDocument(
+  context: WorkflowApiRequestContext,
+  current: DocumentCurrentReadModel,
+  body: DocumentFanOutBody,
+  requestedAt: Date
+): Promise<ReadModelScheduledWork> {
+  const document = current.document;
+
+  if (document.type !== "hld" && document.type !== "lld") {
+    throw new HttpError(400, `Document cannot fan out to downstream documents: ${document.id}`);
+  }
+
+  if (document.status !== "approved") {
+    throw new HttpError(409, `Document must be approved before fan-out starts: ${document.id}`);
+  }
+
+  const existing = await existingDownstreamWorkForReadModelDocument(context, document, body);
+
+  if (existing) {
+    return {
+      status: "already_scheduled",
+      job: existing,
+      shouldRecord: false
+    };
+  }
+
+  const requestedBy = optionalString(body.requestedBy, "requestedBy");
+  const fanOutPlan = await fanOutPlanForReadModelDocument(context, document, body);
+
+  return {
+    status: "accepted",
+    job: {
+      id: `job_${randomUUID()}`,
+      workItemId: workItemIdForDocumentId(document.id),
+      jobType: "document.fan_out",
+      primaryJiraKey: document.sourceKey,
+      status: "pending",
+      input: {
+        requestedBy,
+        approvedAt: requestedAt.toISOString(),
+        sourceDocumentId: document.id,
+        parentDocumentType: document.type,
+        targetDocumentType: document.type === "hld" ? "lld" : "spec",
+        includeAdr: fanOutPlan.includeAdr,
+        adrTitle: optionalString(body.adrTitle, "adrTitle"),
+        adrOnly: fanOutPlan.adrOnly
+      }
+    },
+    taskId: workflowTaskIdForCurrent(current),
+    shouldRecord: true
+  };
+}
+
+async function existingDownstreamWorkForReadModelDocument(
+  context: WorkflowApiRequestContext,
+  document: Document,
+  body: { includeAdr?: unknown }
+): Promise<WorkflowJob | undefined> {
+  const summary = await context.readModel?.summarizeWorkflowRun(document.workflowRunId);
+  const jobs = workflowJobsFromReadModelSummary(summary);
+
+  if (document.type === "prd") {
+    return jobs.find(
+      (job) => job.jobType === "prd.route_downstream" && jobReferencesDocument(job, document.id)
+    );
+  }
+
+  if (document.type === "hld" || document.type === "lld") {
+    const fanOutPlan = await fanOutPlanForReadModelDocument(context, document, body, summary);
+
+    return jobs.find(
+      (job) =>
+        job.jobType === "document.fan_out" &&
+        jobReferencesDocument(job, document.id) &&
+        (fanOutPlan.adrOnly ? job.input.adrOnly === true : job.input.adrOnly !== true)
+    );
+  }
+
+  if (document.type === "spec") {
+    return jobs.find(
+      (job) => job.jobType === "implementation.open_pr" && jobReferencesDocument(job, document.id)
+    );
+  }
+
+  return undefined;
+}
+
+async function fanOutPlanForReadModelDocument(
+  context: WorkflowApiRequestContext,
+  document: Document,
+  body: { includeAdr?: unknown },
+  existingSummary?: Record<string, unknown>
+): Promise<{ includeAdr: boolean; adrOnly: boolean }> {
+  const includeAdr = optionalBoolean(body.includeAdr, "includeAdr") === true;
+  const summary = existingSummary ?? (await context.readModel?.summarizeWorkflowRun(document.workflowRunId));
+  const jobs = workflowJobsFromReadModelSummary(summary);
+  const documents = documentsFromReadModelSummary(summary);
+  const standardFanOut = jobs.find(
+    (job) =>
+      job.jobType === "document.fan_out" &&
+      jobReferencesDocument(job, document.id) &&
+      job.input.adrOnly !== true
+  );
+  const hasAdrChild = documents.some(
+    (candidate) => candidate.parentDocumentId === document.id && candidate.type === "adr"
+  );
+
+  return {
+    includeAdr,
+    adrOnly: includeAdr && standardFanOut !== undefined && standardFanOut.input.includeAdr !== true && !hasAdrChild
+  };
+}
+
+function workflowJobsFromReadModelSummary(summary: Record<string, unknown> | undefined): WorkflowJob[] {
+  const jobs = summary?.jobs;
+
+  return Array.isArray(jobs) ? (jobs as WorkflowJob[]) : [];
+}
+
+function documentsFromReadModelSummary(summary: Record<string, unknown> | undefined): Document[] {
+  const documents = summary?.documents;
+
+  return Array.isArray(documents) ? (documents as Document[]) : [];
+}
+
+function jobReferencesDocument(job: WorkflowJob, documentId: string): boolean {
+  return job.input.sourceDocumentId === documentId || job.input.documentId === documentId;
+}
+
+function implementationPrAuthorSkill(): Record<string, string> {
+  return {
+    id: "implementation.pr-author",
+    version: "0.1.0"
+  };
 }
 
 function revisionJobTypeForDocument(document: Document): AgentJob["jobType"] {
@@ -2618,6 +2945,14 @@ function implementationPullRequestBodyFor(
 
 function workItemIdForDocumentId(documentId: string): string {
   return documentId.startsWith("doc_") ? documentId.slice("doc_".length) : documentId;
+}
+
+function workflowTaskIdForDocument(document: Document): string {
+  return document.workflowTaskId ?? `task_${workItemIdForDocumentId(document.id)}`;
+}
+
+function workflowTaskIdForCurrent(current: DocumentCurrentReadModel): string {
+  return current.workflowTask?.id ?? workflowTaskIdForDocument(current.document);
 }
 
 function requireRunnerMode(value: unknown): RunnerMode {

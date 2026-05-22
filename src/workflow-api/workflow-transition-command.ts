@@ -16,6 +16,7 @@ import {
 
 export interface RecordDocumentStateCommandInput {
   document: Document;
+  workflowTask?: WorkflowTask;
   actor?: string;
   reason?: string;
   now?: Date;
@@ -37,11 +38,9 @@ export interface RecordEngineTransitionCommandInput {
   workItemState?: WorkflowEngineWorkItemState;
   externalIssueStatus?: WorkflowEngineExternalIssueStatus;
   processedResult?: WorkflowEngineProcessedResultSummary;
+  workflowTasks?: WorkflowTask[];
   documents: Document[];
-  jobs: Array<{
-    runId: string;
-    job: AgentJob;
-  }>;
+  jobs: RecordWorkflowJobCommandInput[];
   now?: Date;
 }
 
@@ -81,9 +80,11 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
   }
 
   async recordDocumentState(input: RecordDocumentStateCommandInput): Promise<void> {
+    const document = documentStateForInput(input);
+
     await this.mutationApplier.apply({
-      workflowTasks: [workflowTaskForDocumentState(documentStateForInput(input))],
-      documentStates: [documentStateForInput(input)],
+      workflowTasks: [workflowTaskForDocumentState(document, input.workflowTask)],
+      documentStates: [document],
       events: [documentStateRecordedEvent(input)]
     });
   }
@@ -98,15 +99,20 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
 
   async recordEngineTransition(input: RecordEngineTransitionCommandInput): Promise<void> {
     const engineEvent = engineTransitionEvent(input);
+    const documentTasks = input.workflowTasks ?? input.documents.map((document) =>
+      workflowTaskForDocumentState(
+        documentStateForInput({
+          document,
+          now: input.now
+        })
+      )
+    );
+    const jobTasks = input.jobs
+      .map((job) => job.workflowTask)
+      .filter((task): task is WorkflowTask => Boolean(task));
+
     await this.mutationApplier.apply({
-      workflowTasks: input.documents.map((document) =>
-        workflowTaskForDocumentState(
-          documentStateForInput({
-            document,
-            now: input.now
-          })
-        )
-      ),
+      workflowTasks: [...documentTasks, ...jobTasks],
       documentStates: input.documents.map((document) =>
         documentStateForInput({
           document,
@@ -151,7 +157,20 @@ function workflowJobForInput(input: RecordWorkflowJobCommandInput): NonNullable<
   });
 }
 
-function workflowTaskForDocumentState(document: Document): WorkflowTask {
+function workflowTaskForDocumentState(document: Document, workflowTask?: WorkflowTask): WorkflowTask {
+  if (workflowTask) {
+    return {
+      ...workflowTask,
+      status: document.status,
+      currentDocumentId: document.id,
+      metadata: {
+        ...workflowTask.metadata,
+        documentId: document.id
+      },
+      updatedAt: document.updatedAt
+    };
+  }
+
   return {
     id: document.workflowTaskId ?? taskIdForDocument(document.id),
     runId: document.workflowRunId,
@@ -199,6 +218,10 @@ function engineTransitionEvent(
       workItemState: input.workItemState,
       externalIssueStatus: input.externalIssueStatus,
       processedResult: input.processedResult,
+      taskIds: [
+        ...(input.workflowTasks ?? []).map((task) => task.id),
+        ...input.jobs.flatMap((job) => job.workflowTask ? [job.workflowTask.id] : [])
+      ],
       documentIds: input.documents.map((document) => document.id),
       createdJobIds: input.jobs.map(({ job }) => job.id)
     },

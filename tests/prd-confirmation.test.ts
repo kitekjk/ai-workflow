@@ -399,6 +399,10 @@ describe("PRD confirmation workflow", () => {
         documentVersionId: "docv_5",
         branchName: `workflow/${specWorkItem.primaryJiraKey.toLowerCase()}`,
         baseBranch: "main",
+        runnerSkill: {
+          id: "implementation.pr-author",
+          version: "0.1.0"
+        },
         draft: true
       }
     });

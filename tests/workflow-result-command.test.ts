@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../src/document-core/domain";
 import { MysqlWorkflowResultCommand } from "../src/workflow-api/workflow-result-command";
-import type { WorkflowJob, WorkflowJobResult } from "../src/workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowTask } from "../src/workflow-core/domain";
 import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowResultCommand", () => {
@@ -13,6 +13,7 @@ describe("MysqlWorkflowResultCommand", () => {
       jobId: "job_1",
       jobs: [workflowJob("job_1", "succeeded"), workflowJob("job_2", "pending")],
       jobResults: [workflowJobResult()],
+      workflowTasks: [workflowTask()],
       documents: [document()],
       documentVersions: [documentVersion()],
       artifacts: [artifact()],
@@ -60,6 +61,7 @@ describe("MysqlWorkflowResultCommand", () => {
       jobId: "job_1",
       jobIds: ["job_1", "job_2"],
       jobResultIds: ["result_1"],
+      taskIds: ["task_wi_1"],
       documentIds: ["doc_wi_1"],
       documentVersionIds: ["docv_1"],
       artifactIds: ["art_1"],
@@ -76,6 +78,7 @@ describe("MysqlWorkflowResultCommand", () => {
         jobId: "job_1",
         jobs: [workflowJob("job_1", "succeeded")],
         jobResults: [workflowJobResult()],
+        workflowTasks: [workflowTask()],
         documents: [document()],
         documentVersions: [],
         artifacts: [],
@@ -86,6 +89,23 @@ describe("MysqlWorkflowResultCommand", () => {
     expect(database.events).toEqual(["begin", "rollback", "release"]);
   });
 });
+
+function workflowTask(): WorkflowTask {
+  return {
+    id: "task_wi_1",
+    runId: "run_1",
+    taskType: "prd",
+    sourceKey: "PRD-100",
+    title: "FAQ automation PRD",
+    status: "quality_review",
+    currentDocumentId: "doc_wi_1",
+    metadata: {
+      documentId: "doc_wi_1"
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  };
+}
 
 function workflowJob(id: string, status: WorkflowJob["status"]): WorkflowJob {
   return {

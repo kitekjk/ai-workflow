@@ -72,10 +72,25 @@ Important readiness note:
   document pointers while the remaining transition logic still runs through the
   compatibility fixture.
 - With the compatibility fixture disabled, document-scoped feedback/revision
-  actions now build feedback items and revision jobs directly from the MySQL
-  read model and record them through the shared command writer. Approval
-  approve/reject actions update document state through the command writer, and
-  PRD approval schedules the downstream routing job without fixture state.
+  actions and the PRD feedback-revision shortcut build feedback items and
+  revision jobs directly from the MySQL read model and record them through the
+  shared command writer. Approval approve/reject actions update document state
+  through the command writer, PRD approval schedules the downstream routing job,
+  and explicit HLD/LLD fan-out requests create `document.fan_out` jobs without
+  fixture state. These read-model-backed scheduling paths preserve the fixture
+  idempotency behavior: repeated approval or fan-out requests return
+  `already_scheduled` when a matching route/fan-out/implementation job already
+  exists, and HLD/LLD ADR requests create an ADR-only fan-out only after a
+  standard fan-out already exists without ADR coverage.
+- Approval gate `refresh` in no-fixture mode also advances approved read-model
+  documents: if a PRD/HLD/LLD/Spec document is already `approved`, refresh
+  schedules the appropriate downstream route, fan-out, or implementation job
+  through the same idempotent command path.
+- Repository-backed implementation transitions close the workflow run only
+  when `implementation.collect_pr_status` observes a merged PR and all Code
+  tasks in the run are completed after that transition. The run status update
+  is recorded through the shared mutation applier together with the final
+  completed Code task and pull request artifact snapshot.
 - With real integration config, PRD intake loads the PRD and linked source
   requests through the Jira reader, validates the same requested-status/source
   requirements as the fixture workflow, and records the initial run/document/job
@@ -290,6 +305,9 @@ fix on the checked-out branch, run relevant tests when practical, commit and
 return JSON containing the PR number, PR URL, summary, and latest commit SHA
 when known. After the CLI returns, the local runner pushes the checked-out PR
 branch to `origin` before the workflow schedules the next PR status collection.
+Those expectations live in the `implementation.pr-updater` runner skill
+package under `skills/`, and the update job output/artifacts carry that skill
+id for auditability.
 
 When `GITHUB_CLONE_URL` and `LOCAL_RUNNER_WORKSPACE_ROOT` are configured, the
 initial `implementation.open_pr` job also runs as a code implementation job:
@@ -297,6 +315,14 @@ the local runner clones the implementation repo, checks out the workflow branch,
 runs the CLI agent in `implementation/`, pushes the branch to `origin`, then
 opens the GitHub PR. Without a clone URL or isolated workspace it falls back to
 the lightweight GitHub PR creation path.
+For the code-backed path, the CLI agent is expected to return
+`pullRequestTitle` and `pullRequestBody`. The local runner uses that AI-written
+PR text when opening GitHub, and falls back to the scheduled job template only
+when those fields are absent.
+Those expectations live in the `implementation.pr-author` runner skill package
+under `skills/`; it tells Codex/Claude to implement, test, commit locally, and
+return reviewer-ready PR title/body JSON. The runner still owns the actual
+GitHub PR creation.
 
 Keep `LOCAL_RUNNER_CONCURRENCY=1` unless the local machine can safely run
 multiple code-agent processes in parallel. The scheduler checks active
@@ -496,6 +522,28 @@ SMOKE_PRD_JIRA_KEY=PRD-SMOKE-MANUAL-1
 SMOKE_SKIP_MIGRATIONS=false
 ```
 
+By default, implementation jobs inside the smoke use deterministic stub PR
+artifacts. To exercise the real GitHub-backed implementation path, opt in
+explicitly:
+
+```bash
+SMOKE_IMPLEMENTATION_MODE=github
+GITHUB_TOKEN=...
+GITHUB_OWNER=acme
+GITHUB_REPO=workflow-app
+GITHUB_CLONE_URL=https://github.com/acme/workflow-app.git
+LOCAL_RUNNER_WORKSPACE_ROOT=.runner-workspaces
+RUNNER_ENGINE=codex
+```
+
+In GitHub smoke mode, document generation/evaluation remains deterministic,
+but `implementation.open_pr`, `implementation.update_pr`, and
+`implementation.collect_pr_status` are routed through the same local GitHub
+implementation runner used by developer PCs.
+In default stub mode, implementation status collection returns a deterministic
+merged PR signal, so the smoke verifies both pull request artifacts and the
+final `workflow_run` / Code task completion state without contacting GitHub.
+
 Manual equivalent when a no-fixture API is already running:
 
 ```bash
@@ -533,8 +581,9 @@ GitHub implementation checks, when configured:
 - CI-only failures schedule `implementation.update_pr` on the same Code task
   and then collect PR status again.
 - Every PR status collection records a fresh pull request artifact snapshot.
-  When GitHub reports `merged=true`, the Code task is treated as terminal and
-  completed.
+  When GitHub reports `merged=true`, that Code task is treated as terminal and
+  completed. The workflow run itself remains active until every Code task in
+  the run has reached `completed`.
 - PR review/check status is visible in the current state and artifacts.
 
 ## Confluence Feedback Import

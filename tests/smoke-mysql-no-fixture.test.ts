@@ -1,0 +1,106 @@
+import { describe, expect, it } from "vitest";
+import {
+  createSmokeLocalRunnerSetup,
+  smokeImplementationModeFor,
+  type MysqlNoFixtureSmokeConfig
+} from "../src/smoke/mysql-no-fixture-smoke";
+import type { WorkflowJob } from "../src/workflow-core/domain";
+
+describe("mysql no-fixture smoke setup", () => {
+  it("keeps stub implementation mode as the default", () => {
+    expect(smokeImplementationModeFor({})).toBe("stub");
+    expect(smokeImplementationModeFor({ SMOKE_IMPLEMENTATION_MODE: "github" })).toBe("github");
+    expect(() => smokeImplementationModeFor({ SMOKE_IMPLEMENTATION_MODE: "real" })).toThrow(
+      'SMOKE_IMPLEMENTATION_MODE must be "stub" or "github"'
+    );
+  });
+
+  it("uses deterministic implementation artifacts in stub mode", async () => {
+    const setup = createSmokeLocalRunnerSetup(smokeConfig({ implementationMode: "stub" }), {});
+    const result = await setup.engine.run({
+      runner: {} as never,
+      job: workflowJob({
+        id: "job_open_pr",
+        jobType: "implementation.open_pr",
+        input: {
+          sourceDocumentId: "doc_spec_1",
+          documentVersionId: "docv_spec_1"
+        }
+      })
+    });
+
+    expect(setup.workspace).toBeUndefined();
+    expect(result.output).toMatchObject({
+      status: "succeeded",
+      pullRequestUrl: expect.stringContaining("github.example.com/workflow/smoke/pull/"),
+      documentVersionId: "docv_spec_1"
+    });
+  });
+
+  it("treats stub implementation status collection as a merged terminal PR", async () => {
+    const setup = createSmokeLocalRunnerSetup(smokeConfig({ implementationMode: "stub" }), {});
+    const result = await setup.engine.run({
+      runner: {} as never,
+      job: workflowJob({
+        id: "job_collect_pr",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/workflow/smoke/pull/42"
+        }
+      })
+    });
+
+    expect(result.output).toMatchObject({
+      status: "succeeded",
+      pullRequestNumber: 42,
+      pullRequestUrl: "https://github.example.com/workflow/smoke/pull/42",
+      pullRequestState: "closed",
+      merged: true,
+      reviewStatus: "approved",
+      ciStatus: "success"
+    });
+  });
+
+  it("requires explicit GitHub and workspace settings for github implementation mode", () => {
+    expect(() => createSmokeLocalRunnerSetup(smokeConfig({ implementationMode: "github" }), {})).toThrow(
+      "SMOKE_IMPLEMENTATION_MODE=github requires GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO"
+    );
+    expect(() =>
+      createSmokeLocalRunnerSetup(smokeConfig({ implementationMode: "github" }), {
+        GITHUB_TOKEN: "ghp_secret",
+        GITHUB_OWNER: "acme",
+        GITHUB_REPO: "workflow-app"
+      })
+    ).toThrow("GITHUB_CLONE_URL is required for SMOKE_IMPLEMENTATION_MODE=github");
+  });
+});
+
+function smokeConfig(input: { implementationMode: "stub" | "github" }): MysqlNoFixtureSmokeConfig {
+  return {
+    prdJiraKey: "PRD-SMOKE-TEST",
+    actorEmail: "smoke@example.com",
+    runnerId: "runner-smoke-test",
+    engine: "codex",
+    implementationMode: input.implementationMode
+  };
+}
+
+function workflowJob(input: {
+  id: string;
+  jobType: string;
+  input?: Record<string, unknown>;
+}): WorkflowJob {
+  return {
+    id: input.id,
+    runId: "run_1",
+    jobType: input.jobType,
+    status: "running",
+    input: input.input ?? {},
+    priority: 0,
+    requiredCapabilities: [input.jobType],
+    executionPolicy: "local_allowed",
+    createdAt: "2026-05-22T00:00:00.000Z",
+    updatedAt: "2026-05-22T00:00:00.000Z"
+  };
+}

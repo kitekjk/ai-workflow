@@ -1,6 +1,7 @@
 import {
   prdConfirmationWorkflowPolicy,
   type Artifact as LegacyArtifact,
+  type AgentJob,
   type FeedbackItem,
   type AgentJobResult,
   type PrdConfirmationStore,
@@ -8,11 +9,12 @@ import {
   type WorkItem
 } from "./domain";
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun } from "../workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask, WorkflowTaskStatus } from "../workflow-core/domain";
 import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 
 export interface GenericPrdSnapshot {
   workflowRuns: WorkflowRun[];
+  workflowTasks: WorkflowTask[];
   workflowJobs: WorkflowJob[];
   workflowJobResults: WorkflowJobResult[];
   documents: Document[];
@@ -24,7 +26,11 @@ export interface GenericPrdSnapshot {
 }
 
 export function createGenericPrdSnapshot(store: PrdConfirmationStore): GenericPrdSnapshot {
-  const workflowRuns = uniqueWorkflowRuns(store);
+  const documentVersions = createDocumentVersions(store);
+  const qualityResults = createQualityResults(store, documentVersions);
+  const documents = store.workItems.map((workItem) => toDocument(store, workItem, documentVersions));
+  const workflowTasks = createWorkflowTasks(store);
+  const workflowRuns = uniqueWorkflowRuns(store, workflowTasks);
   const workflowJobs = store.agentJobs.map((job) => {
     const workItem = requireWorkItem(store, job.workItemId);
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -32,6 +38,7 @@ export function createGenericPrdSnapshot(store: PrdConfirmationStore): GenericPr
     return createWorkflowJobRecord({
       id: job.id,
       runId: workItem.runId,
+      taskId: taskIdForAgentJob(job, workItem),
       jobType: job.jobType,
       status: job.status,
       input: job.input,
@@ -42,13 +49,11 @@ export function createGenericPrdSnapshot(store: PrdConfirmationStore): GenericPr
     });
   });
   const workflowJobResults = createWorkflowJobResults(store);
-  const documentVersions = createDocumentVersions(store);
-  const qualityResults = createQualityResults(store, documentVersions);
-  const documents = store.workItems.map((workItem) => toDocument(store, workItem, documentVersions));
   const artifacts = store.artifacts.map((artifact, index) => toArtifact(store, artifact, index, documentVersions));
 
   return {
     workflowRuns,
+    workflowTasks,
     workflowJobs,
     workflowJobResults,
     documents,
@@ -92,13 +97,13 @@ function workflowJobResultStatusFor(
   return "succeeded";
 }
 
-function toWorkflowRun(workItem: WorkItem): WorkflowRun {
+function toWorkflowRun(store: PrdConfirmationStore, workItem: WorkItem, workflowTasks: WorkflowTask[]): WorkflowRun {
   const createdAt = "2026-01-01T00:00:00.000Z";
 
   return {
     id: workItem.runId,
     workflowDefinitionId: "prd_confirmation",
-    status: workItem.state === "failed" ? "failed" : "active",
+    status: workflowRunStatusFor(store, workItem.runId, workflowTasks),
     sourceType: "jira",
     sourceKey: workItem.primaryJiraKey,
     outputLanguage: "ko",
@@ -107,16 +112,53 @@ function toWorkflowRun(workItem: WorkItem): WorkflowRun {
   };
 }
 
-function uniqueWorkflowRuns(store: PrdConfirmationStore): WorkflowRun[] {
+function uniqueWorkflowRuns(store: PrdConfirmationStore, workflowTasks: WorkflowTask[]): WorkflowRun[] {
   const runs = new Map<string, WorkflowRun>();
 
   for (const workItem of store.workItems) {
     if (!runs.has(workItem.runId)) {
-      runs.set(workItem.runId, toWorkflowRun(workItem));
+      runs.set(workItem.runId, toWorkflowRun(store, workItem, workflowTasks));
     }
   }
 
   return Array.from(runs.values());
+}
+
+function workflowRunStatusFor(
+  store: PrdConfirmationStore,
+  runId: string,
+  workflowTasks: WorkflowTask[]
+): WorkflowRun["status"] {
+  const runWorkItems = store.workItems.filter((workItem) => workItem.runId === runId);
+  const runTasks = workflowTasks.filter((task) => task.runId === runId);
+
+  if (runWorkItems.some((workItem) => workItem.state === "failed") || runTasks.some((task) => task.status === "failed")) {
+    return "failed";
+  }
+
+  const codeTasks = runTasks.filter((task) => task.taskType === "code");
+
+  if (
+    codeTasks.length > 0 &&
+    codeTasks.every((task) => task.status === "completed") &&
+    codeTasks.every((task) => codeTaskHasMergedPr(store, task))
+  ) {
+    return "completed";
+  }
+
+  return "active";
+}
+
+function codeTaskHasMergedPr(store: PrdConfirmationStore, task: WorkflowTask): boolean {
+  const documentId = typeof task.metadata.documentId === "string" ? task.metadata.documentId : task.currentDocumentId;
+  const workItemId = documentId?.startsWith("doc_") ? documentId.slice("doc_".length) : undefined;
+  const workItem = workItemId ? store.workItems.find((candidate) => candidate.id === workItemId) : undefined;
+
+  if (!workItem) {
+    return false;
+  }
+
+  return implementationMergedForWorkItem(store, workItem);
 }
 
 function toDocument(
@@ -133,6 +175,7 @@ function toDocument(
   return {
     id: documentId,
     workflowRunId: workItem.runId,
+    workflowTaskId: taskIdForWorkItem(workItem.id),
     parentDocumentId: workItem.parentWorkItemId ? `doc_${workItem.parentWorkItemId}` : undefined,
     type: workItem.artifactType,
     sourceKey: workItem.primaryJiraKey,
@@ -146,6 +189,125 @@ function toDocument(
     createdAt,
     updatedAt: createdAt
   };
+}
+
+function createWorkflowTasks(store: PrdConfirmationStore): WorkflowTask[] {
+  return [
+    ...store.workItems.map((workItem) => documentTaskForWorkItem(workItem)),
+    ...store.workItems.flatMap((workItem) => implementationTaskForWorkItem(store, workItem) ?? [])
+  ];
+}
+
+function documentTaskForWorkItem(workItem: WorkItem): WorkflowTask {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const documentId = documentIdForWorkItem(workItem);
+
+  return {
+    id: taskIdForWorkItem(workItem.id),
+    runId: workItem.runId,
+    parentTaskId: workItem.parentWorkItemId ? taskIdForWorkItem(workItem.parentWorkItemId) : undefined,
+    taskType: workItem.artifactType,
+    sourceKey: workItem.primaryJiraKey,
+    title: workItem.title ?? workItem.primaryJiraKey,
+    status: documentStatusForWorkItem(workItem),
+    currentDocumentId: documentId,
+    metadata: {
+      documentId
+    },
+    createdAt,
+    updatedAt: createdAt
+  };
+}
+
+function implementationTaskForWorkItem(store: PrdConfirmationStore, workItem: WorkItem): WorkflowTask | undefined {
+  const implementationJobs = store.agentJobs.filter(
+    (job) => job.workItemId === workItem.id && isImplementationJob(job.jobType)
+  );
+  const implementationArtifacts = store.artifacts.filter(
+    (artifact) => artifact.type === "pull_request" && implementationJobs.some((job) => job.id === artifact.jobId)
+  );
+
+  if (implementationJobs.length === 0 && implementationArtifacts.length === 0) {
+    return undefined;
+  }
+
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const documentId = documentIdForWorkItem(workItem);
+
+  return {
+    id: codeTaskIdForDocument(documentId),
+    runId: workItem.runId,
+    parentTaskId: taskIdForWorkItem(workItem.id),
+    taskType: "code",
+    sourceKey: workItem.primaryJiraKey,
+    title: `Code Implementation for ${workItem.primaryJiraKey}`,
+    status: implementationTaskStatusFor(store, implementationJobs),
+    currentDocumentId: documentId,
+    metadata: {
+      documentId
+    },
+    createdAt,
+    updatedAt: createdAt
+  };
+}
+
+function implementationTaskStatusFor(
+  store: PrdConfirmationStore,
+  implementationJobs: AgentJob[]
+): WorkflowTaskStatus {
+  if (implementationJobs.some((job) => job.status === "failed")) {
+    return "failed";
+  }
+
+  const latestCollectJob = [...implementationJobs]
+    .reverse()
+    .find((job) => job.jobType === "implementation.collect_pr_status");
+  const latestCollectResult = latestCollectJob
+    ? store.agentJobResults.find((result) => result.jobId === latestCollectJob.id)
+    : undefined;
+
+  if (latestCollectResult?.output.merged === true) {
+    return "completed";
+  }
+
+  if (
+    latestCollectResult?.output.reviewStatus === "approved" &&
+    latestCollectResult.output.ciStatus === "success"
+  ) {
+    return "completed";
+  }
+
+  if (
+    latestCollectResult?.output.revisionRequired === true ||
+    latestCollectResult?.output.reviewStatus === "changes_requested"
+  ) {
+    return "blocked";
+  }
+
+  if (
+    implementationJobs.some(
+      (job) => job.status === "pending" || job.status === "claimed" || job.status === "running" || job.status === "succeeded"
+    )
+  ) {
+    return "in_progress";
+  }
+
+  return "draft";
+}
+
+function implementationMergedForWorkItem(store: PrdConfirmationStore, workItem: WorkItem): boolean {
+  if (workItem.state === "implementation_merged") {
+    return true;
+  }
+
+  const latestCollectJob = [...store.agentJobs]
+    .reverse()
+    .find((job) => job.workItemId === workItem.id && job.jobType === "implementation.collect_pr_status");
+  const latestCollectResult = latestCollectJob
+    ? store.agentJobResults.find((result) => result.jobId === latestCollectJob.id)
+    : undefined;
+
+  return latestCollectResult?.output.merged === true;
 }
 
 function toArtifact(
@@ -291,6 +453,20 @@ function documentIdForWorkItem(workItem: WorkItem): string {
   return `doc_${workItem.id}`;
 }
 
+function taskIdForWorkItem(workItemId: string): string {
+  return `task_${workItemId}`;
+}
+
+function codeTaskIdForDocument(documentId: string): string {
+  return `task_${documentId}_code`;
+}
+
+function taskIdForAgentJob(job: AgentJob, workItem: WorkItem): string {
+  return isImplementationJob(job.jobType)
+    ? codeTaskIdForDocument(documentIdForWorkItem(workItem))
+    : taskIdForWorkItem(workItem.id);
+}
+
 function artifactIdForLegacyArtifact(store: PrdConfirmationStore, artifact: LegacyArtifact): string {
   return `art_${store.artifacts.indexOf(artifact) + 1}`;
 }
@@ -353,6 +529,10 @@ function isQualityJob(jobType: string): boolean {
 
 function isRevisionJob(jobType: string): boolean {
   return jobType === "prd.apply_feedback_revision" || jobType === "document.revise";
+}
+
+function isImplementationJob(jobType: string): boolean {
+  return jobType.startsWith("implementation.");
 }
 
 function stringArray(value: unknown): string[] {

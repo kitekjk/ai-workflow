@@ -628,12 +628,27 @@ describe("Workflow API", () => {
           document: {
             id: documentId,
             workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
             type: "prd",
             sourceKey: "PRD-DB",
             title: "Read model PRD",
             status: "approval_pending",
             currentVersionId: "docv_db_1",
             currentMarkdownArtifactId: "art_db_1",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          workflowTask: {
+            id: "task_db_1",
+            runId: "run_db_1",
+            taskType: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            currentDocumentId: "doc_db_1",
+            metadata: {
+              documentId: "doc_db_1"
+            },
             createdAt: "2026-05-20T00:00:00.000Z",
             updatedAt: "2026-05-20T00:00:00.000Z"
           },
@@ -730,10 +745,25 @@ describe("Workflow API", () => {
           document: {
             id: documentId,
             workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
             type: "prd",
             sourceKey: "PRD-DB",
             title: "Read model PRD",
             status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          workflowTask: {
+            id: "task_db_1",
+            runId: "run_db_1",
+            taskType: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            currentDocumentId: "doc_db_1",
+            metadata: {
+              documentId: "doc_db_1"
+            },
             createdAt: "2026-05-20T00:00:00.000Z",
             updatedAt: "2026-05-20T00:00:00.000Z"
           },
@@ -939,6 +969,7 @@ describe("Workflow API", () => {
       expect(revisionInputs).toMatchObject([
         {
           runId: "run_db_1",
+          taskId: "task_db_1",
           job: {
             id: payload.revisionJob.id,
             workItemId: "db_1",
@@ -960,6 +991,129 @@ describe("Workflow API", () => {
             {
               id: "fb_db_1",
               revisionJobId: payload.revisionJob.id
+            }
+          ],
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("records PRD feedback revision without a compatibility fixture", async () => {
+    const revisionInputs: RecordRevisionJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { documentId: "doc_db_1", prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "needs_revision",
+            currentVersionId: "docv_db_1",
+            currentMarkdownArtifactId: "art_db_1",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: {
+            id: "docv_db_1",
+            documentId,
+            version: 1,
+            producerJobId: "job_generate_1",
+            createdAt: "2026-05-20T00:00:00.000Z"
+          },
+          latestQualityResult: null,
+          currentArtifacts: [
+            {
+              id: "art_db_1",
+              documentId,
+              documentVersionId: "docv_db_1",
+              producerJobId: "job_generate_1",
+              type: "document_markdown",
+              location: "git",
+              uri: "https://git.example.com/prd/PRD-DB.md",
+              metadata: {},
+              createdAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      feedbackRevisionCommand: {
+        async recordFeedback() {
+          throw new Error("feedback command should not be called");
+        },
+        async recordRevisionJob(input) {
+          revisionInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/prd/feedback-revision`, {
+        prdJiraKey: "PRD-DB",
+        requestedBy: "planner@example.com",
+        feedback: " Add success metric. "
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(202);
+      expect(payload).toMatchObject({
+        status: "accepted",
+        feedbackItemIds: [expect.stringMatching(/^fb_/)]
+      });
+      expect(payload.jobId).toMatch(/^job_/);
+      expect(revisionInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          taskId: "task_db_1",
+          job: {
+            id: payload.jobId,
+            workItemId: "db_1",
+            jobType: "prd.apply_feedback_revision",
+            primaryJiraKey: "PRD-DB",
+            status: "pending",
+            input: {
+              requestedBy: "planner@example.com",
+              documentType: "prd",
+              feedback: "- [app by planner@example.com] Add success metric.",
+              feedbackItemIds: [payload.feedbackItemIds[0]],
+              sourceDocumentId: "doc_db_1",
+              currentDocumentVersionId: "docv_db_1",
+              currentDocumentVersionProducerJobId: "job_generate_1",
+              currentDocumentArtifactUrl: "https://git.example.com/prd/PRD-DB.md"
+            }
+          },
+          feedbackItems: [
+            {
+              id: payload.feedbackItemIds[0],
+              revisionJobId: payload.jobId,
+              documentId: "doc_db_1",
+              workItemId: "db_1",
+              source: "app",
+              author: "planner@example.com",
+              body: "Add success metric."
             }
           ],
           now: new Date("2026-05-20T00:00:00.000Z")
@@ -1108,10 +1262,25 @@ describe("Workflow API", () => {
           document: {
             id: documentId,
             workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
             type: "prd",
             sourceKey: "PRD-DB",
             title: "Read model PRD",
             status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          workflowTask: {
+            id: "task_db_1",
+            runId: "run_db_1",
+            taskType: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            currentDocumentId: "doc_db_1",
+            metadata: {
+              documentId: "doc_db_1"
+            },
             createdAt: "2026-05-20T00:00:00.000Z",
             updatedAt: "2026-05-20T00:00:00.000Z"
           },
@@ -1175,6 +1344,10 @@ describe("Workflow API", () => {
             status: "approved",
             updatedAt: "2026-05-20T00:00:00.000Z"
           },
+          workflowTask: {
+            id: "task_db_1",
+            status: "approval_pending"
+          },
           actor: "planner@example.com",
           reason: "Looks good",
           now: new Date("2026-05-20T00:00:00.000Z")
@@ -1183,6 +1356,7 @@ describe("Workflow API", () => {
       expect(jobInputs).toMatchObject([
         {
           runId: "run_db_1",
+          taskId: "task_db_1",
           job: {
             id: payload.routingJob.id,
             workItemId: "db_1",
@@ -1196,6 +1370,608 @@ describe("Workflow API", () => {
             }
           },
           now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("does not duplicate read-model downstream jobs on repeated approval", async () => {
+    const documentInputs: RecordDocumentStateCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return {
+          run: { id: runId, sourceKey: "PRD-DB" },
+          jobs: [
+            {
+              id: "job_existing_route",
+              runId,
+              taskId: "task_db_1",
+              jobType: "prd.route_downstream",
+              status: "pending",
+              input: {
+                sourceDocumentId: "doc_db_1"
+              },
+              priority: 0,
+              projectId: "prd-confirmation",
+              repositoryId: "prd-docs",
+              requiredCapabilities: ["document.generate"],
+              executionPolicy: "local_allowed",
+              createdAt: "2026-05-20T00:00:00.000Z",
+              updatedAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          documents: []
+        };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approval_pending",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState(input) {
+          documentInputs.push(input);
+        },
+        async recordWorkflowJob() {
+          throw new Error("duplicate downstream job should not be recorded");
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/approval-gates/gate_doc_db_1/approve`, {
+        requestedBy: "planner@example.com"
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toMatchObject({
+        routingStatus: "already_scheduled",
+        routingJob: {
+          id: "job_existing_route",
+          jobType: "prd.route_downstream",
+          input: {
+            sourceDocumentId: "doc_db_1"
+          }
+        }
+      });
+      expect(documentInputs).toHaveLength(1);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("refreshes an approved read-model gate and schedules downstream work without a fixture", async () => {
+    const jobInputs: RecordWorkflowJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approved",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("document command should not be called");
+        },
+        async recordWorkflowJob(input) {
+          jobInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/approval-gates/gate_doc_db_1/refresh`, {});
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toMatchObject({
+        approvalGate: {
+          id: "gate_doc_db_1",
+          status: "approved",
+          externalStatus: "approved"
+        },
+        routingStatus: "accepted",
+        routingJob: {
+          jobType: "prd.route_downstream",
+          status: "pending",
+          input: {
+            sourceDocumentId: "doc_db_1",
+            approvedAt: "2026-05-20T00:00:00.000Z"
+          }
+        }
+      });
+      expect(payload.routingJob.id).toMatch(/^job_/);
+      expect(jobInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          taskId: "task_db_1",
+          job: {
+            id: payload.routingJob.id,
+            jobType: "prd.route_downstream",
+            primaryJiraKey: "PRD-DB"
+          },
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("does not duplicate downstream work when an approved read-model gate refreshes again", async () => {
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return {
+          run: { id: runId, sourceKey: "PRD-DB" },
+          jobs: [
+            {
+              id: "job_existing_route",
+              runId,
+              taskId: "task_db_1",
+              jobType: "prd.route_downstream",
+              status: "pending",
+              input: {
+                sourceDocumentId: "doc_db_1"
+              },
+              priority: 0,
+              projectId: "prd-confirmation",
+              repositoryId: "prd-docs",
+              requiredCapabilities: ["document.generate"],
+              executionPolicy: "local_allowed",
+              createdAt: "2026-05-20T00:00:00.000Z",
+              updatedAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          documents: []
+        };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_db_1",
+            type: "prd",
+            sourceKey: "PRD-DB",
+            title: "Read model PRD",
+            status: "approved",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("document command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("duplicate downstream job should not be recorded");
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/approval-gates/gate_doc_db_1/refresh`, {});
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toMatchObject({
+        routingStatus: "already_scheduled",
+        routingJob: {
+          id: "job_existing_route",
+          jobType: "prd.route_downstream"
+        }
+      });
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("refreshes an approved Spec gate and schedules implementation work without a fixture", async () => {
+    const jobInputs: RecordWorkflowJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "SPEC-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_spec_1",
+            type: "spec",
+            sourceKey: "SPEC-DB",
+            title: "Read model Spec",
+            status: "approved",
+            currentVersionId: "docv_spec_1",
+            currentMarkdownArtifactId: "art_spec_1",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: {
+            id: "docv_spec_1",
+            documentId,
+            version: 1,
+            producerJobId: "job_spec_generate",
+            createdAt: "2026-05-20T00:00:00.000Z"
+          },
+          latestQualityResult: null,
+          currentArtifacts: [
+            {
+              id: "art_spec_1",
+              documentId,
+              documentVersionId: "docv_spec_1",
+              producerJobId: "job_spec_generate",
+              type: "document_markdown",
+              location: "git",
+              uri: "https://git.example.com/spec/SPEC-DB.md",
+              metadata: {},
+              createdAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("document command should not be called");
+        },
+        async recordWorkflowJob(input) {
+          jobInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/approval-gates/gate_doc_spec_1/refresh`, {});
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toMatchObject({
+        approvalGate: {
+          id: "gate_doc_spec_1",
+          status: "approved"
+        },
+        routingStatus: "accepted",
+        routingTask: {
+          id: "task_doc_spec_1_code",
+          parentTaskId: "task_spec_1",
+          taskType: "code",
+          currentDocumentId: "doc_spec_1"
+        },
+        routingJob: {
+          jobType: "implementation.open_pr",
+          status: "pending",
+          input: {
+            documentType: "spec",
+            documentId: "doc_spec_1",
+            documentVersionId: "docv_spec_1",
+            sourceDocumentId: "doc_spec_1",
+            currentDocumentArtifactUrl: "https://git.example.com/spec/SPEC-DB.md",
+            runnerSkill: {
+              id: "implementation.pr-author",
+              version: "0.1.0"
+            }
+          }
+        }
+      });
+      expect(jobInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          taskId: "task_doc_spec_1_code",
+          workflowTask: {
+            id: "task_doc_spec_1_code",
+            parentTaskId: "task_spec_1"
+          },
+          job: {
+            id: payload.routingJob.id,
+            jobType: "implementation.open_pr",
+            primaryJiraKey: "SPEC-DB"
+          },
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("requests document fan-out without a compatibility fixture", async () => {
+    const jobInputs: RecordWorkflowJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return { run: { id: runId, sourceKey: "HLD-DB" }, jobs: [], documents: [] };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_hld_1",
+            type: "hld",
+            sourceKey: "HLD-DB",
+            title: "Read model HLD",
+            status: "approved",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("document command should not be called");
+        },
+        async recordWorkflowJob(input) {
+          jobInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/documents/doc_hld_1/fan-out`, {
+        requestedBy: "architect@example.com",
+        includeAdr: true,
+        adrTitle: "ADR: Local runner orchestration"
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(202);
+      expect(payload).toMatchObject({
+        status: "accepted",
+        fanOutStatus: "accepted",
+        fanOutJob: {
+          jobType: "document.fan_out",
+          status: "pending",
+          input: {
+            requestedBy: "architect@example.com",
+            approvedAt: "2026-05-20T00:00:00.000Z",
+            sourceDocumentId: "doc_hld_1",
+            parentDocumentType: "hld",
+            targetDocumentType: "lld",
+            includeAdr: true,
+            adrTitle: "ADR: Local runner orchestration",
+            adrOnly: false
+          }
+        }
+      });
+      expect(payload.fanOutJob.id).toMatch(/^job_/);
+      expect(jobInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          taskId: "task_hld_1",
+          job: {
+            id: payload.fanOutJob.id,
+            workItemId: "hld_1",
+            jobType: "document.fan_out",
+            primaryJiraKey: "HLD-DB",
+            status: "pending"
+          },
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("schedules ADR-only fan-out without a fixture when standard fan-out already exists", async () => {
+    const jobInputs: RecordWorkflowJobCommandInput[] = [];
+    const readModel: WorkflowApiReadModel = {
+      async summarizeWorkflowRun(runId) {
+        return {
+          run: { id: runId, sourceKey: "HLD-DB" },
+          jobs: [
+            {
+              id: "job_standard_fanout",
+              runId,
+              taskId: "task_hld_1",
+              jobType: "document.fan_out",
+              status: "succeeded",
+              input: {
+                sourceDocumentId: "doc_hld_1",
+                includeAdr: false,
+                adrOnly: false
+              },
+              priority: 0,
+              projectId: "prd-confirmation",
+              repositoryId: "prd-docs",
+              requiredCapabilities: ["document.generate"],
+              executionPolicy: "local_allowed",
+              createdAt: "2026-05-20T00:00:00.000Z",
+              updatedAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          documents: []
+        };
+      },
+      async summarizeState(sourceKey) {
+        return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
+      },
+      async summarizeWorkflowRunTree(runId) {
+        return { run: { id: runId }, nodes: [], documents: [] };
+      },
+      async summarizeDocumentCurrent(documentId) {
+        return {
+          document: {
+            id: documentId,
+            workflowRunId: "run_db_1",
+            workflowTaskId: "task_hld_1",
+            type: "hld",
+            sourceKey: "HLD-DB",
+            title: "Read model HLD",
+            status: "approved",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:00:00.000Z"
+          },
+          policy: prdConfirmationWorkflowPolicy,
+          currentVersion: null,
+          latestQualityResult: null,
+          currentArtifacts: [],
+          pendingFeedback: []
+        };
+      },
+      async summarizeDocumentHistory(documentId) {
+        return { documentId, versions: [], qualityResults: [], artifacts: [], feedbackItems: [] };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      readModel,
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("document command should not be called");
+        },
+        async recordWorkflowJob(input) {
+          jobInputs.push(input);
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/documents/doc_hld_1/fan-out`, {
+        requestedBy: "architect@example.com",
+        includeAdr: true,
+        adrTitle: "ADR: Local runner orchestration"
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(202);
+      expect(payload).toMatchObject({
+        status: "accepted",
+        fanOutStatus: "accepted",
+        fanOutJob: {
+          jobType: "document.fan_out",
+          input: {
+            sourceDocumentId: "doc_hld_1",
+            includeAdr: true,
+            adrTitle: "ADR: Local runner orchestration",
+            adrOnly: true
+          }
+        }
+      });
+      expect(jobInputs).toMatchObject([
+        {
+          runId: "run_db_1",
+          taskId: "task_hld_1",
+          job: {
+            id: payload.fanOutJob.id,
+            jobType: "document.fan_out",
+            input: {
+              includeAdr: true,
+              adrOnly: true
+            }
+          }
         }
       ]);
     } finally {
@@ -1638,6 +2414,20 @@ describe("Workflow API", () => {
         status: "draft"
       }
     ]);
+    const taskNodes = tree.nodes.filter((node: { type: string }) => node.type === "workflow_task");
+    expect(taskNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_wi_1",
+          type: "workflow_task"
+        }),
+        expect.objectContaining({
+          id: "task_wi_2",
+          parentTaskId: "task_wi_1",
+          type: "workflow_task"
+        })
+      ])
+    );
     const jobNodes = tree.nodes.filter((node: { type: string }) => node.type === "workflow_job");
     expect(jobNodes.map((node: { jobType: string }) => node.jobType)).toEqual([
       "prd.generate_draft",
@@ -1649,6 +2439,22 @@ describe("Workflow API", () => {
       jobType: "document.generate",
       primaryDocumentId: "doc_wi_2"
     });
+    expect(tree.edges).toEqual(
+      expect.arrayContaining([
+        {
+          id: "edge_task_wi_1_task_wi_2",
+          type: "workflow_task_parent",
+          from: "task_wi_1",
+          to: "task_wi_2"
+        },
+        {
+          id: "edge_task_wi_2_job_4",
+          type: "workflow_task_job",
+          from: "task_wi_2",
+          to: "job_4"
+        }
+      ])
+    );
   });
 
   it("creates generic document revision jobs from the latest downstream document version", async () => {
@@ -1872,6 +2678,10 @@ describe("Workflow API", () => {
           documentVersionId: "docv_5",
           branchName: "workflow/prd-100-hld-1-lld-1-spec-1",
           baseBranch: "main",
+          runnerSkill: {
+            id: "implementation.pr-author",
+            version: "0.1.0"
+          },
           draft: true
         }
       },
@@ -2022,6 +2832,20 @@ describe("Workflow API", () => {
           id: "job_2",
           type: "workflow_job",
           primaryDocumentId: "doc_wi_1"
+        }
+      ],
+      edges: [
+        {
+          id: "edge_task_wi_1_job_1",
+          type: "workflow_task_job",
+          from: "task_wi_1",
+          to: "job_1"
+        },
+        {
+          id: "edge_task_wi_1_job_2",
+          type: "workflow_task_job",
+          from: "task_wi_1",
+          to: "job_2"
         }
       ]
     });

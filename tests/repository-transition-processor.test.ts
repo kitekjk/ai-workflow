@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../src/workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../src/workflow-core/domain";
 import type { WorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
 import { RepositoryTransitionProcessor } from "../src/workflow-api/repository-transition-processor";
 import type { WorkflowMutation } from "../src/workflow-api/workflow-mutation-applier";
@@ -125,6 +125,149 @@ describe("RepositoryTransitionProcessor", () => {
     expect(transitions).toHaveLength(1);
   });
 
+  it("passes workflow run state so terminal implementation transitions can close the run", async () => {
+    const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
+    const processor = new RepositoryTransitionProcessor({
+      readModel: readModelFor(
+        [
+          document({
+            id: "doc_spec",
+            type: "spec",
+            sourceKey: "PRD-100-SPEC-1",
+            status: "approved"
+          })
+        ],
+        workflowRun()
+      ),
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("legacy document-state command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("legacy job command should not be called");
+        },
+        async recordRepositoryTransition(input) {
+          transitions.push(input);
+        }
+      }
+    });
+
+    const result = await processor.processJobResult({
+      job: workflowJob({
+        id: "job_collect",
+        jobType: "implementation.collect_pr_status",
+        taskId: "task_doc_spec_code",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42
+        }
+      }),
+      jobResult: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          merged: true
+        }
+      }),
+      now: new Date("2026-05-21T00:02:00.000Z")
+    });
+
+    expect(result).toEqual({
+      processed: true,
+      transitionType: "implementation_pr_merged"
+    });
+    expect(transitions[0]).toMatchObject({
+      transitionType: "implementation_pr_merged",
+      mutation: {
+        workflowRuns: [
+          {
+            id: "run_1",
+            status: "completed",
+            updatedAt: "2026-05-21T00:02:00.000Z"
+          }
+        ],
+        workflowTasks: expect.arrayContaining([
+          expect.objectContaining({ id: "task_doc_spec_code", status: "completed" })
+        ])
+      }
+    });
+  });
+
+  it("keeps the workflow run active when the summary has another open code task", async () => {
+    const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
+    const processor = new RepositoryTransitionProcessor({
+      readModel: readModelFor(
+        [
+          document({
+            id: "doc_spec",
+            type: "spec",
+            sourceKey: "PRD-100-SPEC-1",
+            status: "approved"
+          })
+        ],
+        workflowRun(),
+        [
+          workflowTask({
+            id: "task_doc_spec_code",
+            taskType: "code",
+            currentDocumentId: "doc_spec"
+          }),
+          workflowTask({
+            id: "task_doc_lld_code",
+            taskType: "code",
+            currentDocumentId: "doc_lld"
+          })
+        ]
+      ),
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("legacy document-state command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("legacy job command should not be called");
+        },
+        async recordRepositoryTransition(input) {
+          transitions.push(input);
+        }
+      }
+    });
+
+    const result = await processor.processJobResult({
+      job: workflowJob({
+        id: "job_collect",
+        jobType: "implementation.collect_pr_status",
+        taskId: "task_doc_spec_code",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42
+        }
+      }),
+      jobResult: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          merged: true
+        }
+      }),
+      now: new Date("2026-05-21T00:02:00.000Z")
+    });
+
+    expect(result).toEqual({
+      processed: true,
+      transitionType: "implementation_pr_merged"
+    });
+    expect(transitions[0]?.mutation.workflowRuns).toBeUndefined();
+    expect(transitions[0]?.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "task_doc_spec_code", status: "completed" })])
+    );
+  });
+
   it("returns an idle result when there is no pending repository transition result", async () => {
     const processor = new RepositoryTransitionProcessor({
       readModel: readModelFor([document()]),
@@ -150,13 +293,18 @@ describe("RepositoryTransitionProcessor", () => {
   });
 });
 
-function readModelFor(documents: Document[]): WorkflowApiReadModel {
+function readModelFor(
+  documents: Document[],
+  run: Partial<WorkflowRun> = { id: "run_1" },
+  tasks: WorkflowTask[] = []
+): WorkflowApiReadModel {
   return {
     async summarizeWorkflowRun(runId) {
       return {
-        run: { id: runId },
+        run: { ...run, id: runId },
         jobs: [],
-        documents
+        documents,
+        tasks
       };
     },
     async summarizeState() {
@@ -171,6 +319,36 @@ function readModelFor(documents: Document[]): WorkflowApiReadModel {
     async summarizeDocumentHistory() {
       return undefined;
     }
+  };
+}
+
+function workflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    id: "run_1",
+    workflowDefinitionId: "prd_confirmation",
+    status: "active",
+    sourceType: "jira",
+    sourceKey: "PRD-100",
+    outputLanguage: "ko",
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
+  return {
+    id: "task_1",
+    runId: "run_1",
+    taskType: "prd",
+    sourceKey: "PRD-100",
+    title: "Task",
+    status: "in_progress",
+    currentDocumentId: "doc_1",
+    metadata: {},
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z",
+    ...overrides
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../src/workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../src/workflow-core/domain";
 import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repository";
 import { WorkflowScheduler } from "../src/workflow-core/scheduler";
 import type { WorkflowMutation } from "../src/workflow-api/workflow-mutation-applier";
@@ -320,6 +320,192 @@ describe("repository transition API integration", () => {
     }
   });
 
+  it("closes the workflow run after a merged implementation PR result", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const now = new Date("2026-05-21T00:00:00.000Z");
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_confirmation",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const job = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: "task_doc_spec_code",
+      jobType: "implementation.collect_pr_status",
+      input: {
+        documentId: "doc_spec",
+        pullNumber: 42
+      },
+      requiredCapabilities: ["implementation.collect_pr_status"],
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner_1",
+      mode: "managed",
+      capabilities: ["implementation.collect_pr_status"],
+      now
+    });
+    await scheduler.claim("runner_1", now);
+
+    const document = currentDocument({
+      id: "doc_spec",
+      workflowRunId: run.id,
+      workflowTaskId: "task_spec",
+      type: "spec",
+      sourceKey: "PRD-100-SPEC-1",
+      status: "approved"
+    });
+    const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
+    const server = await createWorkflowApiServer({
+      scheduler,
+      readModel: readModelFor(run.id, job.id, document, run),
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("legacy document-state command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("legacy job command should not be called");
+        },
+        async recordRepositoryTransition(input) {
+          transitions.push(input);
+        }
+      },
+      now: () => new Date("2026-05-21T00:01:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${server.url}/runner-jobs/${job.id}/results`, {
+        runnerId: "runner_1",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          merged: true
+        }
+      });
+
+      expect(response.status).toBe(200);
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0]).toMatchObject({
+        transitionType: "implementation_pr_merged",
+        mutation: {
+          workflowRuns: [
+            {
+              id: run.id,
+              status: "completed",
+              updatedAt: "2026-05-21T00:01:00.000Z"
+            }
+          ],
+          workflowTasks: expect.arrayContaining([
+            expect.objectContaining({
+              id: "task_doc_spec_code",
+              status: "completed"
+            })
+          ])
+        }
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("does not close the workflow run while another code task remains open", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const now = new Date("2026-05-21T00:00:00.000Z");
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_confirmation",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const job = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: "task_doc_spec_code",
+      jobType: "implementation.collect_pr_status",
+      input: {
+        documentId: "doc_spec",
+        pullNumber: 42
+      },
+      requiredCapabilities: ["implementation.collect_pr_status"],
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner_1",
+      mode: "managed",
+      capabilities: ["implementation.collect_pr_status"],
+      now
+    });
+    await scheduler.claim("runner_1", now);
+
+    const document = currentDocument({
+      id: "doc_spec",
+      workflowRunId: run.id,
+      workflowTaskId: "task_spec",
+      type: "spec",
+      sourceKey: "PRD-100-SPEC-1",
+      status: "approved"
+    });
+    const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
+    const server = await createWorkflowApiServer({
+      scheduler,
+      readModel: readModelFor(run.id, job.id, document, run, [
+        workflowTask({
+          id: "task_doc_spec_code",
+          runId: run.id,
+          taskType: "code",
+          currentDocumentId: "doc_spec"
+        }),
+        workflowTask({
+          id: "task_doc_lld_code",
+          runId: run.id,
+          taskType: "code",
+          currentDocumentId: "doc_lld"
+        })
+      ]),
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("legacy document-state command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("legacy job command should not be called");
+        },
+        async recordRepositoryTransition(input) {
+          transitions.push(input);
+        }
+      },
+      now: () => new Date("2026-05-21T00:01:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${server.url}/runner-jobs/${job.id}/results`, {
+        runnerId: "runner_1",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          merged: true
+        }
+      });
+
+      expect(response.status).toBe(200);
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0]?.mutation.workflowRuns).toBeUndefined();
+      expect(transitions[0]?.mutation.workflowTasks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "task_doc_spec_code",
+            status: "completed"
+          })
+        ])
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   it("processes one pending repository transition through the API trigger", async () => {
     const document = currentDocument();
     const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
@@ -379,12 +565,19 @@ describe("repository transition API integration", () => {
   });
 });
 
-function readModelFor(runId: string, jobId: string, document: Document): WorkflowApiReadModel {
+function readModelFor(
+  runId: string,
+  jobId: string,
+  document: Document,
+  run: Partial<WorkflowRun> = { id: runId },
+  tasks: WorkflowTask[] = []
+): WorkflowApiReadModel {
   return {
     async summarizeWorkflowRun(candidateRunId) {
       expect(candidateRunId).toBe(runId);
       return {
         run: {
+          ...run,
           id: runId
         },
         jobs: [
@@ -392,7 +585,8 @@ function readModelFor(runId: string, jobId: string, document: Document): Workflo
             id: jobId
           }
         ],
-        documents: [document]
+        documents: [document],
+        tasks
       };
     },
     async summarizeState() {
@@ -448,6 +642,22 @@ function workflowJobResult(overrides: Partial<WorkflowJobResult> = {}): Workflow
     status: "succeeded",
     output: {},
     createdAt: "2026-05-21T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
+  return {
+    id: "task_1",
+    runId: "run_1",
+    taskType: "prd",
+    sourceKey: "PRD-100",
+    title: "Task",
+    status: "in_progress",
+    currentDocumentId: "doc_1",
+    metadata: {},
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z",
     ...overrides
   };
 }

@@ -11,6 +11,7 @@ export interface RecordWorkflowResultProjectionInput {
   jobId: string;
   jobs: WorkflowJob[];
   jobResults: WorkflowJobResult[];
+  workflowTasks: WorkflowTask[];
   documents: Document[];
   documentVersions: DocumentVersion[];
   artifacts: Artifact[];
@@ -41,7 +42,7 @@ export class MysqlWorkflowResultCommand implements WorkflowResultCommand {
     const resultProjectionEvent = workflowResultProjectionEvent(input);
     const mutation: WorkflowMutation = {
       documentStates: input.documents,
-      workflowTasks: input.documents.map(workflowTaskForDocumentProjection),
+      workflowTasks: input.workflowTasks,
       workflowJobs: input.jobs,
       jobResults: input.jobResults,
       documentVersions: input.documentVersions,
@@ -53,29 +54,6 @@ export class MysqlWorkflowResultCommand implements WorkflowResultCommand {
 
     await this.mutationApplier.apply(mutation);
   }
-}
-
-function workflowTaskForDocumentProjection(document: Document): WorkflowTask {
-  return {
-    id: document.workflowTaskId ?? taskIdForDocument(document.id),
-    runId: document.workflowRunId,
-    parentTaskId:
-      !document.workflowTaskId && document.parentDocumentId ? taskIdForDocument(document.parentDocumentId) : undefined,
-    taskType: document.type,
-    sourceKey: document.sourceKey,
-    title: document.title,
-    status: document.status,
-    currentDocumentId: document.id,
-    metadata: {
-      documentId: document.id
-    },
-    createdAt: document.createdAt,
-    updatedAt: document.updatedAt
-  };
-}
-
-function taskIdForDocument(documentId: string): string {
-  return documentId.startsWith("doc_") ? `task_${documentId.slice("doc_".length)}` : `task_${documentId}`;
 }
 
 function documentCurrentPointer(document: Document): NonNullable<WorkflowMutation["documentCurrentPointers"]>[number] {
@@ -107,6 +85,7 @@ function workflowResultProjectionEvent(
       jobId: input.jobId,
       jobIds: input.jobs.map((job) => job.id),
       jobResultIds: input.jobResults.map((result) => result.id),
+      taskIds: input.workflowTasks.map((task) => task.id),
       documentIds: input.documents.map((document) => document.id),
       documentVersionIds: input.documentVersions.map((version) => version.id),
       artifactIds: input.artifacts.map((artifact) => artifact.id),

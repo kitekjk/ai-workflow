@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Document } from "../src/document-core/domain";
 import type { AgentJob } from "../src/prd-confirmation/domain";
 import { MysqlWorkflowTransitionCommand } from "../src/workflow-api/workflow-transition-command";
+import type { WorkflowTask } from "../src/workflow-core/domain";
 import type { MysqlConnection, MysqlDatabase } from "../src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowTransitionCommand", () => {
@@ -61,6 +62,41 @@ describe("MysqlWorkflowTransitionCommand", () => {
       status: "approved",
       actor: "planner@example.com",
       reason: "Approved in dashboard"
+    });
+  });
+
+  it("records document state with the provided first-class workflow task", async () => {
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
+
+    await command.recordDocumentState({
+      document: document({
+        workflowTaskId: "task_existing",
+        status: "approved"
+      }),
+      workflowTask: workflowTask({
+        id: "task_existing",
+        parentTaskId: "task_parent",
+        status: "approval_pending"
+      }),
+      now: new Date("2026-05-20T00:00:00.000Z")
+    });
+
+    expect(database.statements[0].params).toEqual(
+      expect.arrayContaining([
+        "task_existing",
+        "run_1",
+        "task_parent",
+        "prd",
+        "PRD-100",
+        "FAQ automation PRD",
+        "approved",
+        "doc_wi_1"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[0].params[8]))).toEqual({
+      documentId: "doc_wi_1",
+      source: "read-model"
     });
   });
 
@@ -259,6 +295,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
         primaryJiraKey: "PRD-100",
         status: "succeeded"
       },
+      taskIds: [],
       documentIds: ["doc_wi_1", "doc_wi_2"],
       createdJobIds: ["job_2"]
     });
@@ -302,6 +339,25 @@ function document(overrides: Partial<Document> = {}): Document {
     sourceKey: "PRD-100",
     title: "FAQ automation PRD",
     status: "draft",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
+  return {
+    id: "task_wi_1",
+    runId: "run_1",
+    taskType: "prd",
+    sourceKey: "PRD-100",
+    title: "FAQ automation PRD",
+    status: "draft",
+    currentDocumentId: "doc_wi_1",
+    metadata: {
+      documentId: "doc_wi_1",
+      source: "read-model"
+    },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides

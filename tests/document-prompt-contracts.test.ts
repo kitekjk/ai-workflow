@@ -67,9 +67,11 @@ describe("document prompt contracts", () => {
       documentType: "spec",
       jobType: "implementation.open_pr",
       outputSchema: {
-        required: ["status", "summary"],
+        required: ["status", "summary", "pullRequestTitle", "pullRequestBody"],
         properties: {
-          status: { enum: ["implemented", "succeeded"] }
+          status: { enum: ["implemented", "succeeded"] },
+          pullRequestTitle: { type: "string" },
+          pullRequestBody: { type: "string" }
         }
       }
     });

@@ -1,0 +1,31 @@
+{
+  "id": "implementation.pr-author",
+  "version": "0.1.0",
+  "name": "Implementation PR Author",
+  "description": "Implement an approved Spec in a checked-out repository branch and return reviewer-ready pull request text.",
+  "engine": {
+    "type": "codex_or_claude_cli",
+    "defaultModel": "default"
+  },
+  "inputs": [
+    "documentType",
+    "documentVersionId",
+    "repositoryCloneUrl",
+    "branchName",
+    "baseBranch",
+    "promptContract"
+  ],
+  "outputs": [
+    "latestCommitSha",
+    "summary",
+    "pullRequestTitle",
+    "pullRequestBody"
+  ],
+  "permissions": {
+    "filesystem": "workspace_write",
+    "shell": true,
+    "git": true,
+    "github": false,
+    "wiki": false
+  }
+}

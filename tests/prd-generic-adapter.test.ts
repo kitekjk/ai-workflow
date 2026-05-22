@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createEmptyStore } from "../src/prd-confirmation/domain";
 import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
 import { createGenericPrdSnapshot } from "../src/prd-confirmation/generic-adapter";
 
@@ -28,10 +29,24 @@ describe("PRD generic adapter", () => {
       ["prd.generate_draft", ["document.generate"]],
       ["prd.evaluate_quality", ["document.evaluate"]]
     ]);
+    expect(snapshot.workflowJobs.map((job) => [job.jobType, job.taskId])).toEqual([
+      ["prd.generate_draft", "task_wi_1"],
+      ["prd.evaluate_quality", "task_wi_1"]
+    ]);
+    expect(snapshot.workflowTasks).toMatchObject([
+      {
+        id: "task_wi_1",
+        taskType: "prd",
+        sourceKey: "PRD-100",
+        status: "approval_pending",
+        currentDocumentId: "doc_wi_1"
+      }
+    ]);
     expect(snapshot.documents).toMatchObject([
       {
         id: "doc_wi_1",
         workflowRunId: "run_1",
+        workflowTaskId: "task_wi_1",
         type: "prd",
         sourceKey: "PRD-100",
         status: "approval_pending",
@@ -101,6 +116,21 @@ describe("PRD generic adapter", () => {
       ["document.generate", ["document.generate"]],
       ["document.evaluate", ["document.evaluate"]]
     ]);
+    expect(snapshot.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_wi_1",
+          parentTaskId: undefined,
+          taskType: "prd"
+        }),
+        expect.objectContaining({
+          id: "task_wi_2",
+          parentTaskId: "task_wi_1",
+          taskType: "hld",
+          currentDocumentId: "doc_wi_2"
+        })
+      ])
+    );
   });
 
   it("projects HLD fan-out LLD children with parent document links", async () => {
@@ -146,5 +176,52 @@ describe("PRD generic adapter", () => {
       ["document.evaluate", ["document.evaluate"]],
       ["document.evaluate", ["document.evaluate"]]
     ]);
+  });
+
+  it("rolls up compatibility workflow runs to completed after every Code task is merged", () => {
+    const store = createEmptyStore();
+    store.workItems.push({
+      id: "wi_spec_1",
+      runId: "run_1",
+      artifactType: "spec",
+      primaryJiraKey: "PRD-100-SPEC-1",
+      state: "implementation_merged"
+    });
+    store.agentJobs.push({
+      id: "job_collect",
+      workItemId: "wi_spec_1",
+      jobType: "implementation.collect_pr_status",
+      primaryJiraKey: "PRD-100-SPEC-1",
+      status: "succeeded",
+      input: {}
+    });
+    store.agentJobResults.push({
+      jobId: "job_collect",
+      jobType: "implementation.collect_pr_status",
+      primaryJiraKey: "PRD-100-SPEC-1",
+      processed: true,
+      output: {
+        status: "succeeded",
+        merged: true
+      }
+    });
+
+    const snapshot = createGenericPrdSnapshot(store);
+
+    expect(snapshot.workflowRuns).toMatchObject([
+      {
+        id: "run_1",
+        status: "completed"
+      }
+    ]);
+    expect(snapshot.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_doc_wi_spec_1_code",
+          taskType: "code",
+          status: "completed"
+        })
+      ])
+    );
   });
 });

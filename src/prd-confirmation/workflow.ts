@@ -297,6 +297,7 @@ export class PrdConfirmationWorkflow {
       documentVersionProducerJobId: currentVersion?.producerJobId,
       sourceDocumentId: documentIdForWorkItem(workItem),
       currentDocumentArtifactUrl: currentVersion?.artifactUrl,
+      runnerSkill: implementationPrAuthorSkill(),
       branchName,
       baseBranch,
       title: `Implement ${workItem.primaryJiraKey}: ${workItem.title ?? workItem.primaryJiraKey}`,
@@ -431,6 +432,13 @@ function isPrdIntakeRequestedStatus(status: string): boolean {
 
 function implementationBranchNameFor(sourceKey: string): string {
   return `workflow/${sourceKey.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+}
+
+function implementationPrAuthorSkill(): Record<string, string> {
+  return {
+    id: "implementation.pr-author",
+    version: "0.1.0"
+  };
 }
 
 function implementationPullRequestBodyFor(

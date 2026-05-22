@@ -1,5 +1,5 @@
 import type { Document } from "../document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
 import type { WorkflowApiReadModel } from "./mysql-read-model";
 import {
   canPlanRepositoryWorkflowTransition,
@@ -67,6 +67,8 @@ export class RepositoryTransitionProcessor {
     }
 
     const summary = await this.input.readModel.summarizeWorkflowRun(input.job.runId);
+    const workflowRun = workflowRunFromWorkflowRunSummary(summary);
+    const workflowTasks = workflowTasksFromWorkflowRunSummary(summary);
     const documents = documentsFromWorkflowRunSummary(summary);
     const documentId = primaryDocumentIdForJob(input.job, documents);
     const document = documentId ? documents.find((candidate) => candidate.id === documentId) : undefined;
@@ -76,6 +78,8 @@ export class RepositoryTransitionProcessor {
     }
 
     const transition = planRepositoryWorkflowTransition({
+      workflowRun,
+      workflowTasks,
       document,
       job: input.job,
       result: input.jobResult,
@@ -91,12 +95,60 @@ export class RepositoryTransitionProcessor {
   }
 }
 
+function workflowRunFromWorkflowRunSummary(summary: Record<string, unknown> | undefined): WorkflowRun | undefined {
+  const run = summary?.run;
+
+  if (!isWorkflowRunRecord(run)) {
+    return undefined;
+  }
+
+  return run;
+}
+
 function documentsFromWorkflowRunSummary(summary: Record<string, unknown> | undefined): Document[] {
   if (!summary || !Array.isArray(summary.documents)) {
     return [];
   }
 
   return summary.documents.filter(isDocumentRecord);
+}
+
+function workflowTasksFromWorkflowRunSummary(summary: Record<string, unknown> | undefined): WorkflowTask[] {
+  if (!summary || !Array.isArray(summary.tasks)) {
+    return [];
+  }
+
+  return summary.tasks.filter(isWorkflowTaskRecord);
+}
+
+function isWorkflowRunRecord(value: unknown): value is WorkflowRun {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as WorkflowRun).id === "string" &&
+    typeof (value as WorkflowRun).workflowDefinitionId === "string" &&
+    typeof (value as WorkflowRun).status === "string" &&
+    typeof (value as WorkflowRun).sourceType === "string" &&
+    typeof (value as WorkflowRun).sourceKey === "string" &&
+    typeof (value as WorkflowRun).outputLanguage === "string" &&
+    typeof (value as WorkflowRun).createdAt === "string" &&
+    typeof (value as WorkflowRun).updatedAt === "string"
+  );
+}
+
+function isWorkflowTaskRecord(value: unknown): value is WorkflowTask {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as WorkflowTask).id === "string" &&
+    typeof (value as WorkflowTask).runId === "string" &&
+    typeof (value as WorkflowTask).taskType === "string" &&
+    typeof (value as WorkflowTask).sourceKey === "string" &&
+    typeof (value as WorkflowTask).title === "string" &&
+    typeof (value as WorkflowTask).status === "string" &&
+    typeof (value as WorkflowTask).createdAt === "string" &&
+    typeof (value as WorkflowTask).updatedAt === "string"
+  );
 }
 
 function isDocumentRecord(value: unknown): value is Document {

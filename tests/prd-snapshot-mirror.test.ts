@@ -23,6 +23,7 @@ describe("MysqlPrdSnapshotMirror", () => {
     expect(database.statements.map((statement) => statement.sql)).toEqual(
       expect.arrayContaining([
         expect.stringContaining("INSERT INTO workflow_run"),
+        expect.stringContaining("INSERT INTO workflow_task"),
         expect.stringContaining("INSERT INTO workflow_job"),
         expect.stringContaining("INSERT INTO workflow_job_result"),
         expect.stringContaining("INSERT INTO document"),
@@ -33,10 +34,17 @@ describe("MysqlPrdSnapshotMirror", () => {
         expect.stringContaining("INSERT INTO feedback_item")
       ])
     );
-    expect(indexOfSql(database, "INSERT INTO workflow_run")).toBeLessThan(indexOfSql(database, "INSERT INTO workflow_job"));
+    expect(indexOfSql(database, "INSERT INTO workflow_run")).toBeLessThan(indexOfSql(database, "INSERT INTO workflow_task"));
+    expect(indexOfSql(database, "INSERT INTO workflow_task")).toBeLessThan(indexOfSql(database, "INSERT INTO workflow_job"));
     expect(indexOfSql(database, "INSERT INTO workflow_job")).toBeLessThan(indexOfSql(database, "INSERT INTO document_version"));
     expect(indexOfSql(database, "INSERT INTO document_version")).toBeLessThan(indexOfSql(database, "INSERT INTO artifact"));
     expect(indexOfSql(database, "INSERT INTO artifact")).toBeLessThan(indexOfSql(database, "UPDATE document SET status"));
+    expect(database.statements.find((statement) => statement.sql.includes("INSERT INTO workflow_job"))?.sql).toContain(
+      "task_id"
+    );
+    expect(database.statements.find((statement) => statement.sql.includes("INSERT INTO document"))?.sql).toContain(
+      "workflow_task_id"
+    );
     expect(
       database.statements.find((statement) => statement.sql.includes("INSERT INTO feedback_item"))?.params
     ).toContain("Add measurable rollout KPI.");

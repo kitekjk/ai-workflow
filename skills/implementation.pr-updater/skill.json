@@ -1,0 +1,35 @@
+{
+  "id": "implementation.pr-updater",
+  "name": "Implementation PR Updater",
+  "version": "0.1.0",
+  "description": "Applies code-only fixes to an existing implementation pull request after CI or review feedback.",
+  "jobTypes": ["implementation.update_pr"],
+  "inputs": [
+    "documentType",
+    "documentId",
+    "documentVersionId",
+    "pullNumber",
+    "pullRequestUrl",
+    "repository",
+    "repositoryCloneUrl",
+    "branchName",
+    "baseBranch",
+    "feedback",
+    "reviewStatus",
+    "ciStatus",
+    "checkRuns"
+  ],
+  "outputs": [
+    "status",
+    "pullRequestNumber",
+    "pullRequestUrl",
+    "latestCommitSha",
+    "summary"
+  ],
+  "permissions": {
+    "workspaceWrite": true,
+    "shell": true,
+    "git": true,
+    "github": false
+  }
+}

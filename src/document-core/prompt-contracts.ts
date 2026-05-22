@@ -300,12 +300,14 @@ function fanOutOutputSchema(documentType: DocumentType): JsonSchema {
 function implementationOpenPrOutputSchema(): JsonSchema {
   return {
     type: "object",
-    required: ["status", "summary"],
+    required: ["status", "summary", "pullRequestTitle", "pullRequestBody"],
     additionalProperties: true,
     properties: {
       status: { type: "string", enum: ["implemented", "succeeded"] },
       latestCommitSha: { type: "string" },
       summary: { type: "string" },
+      pullRequestTitle: { type: "string" },
+      pullRequestBody: { type: "string" },
       artifacts: { type: "array", items: { type: "object", additionalProperties: true } },
       generatedFiles: { type: "array", items: { type: "object", additionalProperties: true } }
     }

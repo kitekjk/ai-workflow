@@ -190,10 +190,12 @@ describe("MysqlWorkflowApiReadModel", () => {
       nodes: [
         { id: "task_1", type: "workflow_task", currentDocumentId: "doc_wi_1" },
         { id: "job_1", taskId: "task_1", primaryDocumentId: "doc_wi_1" }
-      ]
+      ],
+      edges: [{ id: "edge_task_1_job_1", type: "workflow_task_job", from: "task_1", to: "job_1" }]
     });
     expect(current).toMatchObject({
       document: { id: "doc_wi_1" },
+      workflowTask: { id: "task_1", currentDocumentId: "doc_wi_1" },
       currentVersion: { id: "docv_1", summary: "Draft PRD" },
       latestQualityResult: { id: "qgr_1", riskItems: ["Monitor rollout KPI"] },
       currentArtifacts: [{ id: "art_1" }, { id: "art_2" }],
@@ -246,6 +248,17 @@ class FakeMysqlReadDatabase implements MysqlDatabase, MysqlConnection {
 
     if (normalizedSql.includes("FROM workflow_job")) {
       return [this.rows.workflowJobs?.filter((row) => row.run_id === params[0]) as T, undefined];
+    }
+
+    if (normalizedSql.includes("FROM workflow_task") && normalizedSql.includes("WHERE id")) {
+      return [this.rows.workflowTasks?.filter((row) => row.id === params[0]) as T, undefined];
+    }
+
+    if (normalizedSql.includes("FROM workflow_task") && normalizedSql.includes("current_document_id")) {
+      return [
+        this.rows.workflowTasks?.filter((row) => row.run_id === params[0] && row.current_document_id === params[1]) as T,
+        undefined
+      ];
     }
 
     if (normalizedSql.includes("FROM workflow_task")) {

@@ -210,6 +210,19 @@ type WorkflowRunResponse = {
   documents: WorkflowDocument[]
 }
 
+type WorkflowRunTreeEdge = {
+  id: string
+  type?: string
+  from: string
+  to: string
+  label?: string
+}
+
+type WorkflowRunTreeResponse = WorkflowRunResponse & {
+  nodes?: Array<Record<string, unknown>>
+  edges?: WorkflowRunTreeEdge[]
+}
+
 type DocumentCurrentResponse = {
   document: WorkflowDocument
   currentVersion: DocumentVersion | null
@@ -296,7 +309,10 @@ export type LocalRunnerDrainSummary = {
 }
 
 export async function fetchApiDashboard(runId = defaultRunId): Promise<ApiDashboardData> {
-  const runResponse = await apiGet<WorkflowRunResponse>(`/workflow-runs/${encodeURIComponent(runId)}`)
+  const [runResponse, treeResponse] = await Promise.all([
+    apiGet<WorkflowRunResponse>(`/workflow-runs/${encodeURIComponent(runId)}`),
+    fetchApiRunTree(runId),
+  ])
   const currentViews = await Promise.all(
     runResponse.documents.map((document) =>
       apiGet<DocumentCurrentResponse>(`/documents/${encodeURIComponent(document.id)}/current`),
@@ -310,7 +326,7 @@ export async function fetchApiDashboard(runId = defaultRunId): Promise<ApiDashbo
   const ledgerEvents = await fetchApiRunEvents(runResponse.run.id)
   const runners = await fetchApiRunners()
 
-  return mapApiDashboard(runResponse, currentViews, histories, ledgerEvents, runners)
+  return mapApiDashboard(runResponse, currentViews, histories, ledgerEvents, runners, treeResponse)
 }
 
 export async function seedApiRun(
@@ -646,6 +662,14 @@ async function fetchApiRunEvents(runId: string): Promise<WorkflowEvent[]> {
   }
 }
 
+async function fetchApiRunTree(runId: string): Promise<WorkflowRunTreeResponse | undefined> {
+  try {
+    return await apiGet<WorkflowRunTreeResponse>(`/workflow-runs/${encodeURIComponent(runId)}/tree`)
+  } catch {
+    return undefined
+  }
+}
+
 async function fetchApiRunners(): Promise<WorkflowRunner[]> {
   try {
     const response = await apiGet<WorkflowRunnersResponse>('/runners')
@@ -680,10 +704,15 @@ function mapApiDashboard(
   histories: DocumentHistoryResponse[],
   ledgerEvents: WorkflowEvent[],
   runners: WorkflowRunner[],
+  treeResponse?: WorkflowRunTreeResponse,
 ): ApiDashboardData {
-  const apiTasks = runResponse.tasks ?? []
+  const workflowTreeEdges = treeResponse?.edges ?? []
+  const apiTasks = applyWorkflowTreeParentEdges(
+    treeResponse?.tasks?.length ? treeResponse.tasks : (runResponse.tasks ?? []),
+    workflowTreeEdges,
+  )
   const items = apiTasks.length
-    ? orderTaskItems(mapWorkflowTaskItems(apiTasks, runResponse.jobs, currentViews, histories))
+    ? orderTaskItems(mapWorkflowTaskItems(apiTasks, runResponse.jobs, currentViews, histories, workflowTreeEdges))
     : orderTaskItems(mapProjectedDocumentTaskItems(runResponse, currentViews, histories))
   const jobToTaskId = createJobToTaskIdMap(items)
   const documentToItemId = createDocumentToItemIdMap(items)
@@ -700,7 +729,7 @@ function mapApiDashboard(
     description: `${runResponse.run.sourceType ?? 'source'} ${runResponse.run.sourceKey}`,
     itemIds: items.map((item) => item.id),
     nodes: createNodes(items),
-    edges: createEdges(items),
+    edges: createEdges(items, workflowTreeEdges),
   }
 
   return {
@@ -886,14 +915,15 @@ function mapWorkflowTaskItems(
   jobs: WorkflowJob[],
   currentViews: DocumentCurrentResponse[],
   histories: DocumentHistoryResponse[],
+  workflowTreeEdges: WorkflowRunTreeEdge[],
 ): WorkItem[] {
   const documents = currentViews.map((current) => current.document)
   const currentByDocumentId = new Map(currentViews.map((current) => [current.document.id, current]))
   const historyByDocumentId = new Map(histories.map((history) => [history.documentId, history]))
   const taskDepths = createWorkflowTaskDepths(tasks)
-  const jobsByTaskId = groupWorkflowJobsByTask(jobs, tasks, documents)
+  const jobsByTaskId = groupWorkflowJobsByTask(jobs, tasks, documents, workflowTreeEdges)
 
-  return tasks.map((task, index) => {
+  const taskItems = tasks.map((task, index) => {
     const current = currentByDocumentId.get(task.currentDocumentId ?? '') ??
       currentViews.find((candidate) => candidate.document.workflowTaskId === task.id)
     const history = current ? historyByDocumentId.get(current.document.id) : undefined
@@ -909,6 +939,11 @@ function mapWorkflowTaskItems(
 
     return mapBareTaskItem(task, index, taskDepths, taskJobs)
   })
+
+  return stripImplementationPrsFromDocumentTasks(
+    taskItems,
+    taskItems.filter((item) => item.taskKind === 'code'),
+  )
 }
 
 function mapBareTaskItem(
@@ -995,7 +1030,7 @@ function mapCodeTaskItem(
     finishedAt: state === 'completed' ? formatTime(latestJob?.updatedAt ?? latestPullRequest?.createdAt) : undefined,
     summary: `Tracks code execution jobs and pull request status for ${current?.document.title ?? sourceKey}.`,
     owner: 'Developer',
-    skill: 'implementation',
+    skill: runnerSkillLabelForJobs(jobs) ?? 'implementation',
     versionCount: 0,
     artifactCount: pullRequests.length,
     qualityRiskCount: 0,
@@ -1280,9 +1315,15 @@ function createTaskRows(taskItems: WorkItem[]): Map<string, number> {
   return rows
 }
 
-function createEdges(taskItems: WorkItem[]): FlowEdge[] {
+function createEdges(taskItems: WorkItem[], workflowTreeEdges: WorkflowRunTreeEdge[] = []): FlowEdge[] {
   if (!taskItems.length) {
     return []
+  }
+
+  const explicitEdges = createExplicitTaskEdges(taskItems, workflowTreeEdges)
+
+  if (explicitEdges.length) {
+    return explicitEdges
   }
 
   return taskItems
@@ -1292,6 +1333,34 @@ function createEdges(taskItems: WorkItem[]): FlowEdge[] {
       from: nodeIdForItem(String(task.parentId)),
       to: nodeIdForItem(task.id),
     }))
+}
+
+function createExplicitTaskEdges(taskItems: WorkItem[], workflowTreeEdges: WorkflowRunTreeEdge[]): FlowEdge[] {
+  const taskIds = new Set(taskItems.map((task) => task.id))
+  const seen = new Set<string>()
+  const edges: FlowEdge[] = []
+
+  for (const edge of workflowTreeEdges) {
+    if (edge.type !== 'workflow_task_parent' || !taskIds.has(edge.from) || !taskIds.has(edge.to)) {
+      continue
+    }
+
+    const edgeKey = `${edge.from}->${edge.to}`
+
+    if (seen.has(edgeKey)) {
+      continue
+    }
+
+    seen.add(edgeKey)
+    edges.push({
+      id: `api-edge-${edge.id}`,
+      from: nodeIdForItem(edge.from),
+      to: nodeIdForItem(edge.to),
+      label: edge.label,
+    })
+  }
+
+  return edges
 }
 
 function documentNodeKind(item: WorkItem): FlowNode['kind'] {
@@ -1531,7 +1600,7 @@ function createImplementationTaskItems(
         finishedAt: state === 'completed' ? formatTime(latestJob?.updatedAt ?? latestPullRequest?.createdAt) : undefined,
         summary: `Tracks code execution jobs and pull request status for ${spec.title}.`,
         owner: 'Developer',
-        skill: 'implementation',
+        skill: runnerSkillLabelForJobs(implementationJobs) ?? 'implementation',
         versionCount: 0,
         artifactCount: pullRequests.length,
         qualityRiskCount: 0,
@@ -1555,7 +1624,7 @@ function stripImplementationPrsFromDocumentTasks(
   )
 
   return documentItems.map((item) => {
-    if (!item.documentId || !implementationDocumentIds.has(item.documentId)) {
+    if (item.taskKind === 'code' || !item.documentId || !implementationDocumentIds.has(item.documentId)) {
       return item
     }
 
@@ -1717,6 +1786,37 @@ function createWorkflowTaskDepths(tasks: WorkflowTask[]): Map<string, number> {
   return depths
 }
 
+function applyWorkflowTreeParentEdges(
+  tasks: WorkflowTask[],
+  workflowTreeEdges: WorkflowRunTreeEdge[],
+): WorkflowTask[] {
+  if (!tasks.length || !workflowTreeEdges.length) {
+    return tasks
+  }
+
+  const taskIds = new Set(tasks.map((task) => task.id))
+  const parentByTaskId = new Map<string, string>()
+
+  for (const edge of workflowTreeEdges) {
+    if (edge.type === 'workflow_task_parent' && taskIds.has(edge.from) && taskIds.has(edge.to)) {
+      parentByTaskId.set(edge.to, edge.from)
+    }
+  }
+
+  if (!parentByTaskId.size) {
+    return tasks
+  }
+
+  return tasks.map((task) =>
+    task.parentTaskId || !parentByTaskId.has(task.id)
+      ? task
+      : {
+          ...task,
+          parentTaskId: parentByTaskId.get(task.id),
+        },
+  )
+}
+
 function groupWorkflowJobsByDocument(
   jobs: WorkflowJob[],
   documents: WorkflowDocument[],
@@ -1747,8 +1847,10 @@ function groupWorkflowJobsByTask(
   jobs: WorkflowJob[],
   tasks: WorkflowTask[],
   documents: WorkflowDocument[],
+  workflowTreeEdges: WorkflowRunTreeEdge[] = [],
 ): Map<string, WorkflowJob[]> {
   const jobsByDocumentId = groupWorkflowJobsByDocument(jobs, documents)
+  const taskIdByJobId = createWorkflowTaskJobEdgeMap(tasks, jobs, workflowTreeEdges)
   const documentToTaskId = new Map<string, string>()
 
   for (const task of tasks) {
@@ -1766,7 +1868,7 @@ function groupWorkflowJobsByTask(
   const jobsByTaskId = new Map<string, WorkflowJob[]>()
 
   for (const job of jobs) {
-    const taskId = job.taskId ?? documentToTaskId.get(jobDocumentId(job, documents, null) ?? '')
+    const taskId = taskIdByJobId.get(job.id) ?? job.taskId ?? documentToTaskId.get(jobDocumentId(job, documents, null) ?? '')
 
     if (!taskId) {
       continue
@@ -1792,6 +1894,24 @@ function groupWorkflowJobsByTask(
   }
 
   return jobsByTaskId
+}
+
+function createWorkflowTaskJobEdgeMap(
+  tasks: WorkflowTask[],
+  jobs: WorkflowJob[],
+  workflowTreeEdges: WorkflowRunTreeEdge[],
+): Map<string, string> {
+  const taskIds = new Set(tasks.map((task) => task.id))
+  const jobIds = new Set(jobs.map((job) => job.id))
+  const taskIdByJobId = new Map<string, string>()
+
+  for (const edge of workflowTreeEdges) {
+    if (edge.type === 'workflow_task_job' && taskIds.has(edge.from) && jobIds.has(edge.to)) {
+      taskIdByJobId.set(edge.to, edge.from)
+    }
+  }
+
+  return taskIdByJobId
 }
 
 function jobDocumentId(
@@ -1851,6 +1971,31 @@ function jobHistoryFor(jobs: WorkflowJob[]): JobHistorySummary[] {
     finishedAt: isTerminalJob(job.status) ? formatTime(job.updatedAt) : undefined,
     summary: summarizeJob(job, index),
   }))
+}
+
+function runnerSkillLabelForJobs(jobs: WorkflowJob[]): string | undefined {
+  for (let index = jobs.length - 1; index >= 0; index -= 1) {
+    const label = runnerSkillLabelForJob(jobs[index])
+
+    if (label) {
+      return label
+    }
+  }
+
+  return undefined
+}
+
+function runnerSkillLabelForJob(job: WorkflowJob): string | undefined {
+  const runnerSkill = job.input.runnerSkill
+
+  if (typeof runnerSkill !== 'object' || runnerSkill === null || Array.isArray(runnerSkill)) {
+    return undefined
+  }
+
+  const id = metadataToken((runnerSkill as Record<string, unknown>).id)
+  const version = metadataToken((runnerSkill as Record<string, unknown>).version)
+
+  return id && version ? `${id}@${version}` : id
 }
 
 function createJobToTaskIdMap(items: WorkItem[]): Map<string, string> {

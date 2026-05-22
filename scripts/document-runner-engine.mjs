@@ -5,7 +5,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
@@ -25,16 +27,17 @@ export function buildPrompt(input) {
   const contractBlock = buildContractBlock(promptContract);
 
   if (isImplementationOpenPrJob(jobType)) {
+    const skillBlock = buildSkillBlock(runnerSkillIdFor(input, "implementation.pr-author"));
+
     return [
       "You are implementing an approved Spec and preparing its first pull request for an AI workflow system.",
       "The target repository branch has been checked out in the current working directory when repositoryCloneUrl and branchName are present.",
       "Use the approved Spec artifact, branch metadata, and input context to make the smallest complete implementation for this PR.",
-      "Run relevant tests when practical. Commit the change to the current branch and push it when credentials are available.",
-      "Do not rewrite workflow documents for this job; produce code changes only.",
       languageInstruction,
+      skillBlock,
       contractBlock,
       "Return only a JSON object with this shape:",
-      '{"status":"implemented","latestCommitSha":"...","summary":"...","artifacts":[],"generatedFiles":[]}',
+      '{"status":"implemented","latestCommitSha":"...","summary":"...","pullRequestTitle":"...","pullRequestBody":"...","artifacts":[],"generatedFiles":[]}',
       "Omit artifacts or generatedFiles unless the job explicitly asks for file outputs.",
       "",
       "Input context:",
@@ -43,13 +46,14 @@ export function buildPrompt(input) {
   }
 
   if (isImplementationUpdateJob(jobType)) {
+    const skillBlock = buildSkillBlock(runnerSkillIdFor(input, "implementation.pr-updater"));
+
     return [
       "You are updating an existing implementation pull request for an AI workflow system.",
       "The PR branch has already been checked out in the current working directory when repositoryCloneUrl and branchName are present.",
       "Use the feedback, failing checks, current document version, and PR metadata from the input context to make the smallest correct code change.",
-      "Run relevant tests when practical. Commit the change to the current branch and push it when credentials are available.",
-      "Do not rewrite workflow documents for this job; if the code cannot be fixed without changing the document, explain that in summary and still return the requested JSON.",
       languageInstruction,
+      skillBlock,
       contractBlock,
       "Return only a JSON object with this shape:",
       '{"status":"succeeded","pullRequestNumber":1,"pullRequestUrl":"https://...","latestCommitSha":"...","summary":"...","artifacts":[],"generatedFiles":[]}',
@@ -104,6 +108,38 @@ export function buildPrompt(input) {
     "Input context:",
     JSON.stringify(input, null, 2),
   ].join("\n");
+}
+
+function buildSkillBlock(skillId) {
+  const skillDir = path.join(repoRoot, "skills", skillId);
+  const metadataPath = path.join(skillDir, "skill.json");
+  const promptPath = path.join(skillDir, "prompt.md");
+
+  if (!existsSync(metadataPath) || !existsSync(promptPath)) {
+    return [
+      "## Runner Skill Package",
+      "",
+      `Skill package ${skillId} is not installed. Follow the job prompt and output contract exactly.`,
+    ].join("\n");
+  }
+
+  return [
+    "## Runner Skill Package",
+    "",
+    readFileSync(metadataPath, "utf8").trim(),
+    "",
+    "## Runner Skill Instructions",
+    "",
+    readFileSync(promptPath, "utf8").trim(),
+  ].join("\n");
+}
+
+function runnerSkillIdFor(input, fallback) {
+  const runnerSkill = input && typeof input.runnerSkill === "object" && !Array.isArray(input.runnerSkill)
+    ? input.runnerSkill
+    : undefined;
+
+  return typeof runnerSkill?.id === "string" && runnerSkill.id.length > 0 ? runnerSkill.id : fallback;
 }
 
 function parseArgs(argv) {
@@ -487,11 +523,13 @@ function outputSchemaForJob(jobType, documentType, downstreamTarget) {
   if (isImplementationOpenPrJob(jobType)) {
     return {
       type: "object",
-      required: ["status", "summary"],
+      required: ["status", "summary", "pullRequestTitle", "pullRequestBody"],
       properties: {
         status: { type: "string", enum: ["implemented", "succeeded"] },
         latestCommitSha: { type: "string" },
         summary: { type: "string" },
+        pullRequestTitle: { type: "string" },
+        pullRequestBody: { type: "string" },
         artifacts: { type: "array", items: { type: "object" } },
         generatedFiles: { type: "array", items: { type: "object" } },
       },

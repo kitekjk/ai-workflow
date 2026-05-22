@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Document } from "../src/document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../src/workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../src/workflow-core/domain";
 import { planRepositoryWorkflowTransition } from "../src/workflow-api/repository-transition-planner";
 
 describe("repository transition planner", () => {
@@ -284,6 +284,7 @@ describe("repository transition planner", () => {
 
   it("plans implementation status collection after opening a pull request", () => {
     const plan = planRepositoryWorkflowTransition({
+      workflowRun: workflowRun(),
       document: document({
         id: "doc_spec",
         type: "spec",
@@ -421,6 +422,7 @@ describe("repository transition planner", () => {
 
   it("treats a merged implementation PR as the terminal implementation transition", () => {
     const plan = planRepositoryWorkflowTransition({
+      workflowRun: workflowRun(),
       document: document({
         id: "doc_spec",
         type: "spec",
@@ -456,6 +458,13 @@ describe("repository transition planner", () => {
     });
 
     expect(plan.transitionType).toBe("implementation_pr_merged");
+    expect(plan.mutation.workflowRuns).toMatchObject([
+      {
+        id: "run_1",
+        status: "completed",
+        updatedAt: "2026-05-21T00:05:30.000Z"
+      }
+    ]);
     expect(plan.mutation.workflowTasks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -481,6 +490,75 @@ describe("repository transition planner", () => {
         }
       }
     ]);
+    expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
+      transitionType: "implementation_pr_merged",
+      workflowRunStatus: "completed"
+    });
+  });
+
+  it("keeps the workflow run active while another code task is still open", () => {
+    const plan = planRepositoryWorkflowTransition({
+      workflowRun: workflowRun(),
+      workflowTasks: [
+        workflowTask({
+          id: "task_doc_spec_code",
+          taskType: "code",
+          status: "in_progress",
+          currentDocumentId: "doc_spec"
+        }),
+        workflowTask({
+          id: "task_doc_lld_code",
+          taskType: "code",
+          status: "in_progress",
+          currentDocumentId: "doc_lld"
+        })
+      ],
+      document: document({
+        id: "doc_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved"
+      }),
+      job: workflowJob({
+        id: "job_collect",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          merged: true
+        }
+      }),
+      now: new Date("2026-05-21T00:05:45.000Z")
+    });
+
+    expect(plan.transitionType).toBe("implementation_pr_merged");
+    expect(plan.mutation.workflowRuns).toBeUndefined();
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_doc_spec_code",
+          taskType: "code",
+          status: "completed"
+        })
+      ])
+    );
+    expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
+      transitionType: "implementation_pr_merged"
+    });
+    expect(plan.mutation.events?.[0]?.metadata).not.toMatchObject({
+      workflowRunStatus: "completed"
+    });
   });
 
   it("routes implementation review changes back to the document task", () => {
@@ -679,6 +757,10 @@ describe("repository transition planner", () => {
           sourceImplementationResultId: "result_collect",
           reviewStatus: "approved",
           ciStatus: "failure",
+          runnerSkill: {
+            id: "implementation.pr-updater",
+            version: "0.1.0"
+          },
           runnerJobTemplate: {
             runner: {
               sandbox: "workspace-write",
@@ -846,6 +928,36 @@ function document(overrides: Partial<Document> = {}): Document {
     sourceKey: "PRD-100",
     title: "PRD",
     status: "draft",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    updatedAt: "2026-05-20T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    id: "run_1",
+    workflowDefinitionId: "prd_confirmation",
+    status: "active",
+    sourceType: "jira",
+    sourceKey: "PRD-100",
+    outputLanguage: "ko",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    updatedAt: "2026-05-20T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
+  return {
+    id: "task_1",
+    runId: "run_1",
+    taskType: "prd",
+    sourceKey: "PRD-100",
+    title: "Task",
+    status: "in_progress",
+    currentDocumentId: "doc_1",
+    metadata: {},
     createdAt: "2026-05-20T00:00:00.000Z",
     updatedAt: "2026-05-20T00:00:00.000Z",
     ...overrides

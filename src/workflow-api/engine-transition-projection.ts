@@ -2,6 +2,7 @@ import type { Document } from "../document-core/domain";
 import { createGenericPrdSnapshot } from "../prd-confirmation/generic-adapter";
 import type { AgentJob, AgentJobResult, PrdConfirmationStore } from "../prd-confirmation/domain";
 import type { WorkflowEngineStepResult } from "../prd-confirmation/workflow-engine";
+import type { WorkflowTask } from "../workflow-core/domain";
 import type {
   RecordEngineTransitionCommandInput,
   RecordWorkflowJobCommandInput,
@@ -19,6 +20,7 @@ export function createEngineTransitionCommandInput(
 
   const snapshot = createGenericPrdSnapshot(store);
   const documents = documentsForEngineStep(snapshot.documents, engineStep);
+  const workflowTasks = workflowTasksForEngineStep(snapshot.workflowTasks, engineStep);
   const jobs = engineStep.createdJobIds.map((jobId) => workflowJobCommandInputForFixtureJob(store, jobId));
 
   return {
@@ -29,6 +31,7 @@ export function createEngineTransitionCommandInput(
     workItemState: engineStep.workItemState,
     externalIssueStatus: engineStep.externalIssueStatus,
     processedResult: processedResultSummary(engineStep.processedResult),
+    workflowTasks,
     documents,
     jobs,
     now
@@ -53,8 +56,54 @@ export function workflowJobCommandInputForFixtureJob(
 
   return {
     runId: workItem.runId,
-    job: cloneAgentJob(job)
+    job: cloneAgentJob(job),
+    taskId: taskIdForFixtureJob(job, workItem),
+    workflowTask: isImplementationJob(job.jobType) ? implementationTaskForFixtureJob(job, workItem) : undefined
   };
+}
+
+function taskIdForFixtureJob(job: AgentJob, workItem: { id: string }): string {
+  return isImplementationJob(job.jobType) ? codeTaskIdForWorkItem(workItem.id) : taskIdForWorkItem(workItem.id);
+}
+
+function implementationTaskForFixtureJob(
+  job: AgentJob,
+  workItem: { id: string; runId: string; primaryJiraKey: string; title?: string }
+): WorkflowTask {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const documentId = documentIdForWorkItemId(workItem.id);
+
+  return {
+    id: codeTaskIdForWorkItem(workItem.id),
+    runId: workItem.runId,
+    parentTaskId: taskIdForWorkItem(workItem.id),
+    taskType: "code",
+    sourceKey: workItem.primaryJiraKey,
+    title: `Code Implementation for ${workItem.primaryJiraKey}`,
+    status: job.status === "failed" ? "failed" : "draft",
+    currentDocumentId: documentId,
+    metadata: {
+      documentId
+    },
+    createdAt,
+    updatedAt: createdAt
+  };
+}
+
+function taskIdForWorkItem(workItemId: string): string {
+  return `task_${workItemId}`;
+}
+
+function codeTaskIdForWorkItem(workItemId: string): string {
+  return `task_${documentIdForWorkItemId(workItemId)}_code`;
+}
+
+function documentIdForWorkItemId(workItemId: string): string {
+  return `doc_${workItemId}`;
+}
+
+function isImplementationJob(jobType: string): boolean {
+  return jobType.startsWith("implementation.");
 }
 
 function documentsForEngineStep(documents: Document[], engineStep: WorkflowEngineStepResult): Document[] {
@@ -72,6 +121,12 @@ function documentsForEngineStep(documents: Document[], engineStep: WorkflowEngin
   }
 
   return selectedDocuments;
+}
+
+function workflowTasksForEngineStep(tasks: WorkflowTask[], engineStep: WorkflowEngineStepResult): WorkflowTask[] {
+  const affectedDocumentIds = new Set(engineStep.affectedDocumentIds);
+
+  return tasks.filter((task) => task.currentDocumentId && affectedDocumentIds.has(task.currentDocumentId));
 }
 
 function cloneAgentJob(job: AgentJob): AgentJob {

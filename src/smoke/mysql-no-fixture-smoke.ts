@@ -8,14 +8,25 @@ import {
   type WorkflowApiRuntime,
   type WorkflowApiRuntimeEnv
 } from "../runtime/create-workflow-api-runtime";
+import { GitHubRestClient } from "../integrations/github-client";
+import { githubRuntimeConfig } from "../runtime/create-runtime";
+import { JobTemplateCliLocalRunnerEngine } from "../local-runner/cli-engine-adapter";
+import {
+  GitHubImplementationLocalRunnerEngine,
+  ImplementationPullRequestLocalRunnerEngine,
+  ImplementationUpdateLocalRunnerEngine,
+  RoutedLocalRunnerEngine
+} from "../local-runner/github-implementation-engine";
 import { runLocalRunnerDrain, type LocalRunnerDrainResult, type LocalRunnerEngine } from "../local-runner/local-runner";
 import { WorkflowApiRunnerClient } from "../local-runner/runner-client";
+import type { LocalRunnerWorkspaceOptions } from "../local-runner/workspace";
 import { createWorkflowApiServer, type WorkflowApiServer } from "../workflow-api/server";
 
 interface MysqlNoFixtureSmokeSummary {
   prdJiraKey: string;
   actorEmail: string;
   runnerId: string;
+  implementationMode: SmokeImplementationMode;
   apiUrl: string;
   claims: Array<{
     jobId: string;
@@ -48,6 +59,9 @@ interface MysqlNoFixtureSmokeSummary {
     processedJobs: number;
   };
   finalPrdStatus: unknown;
+  finalRunStatus: unknown;
+  codeTaskCount: number;
+  completedCodeTaskCount: number;
   downstreamDocuments: Array<{
     id: string;
     type: unknown;
@@ -65,6 +79,17 @@ interface SmokeDocumentSummary {
 }
 
 type FetchImpl = typeof fetch;
+export type SmokeImplementationMode = "stub" | "github";
+
+export interface MysqlNoFixtureSmokeConfig {
+  prdJiraKey: string;
+  actorEmail: string;
+  runnerId: string;
+  engine: string;
+  implementationMode: SmokeImplementationMode;
+  appToken?: string;
+  runnerToken?: string;
+}
 
 export async function runMysqlNoFixtureSmoke(
   env: WorkflowApiRuntimeEnv = process.env,
@@ -135,12 +160,15 @@ export async function runMysqlNoFixtureSmoke(
       engines: [config.engine],
       defaultEngine: config.engine
     };
-    const engine = createSmokeLocalRunnerEngine(config.prdJiraKey);
+    const runnerSetup = createSmokeLocalRunnerSetup(config, smokeEnv);
+    const engine = runnerSetup.engine;
+    const workspace = runnerSetup.workspace;
 
     const drain = await runLocalRunnerDrain({
       client: runnerClient,
       engine,
       runner,
+      workspace,
       maxJobs: 5
     });
     const claims = claimSummaries(drain);
@@ -162,6 +190,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      workspace,
       maxJobs: 6
     });
     const downstreamClaims = claimSummaries(downstreamDrain);
@@ -174,6 +203,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      workspace,
       maxJobs: 8
     });
     const lldClaims = claimSummaries(lldDrain);
@@ -188,6 +218,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      workspace,
       maxJobs: 14
     });
     const specClaims = claimSummaries(specDrain);
@@ -202,10 +233,13 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      workspace,
       maxJobs: 12
     });
     const implementationClaims = claimSummaries(implementationDrain);
     downstreamDocuments = await loadDownstreamDocuments(fetchImpl, server.url, intake.runId, config.appToken);
+    const runSummary = await loadWorkflowRunSummary(fetchImpl, server.url, intake.runId, config.appToken);
+    const codeTaskSummary = summarizeCodeTasks(runSummary);
     const approvedState = await getJson<Record<string, unknown>>(
       fetchImpl,
       server.url,
@@ -223,6 +257,16 @@ export async function runMysqlNoFixtureSmoke(
       throw new Error(`Expected final approved PRD status, got: ${String(approvedState.prdStatus)}`);
     }
 
+    if (workflowRunStatusFor(runSummary) !== "completed") {
+      throw new Error(`Expected workflow run completed, got: ${String(workflowRunStatusFor(runSummary))}`);
+    }
+
+    if (codeTaskSummary.total < specs.length || codeTaskSummary.completed < specs.length) {
+      throw new Error(
+        `Expected completed Code tasks for specs, got: ${JSON.stringify(codeTaskSummary)}`
+      );
+    }
+
     if (pullRequestArtifactCount < specs.length) {
       throw new Error(`Expected pull request artifacts for specs, got: ${pullRequestArtifactCount}`);
     }
@@ -231,6 +275,7 @@ export async function runMysqlNoFixtureSmoke(
       prdJiraKey: config.prdJiraKey,
       actorEmail: config.actorEmail,
       runnerId: config.runnerId,
+      implementationMode: config.implementationMode,
       apiUrl: server.url,
       claims: [...claims, ...downstreamClaims, ...lldClaims, ...specClaims, ...implementationClaims],
       drain: {
@@ -259,6 +304,9 @@ export async function runMysqlNoFixtureSmoke(
         processedJobs: implementationDrain.processedJobs
       },
       finalPrdStatus: approvedState.prdStatus,
+      finalRunStatus: workflowRunStatusFor(runSummary),
+      codeTaskCount: codeTaskSummary.total,
+      completedCodeTaskCount: codeTaskSummary.completed,
       downstreamDocuments,
       pullRequestArtifactCount
     };
@@ -319,6 +367,48 @@ async function loadDownstreamDocuments(
     }));
 }
 
+async function loadWorkflowRunSummary(
+  fetchImpl: FetchImpl,
+  baseUrl: string,
+  runId: string,
+  token?: string
+): Promise<Record<string, unknown>> {
+  return getJson<Record<string, unknown>>(
+    fetchImpl,
+    baseUrl,
+    `/workflow-runs/${encodeURIComponent(runId)}`,
+    token
+  );
+}
+
+function workflowRunStatusFor(summary: Record<string, unknown>): unknown {
+  const run = summary.run;
+
+  if (typeof run !== "object" || run === null) {
+    return undefined;
+  }
+
+  return (run as { status?: unknown }).status;
+}
+
+function summarizeCodeTasks(summary: Record<string, unknown>): { total: number; completed: number } {
+  const tasks = Array.isArray(summary.tasks) ? summary.tasks : [];
+  const codeTasks = tasks.filter((task) => isTaskOfType(task, "code"));
+
+  return {
+    total: codeTasks.length,
+    completed: codeTasks.filter((task) => (task as { status?: unknown }).status === "completed").length
+  };
+}
+
+function isTaskOfType(value: unknown, type: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { taskType?: unknown }).taskType === type
+  );
+}
+
 function requireDocumentOfType(
   documents: SmokeDocumentSummary[],
   type: string,
@@ -367,7 +457,76 @@ async function countPullRequestArtifacts(
   );
 }
 
-function createSmokeLocalRunnerEngine(prdJiraKey: string): LocalRunnerEngine {
+export function createSmokeLocalRunnerSetup(
+  config: MysqlNoFixtureSmokeConfig,
+  env: WorkflowApiRuntimeEnv
+): { engine: LocalRunnerEngine; workspace?: LocalRunnerWorkspaceOptions } {
+  if (config.implementationMode === "stub") {
+    return {
+      engine: createSmokeLocalRunnerEngine(config.prdJiraKey)
+    };
+  }
+
+  const githubConfig = githubRuntimeConfig(env);
+
+  if (!githubConfig) {
+    throw new Error("SMOKE_IMPLEMENTATION_MODE=github requires GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO");
+  }
+
+  const repositoryCloneUrl = requireSmokeEnv(env, "GITHUB_CLONE_URL");
+  const workspace = {
+    rootDir: requireSmokeEnv(env, "LOCAL_RUNNER_WORKSPACE_ROOT"),
+    clean: env.LOCAL_RUNNER_CLEAN_WORKSPACE !== "false"
+  };
+  const githubClient = new GitHubRestClient(githubConfig);
+  const cliEngine = new JobTemplateCliLocalRunnerEngine({
+    env,
+    outputLanguage: env.RUNNER_OUTPUT_LANGUAGE ?? "ko"
+  });
+  const openPrEngine = new ImplementationPullRequestLocalRunnerEngine({
+    client: githubClient,
+    cliEngine,
+    owner: githubConfig.owner,
+    repo: githubConfig.repo,
+    repositoryCloneUrl,
+    defaultBaseBranch: githubConfig.defaultBaseBranch
+  });
+  const updatePrEngine = new ImplementationUpdateLocalRunnerEngine({ cliEngine });
+  const statusEngine = new GitHubImplementationLocalRunnerEngine({
+    client: githubClient,
+    owner: githubConfig.owner,
+    repo: githubConfig.repo,
+    defaultBaseBranch: githubConfig.defaultBaseBranch
+  });
+
+  return {
+    engine: new RoutedLocalRunnerEngine(
+      [
+        {
+          canRun: (input) => openPrEngine.canRun(input),
+          engine: openPrEngine
+        },
+        {
+          canRun: (input) => updatePrEngine.canRun(input),
+          engine: updatePrEngine
+        },
+        {
+          canRun: (input) => input.job.jobType === "implementation.collect_pr_status",
+          engine: statusEngine
+        }
+      ],
+      createSmokeLocalRunnerEngine(config.prdJiraKey, { implementationJobs: false })
+    ),
+    workspace
+  };
+}
+
+function createSmokeLocalRunnerEngine(
+  prdJiraKey: string,
+  options: { implementationJobs?: boolean } = {}
+): LocalRunnerEngine {
+  const implementationJobs = options.implementationJobs ?? true;
+
   return {
     async run({ job }) {
       if (job.jobType === "prd.generate_draft") {
@@ -507,6 +666,12 @@ function createSmokeLocalRunnerEngine(prdJiraKey: string): LocalRunnerEngine {
         };
       }
 
+      if (isSmokeImplementationJob(job.jobType) && !implementationJobs) {
+        throw new Error(
+          `Smoke implementation job ${job.jobType} requires the GitHub-backed smoke runner prerequisites`
+        );
+      }
+
       if (job.jobType === "implementation.open_pr") {
         const sourceDocumentId = typeof job.input.sourceDocumentId === "string" ? job.input.sourceDocumentId : job.id;
         const pullRequestNumber = deterministicPullRequestNumber(sourceDocumentId);
@@ -560,11 +725,22 @@ function createSmokeLocalRunnerEngine(prdJiraKey: string): LocalRunnerEngine {
       }
 
       if (job.jobType === "implementation.collect_pr_status") {
+        const pullRequestNumber = Number(job.input.pullNumber ?? deterministicPullRequestNumber(job.id));
+        const pullRequestUrl =
+          typeof job.input.pullRequestUrl === "string"
+            ? job.input.pullRequestUrl
+            : `https://github.example.com/workflow/smoke/pull/${pullRequestNumber}`;
+
         return {
           output: {
             status: "succeeded",
+            pullRequestNumber,
+            pullRequestUrl,
+            pullRequestState: "closed",
+            merged: true,
             reviewStatus: "approved",
-            ciStatus: "success"
+            ciStatus: "success",
+            latestCommitSha: `smoke-merge-${job.id}`
           },
           logs: [
             {
@@ -593,14 +769,7 @@ function createSmokeEnv(env: WorkflowApiRuntimeEnv): WorkflowApiRuntimeEnv {
   };
 }
 
-function smokeConfig(env: WorkflowApiRuntimeEnv): {
-  prdJiraKey: string;
-  actorEmail: string;
-  runnerId: string;
-  engine: string;
-  appToken?: string;
-  runnerToken?: string;
-} {
+function smokeConfig(env: WorkflowApiRuntimeEnv): MysqlNoFixtureSmokeConfig {
   const actorEmail =
     optionalEnv(env, "SMOKE_ACTOR_EMAIL") ??
     optionalEnv(env, "LOCAL_RUNNER_OWNER_EMAIL") ??
@@ -612,9 +781,20 @@ function smokeConfig(env: WorkflowApiRuntimeEnv): {
     actorEmail,
     runnerId: optionalEnv(env, "SMOKE_RUNNER_ID") ?? optionalEnv(env, "LOCAL_RUNNER_ID") ?? "runner-smoke-local",
     engine: optionalEnv(env, "RUNNER_ENGINE") ?? "codex",
+    implementationMode: smokeImplementationModeFor(env),
     appToken: optionalEnv(env, "WORKFLOW_APP_API_TOKEN"),
     runnerToken: optionalEnv(env, "SMOKE_RUNNER_TOKEN") ?? optionalEnv(env, "LOCAL_RUNNER_TOKEN")
   };
+}
+
+export function smokeImplementationModeFor(env: WorkflowApiRuntimeEnv): SmokeImplementationMode {
+  const value = optionalEnv(env, "SMOKE_IMPLEMENTATION_MODE") ?? "stub";
+
+  if (value === "stub" || value === "github") {
+    return value;
+  }
+
+  throw new Error(`SMOKE_IMPLEMENTATION_MODE must be "stub" or "github", got: ${value}`);
 }
 
 async function maybeApplyMigrations(env: WorkflowApiRuntimeEnv): Promise<void> {
@@ -678,6 +858,24 @@ function jsonHeaders(token: string | undefined): Record<string, string> {
 function optionalEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const value = env[key]?.trim();
   return value ? value : undefined;
+}
+
+function requireSmokeEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = optionalEnv(env, key);
+
+  if (!value) {
+    throw new Error(`${key} is required for SMOKE_IMPLEMENTATION_MODE=github`);
+  }
+
+  return value;
+}
+
+function isSmokeImplementationJob(jobType: string): boolean {
+  return (
+    jobType === "implementation.open_pr" ||
+    jobType === "implementation.update_pr" ||
+    jobType === "implementation.collect_pr_status"
+  );
 }
 
 function timestampForKey(date: Date): string {

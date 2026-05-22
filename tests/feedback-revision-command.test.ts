@@ -68,6 +68,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
     await command.recordRevisionJob({
       runId: "run_1",
       job,
+      taskId: "task_wi_1",
       feedbackItems: [
         feedbackItem({
           revisionJobId: "job_2"
@@ -87,6 +88,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
       expect.arrayContaining([
         "job_2",
         "run_1",
+        "task_wi_1",
         "document.revise",
         "pending",
         JSON.stringify(job.input),

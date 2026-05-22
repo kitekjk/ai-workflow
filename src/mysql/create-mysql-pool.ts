@@ -23,7 +23,9 @@ export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase
 
   return {
     async execute<T = unknown>(sql: string, params?: unknown[]): Promise<[T, unknown]> {
-      const [rows, fields] = await pool.execute(sql, params as any);
+      const [rows, fields] = shouldUseTextProtocol(sql)
+        ? await pool.query(sql, params as any)
+        : await pool.execute(sql, params as any);
       return [rows as T, fields];
     },
     async getConnection() {
@@ -31,7 +33,9 @@ export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase
 
       return {
         async execute<T = unknown>(sql: string, params?: unknown[]): Promise<[T, unknown]> {
-          const [rows, fields] = await connection.execute(sql, params as any);
+          const [rows, fields] = shouldUseTextProtocol(sql)
+            ? await connection.query(sql, params as any)
+            : await connection.execute(sql, params as any);
           return [rows as T, fields];
         },
         beginTransaction: () => connection.beginTransaction(),
@@ -42,4 +46,8 @@ export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase
     },
     end: () => pool.end()
   };
+}
+
+function shouldUseTextProtocol(sql: string): boolean {
+  return /^(PREPARE|EXECUTE|DEALLOCATE)\b/i.test(sql.trim());
 }

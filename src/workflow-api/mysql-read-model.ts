@@ -15,6 +15,7 @@ export interface WorkflowApiReadModel {
 
 export interface DocumentCurrentReadModel {
   document: Document;
+  workflowTask?: WorkflowTask | null;
   policy: typeof prdConfirmationWorkflowPolicy;
   currentVersion: DocumentVersion | null;
   latestQualityResult: DocumentQualityResult | null;
@@ -105,16 +106,17 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
 
     const jobs = summary.jobs as WorkflowJob[];
     const documents = summary.documents as Document[];
-    const tasks = summary.tasks as WorkflowTask[] | undefined;
+    const tasks = (summary.tasks as WorkflowTask[] | undefined) ?? [];
 
     return {
       run: summary.run,
       policy: prdConfirmationWorkflowPolicy,
-      tasks: tasks ?? [],
+      tasks,
       nodes: [
-        ...(tasks ?? []).map((task) => ({
+        ...tasks.map((task) => ({
           id: task.id,
           type: "workflow_task",
+          parentTaskId: task.parentTaskId,
           taskType: task.taskType,
           status: task.status,
           currentDocumentId: task.currentDocumentId
@@ -128,6 +130,7 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
           primaryDocumentId: primaryDocumentIdForJob(job, documents)
         }))
       ],
+      edges: workflowRunTreeEdges(tasks, jobs),
       documents
     };
   }
@@ -142,7 +145,8 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     const currentArtifactIds = [document.currentMarkdownArtifactId, document.currentWikiArtifactId].filter(
       (id): id is string => Boolean(id)
     );
-    const [currentVersion, currentArtifacts, latestQualityResult, pendingFeedback] = await Promise.all([
+    const [workflowTask, currentVersion, currentArtifacts, latestQualityResult, pendingFeedback] = await Promise.all([
+      this.getWorkflowTaskForDocument(document),
       document.currentVersionId ? this.getDocumentVersion(document.currentVersionId) : Promise.resolve(undefined),
       currentArtifactIds.length > 0 ? this.getArtifactsByIds(currentArtifactIds) : Promise.resolve([]),
       this.getLatestQualityResult(documentId),
@@ -151,6 +155,7 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
 
     return {
       document,
+      workflowTask: workflowTask ?? null,
       policy: prdConfirmationWorkflowPolicy,
       currentVersion: currentVersion ?? null,
       latestQualityResult: latestQualityResult ?? null,
@@ -224,6 +229,30 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     );
 
     return rows.map(rowToWorkflowTask);
+  }
+
+  private async getWorkflowTask(taskId: string): Promise<WorkflowTask | undefined> {
+    const [rows] = await this.database.execute<MysqlRow[]>(`SELECT * FROM workflow_task WHERE id = ?`, [taskId]);
+
+    return rows[0] ? rowToWorkflowTask(rows[0]) : undefined;
+  }
+
+  private async getWorkflowTaskForDocument(document: Document): Promise<WorkflowTask | undefined> {
+    if (document.workflowTaskId) {
+      return this.getWorkflowTask(document.workflowTaskId);
+    }
+
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_task
+       WHERE run_id = ?
+         AND current_document_id = ?
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`,
+      [document.workflowRunId, document.id]
+    );
+
+    return rows[0] ? rowToWorkflowTask(rows[0]) : undefined;
   }
 
   private async getLatestWorkflowJobResultForRun(runId: string): Promise<{ output: Record<string, unknown> } | undefined> {
@@ -373,6 +402,42 @@ function primaryDocumentIdForJob(job: WorkflowJob, documents: Document[]): strin
   }
 
   return documents[0]?.id;
+}
+
+type WorkflowRunTreeEdge = {
+  id: string;
+  type: "workflow_task_parent" | "workflow_task_job";
+  from: string;
+  to: string;
+};
+
+function workflowRunTreeEdges(tasks: WorkflowTask[], jobs: WorkflowJob[]): WorkflowRunTreeEdge[] {
+  const parentEdges = tasks.flatMap((task): WorkflowRunTreeEdge[] =>
+    task.parentTaskId
+      ? [
+          {
+            id: `edge_${task.parentTaskId}_${task.id}`,
+            type: "workflow_task_parent",
+            from: task.parentTaskId,
+            to: task.id
+          }
+        ]
+      : []
+  );
+  const jobEdges = jobs.flatMap((job): WorkflowRunTreeEdge[] =>
+    job.taskId
+      ? [
+          {
+            id: `edge_${job.taskId}_${job.id}`,
+            type: "workflow_task_job",
+            from: job.taskId,
+            to: job.id
+          }
+        ]
+      : []
+  );
+
+  return [...parentEdges, ...jobEdges];
 }
 
 function rowToWorkflowRun(row: MysqlRow): WorkflowRun {

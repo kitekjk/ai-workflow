@@ -201,9 +201,10 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
     const documentVersionId = optionalString(input.job.input.documentVersionId);
     const branchName = requireString(input.job.input.branchName, "branchName");
     const baseBranch = optionalString(input.job.input.baseBranch) ?? this.options.defaultBaseBranch ?? "main";
-    const title = requireString(input.job.input.title, "title");
-    const body = requireString(input.job.input.body, "body");
+    const fallbackTitle = requireString(input.job.input.title, "title");
+    const fallbackBody = requireString(input.job.input.body, "body");
     const draft = optionalBoolean(input.job.input.draft) ?? true;
+    const runnerSkill = runnerSkillForJob(input.job);
     const repositoryCloneUrl = requireString(this.repositoryCloneUrlFor(input.job), "repositoryCloneUrl");
     const implementationDir = await prepareImplementationBranchWorkspace({
       workspaceDir: requireString(input.workspaceDir, "workspaceDir"),
@@ -219,6 +220,7 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
         repositoryCloneUrl,
         baseBranch,
         branchName,
+        runnerSkill,
         runnerJobTemplate: {
           ...recordOrEmpty(input.job.input.runnerJobTemplate),
           runner: {
@@ -235,10 +237,12 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
     });
     const latestCommitSha =
       optionalString(implementationResult.output.latestCommitSha) ?? (await currentGitCommit(implementationDir));
+    const pullRequestTitle = optionalString(implementationResult.output.pullRequestTitle) ?? fallbackTitle;
+    const pullRequestBody = optionalString(implementationResult.output.pullRequestBody) ?? fallbackBody;
     await pushImplementationBranch(implementationDir, branchName);
     const pullRequest = await this.options.client.createPullRequest({
-      title,
-      body,
+      title: pullRequestTitle,
+      body: pullRequestBody,
       head: branchName,
       base: baseBranch,
       draft
@@ -257,7 +261,10 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
         pullRequestUrl: pullRequest.url,
         pullRequestState: pullRequest.state,
         draft: pullRequest.draft,
-        latestCommitSha
+        latestCommitSha,
+        pullRequestTitle,
+        pullRequestBody,
+        runnerSkill
       },
       artifacts: [
         ...(implementationResult.artifacts ?? []),
@@ -280,7 +287,11 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
             draft: pullRequest.draft,
             reviewStatus: "pending",
             ciStatus: "pending",
-            implementationSummary: optionalString(implementationResult.output.summary)
+            implementationSummary: optionalString(implementationResult.output.summary),
+            pullRequestTitle,
+            pullRequestBody,
+            pullRequestBodySource: optionalString(implementationResult.output.pullRequestBody) ? "ai" : "fallback",
+            runnerSkill
           }
         }
       ],
@@ -300,7 +311,10 @@ export class ImplementationPullRequestLocalRunnerEngine implements LocalRunnerEn
           message: "Implementation pull request opened",
           metadata: {
             pullRequestNumber: pullRequest.number,
-            branchName
+            branchName,
+            pullRequestTitle,
+            pullRequestBodySource: optionalString(implementationResult.output.pullRequestBody) ? "ai" : "fallback",
+            runnerSkill
           }
         }
       ]
@@ -324,7 +338,17 @@ export class ImplementationUpdateLocalRunnerEngine implements LocalRunnerEngine 
   }
 
   async run(input: LocalRunnerEngineInput): Promise<LocalRunnerEngineResult> {
-    const result = await this.options.cliEngine.run(input);
+    const runnerSkill = runnerSkillForJob(input.job, "implementation.pr-updater");
+    const result = await this.options.cliEngine.run({
+      ...input,
+      job: {
+        ...input.job,
+        input: {
+          ...input.job.input,
+          runnerSkill
+        }
+      }
+    });
     const branchName = requireString(branchNameForJob(input.job), "branchName");
     const implementationDir = await implementationWorkdirFor({
       workspaceDir: requireString(input.workspaceDir, "workspaceDir"),
@@ -337,7 +361,8 @@ export class ImplementationUpdateLocalRunnerEngine implements LocalRunnerEngine 
       ...result,
       output: {
         ...result.output,
-        latestCommitSha
+        latestCommitSha,
+        runnerSkill
       },
       logs: [
         ...(result.logs ?? []),
@@ -346,7 +371,8 @@ export class ImplementationUpdateLocalRunnerEngine implements LocalRunnerEngine 
           message: "Implementation update branch pushed",
           metadata: {
             branchName,
-            latestCommitSha
+            latestCommitSha,
+            runnerSkill
           }
         }
       ]
@@ -521,6 +547,14 @@ function withTrailingSeparator(path: string): string {
 
 function recordOrEmpty(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function runnerSkillForJob(job: WorkflowJob, fallbackId = "implementation.pr-author"): Record<string, string> {
+  const configured = recordOrEmpty(job.input.runnerSkill);
+  return {
+    id: optionalString(configured.id) ?? fallbackId,
+    version: optionalString(configured.version) ?? "0.1.0"
+  };
 }
 
 function branchNameForJob(job: WorkflowJob): string | undefined {

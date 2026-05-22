@@ -1,6 +1,6 @@
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun } from "../workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
 import type { FeedbackItem } from "./domain";
 import type { GenericPrdSnapshot } from "./generic-adapter";
 
@@ -14,6 +14,10 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
   async persist(snapshot: GenericPrdSnapshot): Promise<void> {
     for (const run of snapshot.workflowRuns) {
       await this.upsertWorkflowRun(run);
+    }
+
+    for (const task of snapshot.workflowTasks) {
+      await this.upsertWorkflowTask(task);
     }
 
     for (const job of snapshot.workflowJobs) {
@@ -72,15 +76,47 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
     );
   }
 
+  private async upsertWorkflowTask(task: WorkflowTask): Promise<void> {
+    await this.database.execute(
+      `INSERT INTO workflow_task (
+        id, run_id, parent_task_id, task_type, source_key, title, status,
+        current_document_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        parent_task_id = VALUES(parent_task_id),
+        task_type = VALUES(task_type),
+        source_key = VALUES(source_key),
+        title = VALUES(title),
+        status = VALUES(status),
+        current_document_id = VALUES(current_document_id),
+        metadata_json = VALUES(metadata_json),
+        updated_at = VALUES(updated_at)`,
+      [
+        task.id,
+        task.runId,
+        task.parentTaskId ?? null,
+        task.taskType,
+        task.sourceKey,
+        task.title,
+        task.status,
+        task.currentDocumentId ?? null,
+        JSON.stringify(task.metadata ?? {}),
+        task.createdAt,
+        task.updatedAt
+      ]
+    );
+  }
+
   private async upsertWorkflowJob(job: WorkflowJob): Promise<void> {
     await this.database.execute(
       `INSERT INTO workflow_job (
-        id, run_id, job_type, status, input_json, priority, project_id, repository_id,
+        id, run_id, task_id, job_type, status, input_json, priority, project_id, repository_id,
         assigned_user_id, assigned_team_id, required_role, required_capabilities_json,
         preferred_engine, required_engine, execution_policy, assigned_runner_id,
         claimed_by_runner_id, claimed_at, lease_expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        task_id = VALUES(task_id),
         job_type = VALUES(job_type),
         status = VALUES(status),
         input_json = VALUES(input_json),
@@ -102,6 +138,7 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
       [
         job.id,
         job.runId,
+        job.taskId ?? null,
         job.jobType,
         job.status,
         JSON.stringify(job.input),
@@ -152,10 +189,11 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
   private async upsertDocumentWithoutCurrentPointers(document: Document): Promise<void> {
     await this.database.execute(
       `INSERT INTO document (
-        id, workflow_run_id, parent_document_id, type, source_key, title, status,
+        id, workflow_run_id, workflow_task_id, parent_document_id, type, source_key, title, status,
         current_version_id, current_markdown_artifact_id, current_wiki_artifact_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
       ON DUPLICATE KEY UPDATE
+        workflow_task_id = VALUES(workflow_task_id),
         parent_document_id = VALUES(parent_document_id),
         type = VALUES(type),
         source_key = VALUES(source_key),
@@ -165,6 +203,7 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
       [
         document.id,
         document.workflowRunId,
+        document.workflowTaskId ?? null,
         document.parentDocumentId ?? null,
         document.type,
         document.sourceKey,

@@ -86,29 +86,99 @@ PRD intake
   runner clones the repo, checks out the workflow branch, runs Codex/Claude with
   an initial code implementation prompt, pushes the branch, then creates the
   GitHub PR.
+- The initial implementation prompt now asks the AI to return
+  `pullRequestTitle` and `pullRequestBody`; the local runner uses those fields
+  when opening the PR and falls back to the workflow template only if omitted.
+- `skills/implementation.pr-author` now captures the runner skill instructions
+  for initial code implementation: inspect context, implement, test when
+  practical, commit locally, and return reviewer-ready PR title/body JSON.
+- `skills/implementation.pr-updater` now captures the runner skill
+  instructions for code-only PR rework after CI/review feedback, and
+  `implementation.update_pr` outputs carry that skill metadata.
 - PR status collection now persists a new pull request artifact snapshot and
   treats `merged=true` as the terminal Code task signal through
   `implementation_pr_merged`.
+- `npm run smoke:mysql:no-fixture` keeps deterministic stub implementation as
+  the default, and can opt into real GitHub-backed implementation jobs with
+  `SMOKE_IMPLEMENTATION_MODE=github` plus GitHub clone/workspace settings. In
+  stub mode, PR status collection now emits a merged terminal PR signal so the
+  smoke verifies final workflow-run completion and completed Code task counts.
+- Compatibility snapshots now carry first-class `workflowTasks`, document
+  `workflowTaskId`, and job `taskId`; snapshot mirroring and result
+  projections persist those task links instead of recreating task hierarchy
+  from documents at API read time.
+- MySQL no-fixture mode now handles the PRD feedback-revision shortcut and
+  explicit HLD/LLD `POST /documents/:id/fan-out` requests without the
+  compatibility fixture. These paths build jobs from the read model, attach
+  them to workflow tasks, and record them through the shared command writers.
+- Read-model-backed approval/fan-out scheduling now matches fixture
+  idempotency: repeated PRD route, HLD/LLD fan-out, or Spec implementation
+  scheduling returns `already_scheduled` instead of inserting duplicate jobs.
+  HLD/LLD ADR requests also preserve the fixture split between standard fan-out
+  and ADR-only follow-up fan-out.
+- No-fixture approval gate refresh now advances already-approved read-model
+  PRD/HLD/LLD/Spec documents by scheduling the same downstream route, fan-out,
+  or implementation job that an explicit approve action would schedule, while
+  still using the idempotent duplicate guard.
+- Repository-backed transitions now close the `workflow_run` as `completed`
+  only when a terminal `implementation.collect_pr_status` result reports a
+  merged implementation PR and every Code task in the read-model summary is
+  completed after applying that result. The transition processor passes
+  read-model run/task state into the planner, and the shared mutation applier
+  persists the run status change in the same transaction as the final Code task
+  completion and PR artifact snapshot.
+- MySQL migration `004_workflow_task_hierarchy.sql` is now safe to rerun after
+  a partial DDL application and backfills document tasks parent-before-child,
+  so existing PRD/HLD/LLD/Spec rows do not violate the workflow task self-FK.
+- Compatibility snapshots now roll up `workflow_run.status` from first-class
+  workflow tasks as well: failed tasks/items mark the run failed, and merged
+  completed Code tasks can mark the run completed. This keeps fixture fallback
+  views aligned with the no-fixture repository transition semantics.
+- Dashboard API mapping now strips pull request artifacts from document task
+  rows whenever a first-class Code task exists for the same document, so PR
+  state is owned by the Code task in both projected and task-first views.
+- Workflow run tree views now expose explicit task parent edges and task-to-job
+  edges, and task nodes carry `parentTaskId`. Clients no longer need to infer
+  the `workflow -> task -> job` graph from document IDs or node ordering.
+- The dashboard now fetches `/workflow-runs/:id/tree` alongside the run summary
+  and uses `workflow_task_parent` edges as the source of truth for Connected
+  Workflow View links, falling back to item parent IDs only for older API
+  responses.
+- Dashboard task detail/job history grouping now also uses
+  `workflow_task_job` edges before falling back to `job.taskId` or document
+  inference, so jobs attach to the task graph emitted by the API.
+- Workflow result projection recording now requires explicit `workflowTasks`
+  and no longer rebuilds task hierarchy from document IDs when persisting
+  runner result snapshots.
+- Fixture engine-transition projection now passes affected `workflowTasks`
+  into the command writer, and transition events include task IDs, reducing
+  another document-derived task reconstruction path.
+- Document current read models now include the associated `workflowTask`.
+  Read-model approval actions and fixture document-state recording pass that
+  task into the transition command so task IDs, parents, and metadata are
+  preserved while status/current document pointers are updated.
+- Read-model document revision, PRD feedback revision, downstream routing,
+  fan-out, and Spec implementation scheduling now prefer
+  `current.workflowTask.id` for task ownership before using the legacy
+  document-derived task ID fallback.
 
 ## Next Work
 
 Continue in large feature slices:
 
-- Replace the smoke stub implementation behavior with GitHub-backed execution
-  where `GITHUB_TOKEN` is configured, while keeping stub mode deterministic for
-  local tests.
 - Continue reducing compatibility projection code now that the API can return
-  real tasks; fixture/mock views should remain fallback-only.
+  real tasks and explicit graph edges; fixture/mock views should remain
+  fallback-only.
 
 ## Validation Baseline
 
 Current good after the full slice:
 
 - `npm run typecheck`
-- `npm test` passed: 42 files / 260 tests
+- `npm test` passed: 43 files / 286 tests
 - `npm run smoke:mysql:no-fixture` passed through PRD/HLD/LLD/Spec approval,
-  implementation PR creation/status collection, and 4 pull request artifacts
-  with 28 processed jobs
+  implementation PR creation/status collection, final workflow-run completion,
+  4 completed Code tasks, and 8 pull request artifacts with 28 processed jobs
 - `npm --prefix ui-execution-dashboard-demo run build`
 - `npx vitest run tests/local-runner-preflight.test.ts tests/local-runner-github-implementation.test.ts tests/local-runner.test.ts`
 - `npm test -- tests/local-runner-github-implementation.test.ts tests/repository-transition-planner.test.ts`

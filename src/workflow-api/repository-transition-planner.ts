@@ -9,7 +9,7 @@ import type {
   DocumentVersion
 } from "../document-core/domain";
 import type { WorkflowEngineTransitionType } from "../prd-confirmation/workflow-engine";
-import type { WorkflowJob, WorkflowJobResult, WorkflowTask } from "../workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
 import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 import type {
   WorkflowDocumentMutationEvent,
@@ -18,6 +18,8 @@ import type {
 } from "./workflow-mutation-applier";
 
 export interface PlanRepositoryWorkflowTransitionInput {
+  workflowRun?: WorkflowRun;
+  workflowTasks?: WorkflowTask[];
   document: Document;
   job: WorkflowJob;
   result: WorkflowJobResult;
@@ -73,6 +75,7 @@ export function planRepositoryWorkflowTransition(
     transitionType: transition.transitionType,
     mutation: {
       documentStates: [document],
+      workflowRuns: transition.workflowRuns,
       workflowTasks: [workflowTaskForDocument(document), ...transition.workflowTasks],
       documents: transition.documents,
       workflowJobs: transition.workflowJobs,
@@ -106,7 +109,8 @@ export function planRepositoryWorkflowTransition(
             createdDocumentIds: transition.documents.map((child) => child.id),
             createdFeedbackItemIds: transition.feedbackItems?.map((feedback) => feedback.id) ?? [],
             createdTaskIds: transition.workflowTasks.map((task) => task.id),
-            createdJobIds: transition.workflowJobs.map((job) => job.id)
+            createdJobIds: transition.workflowJobs.map((job) => job.id),
+            workflowRunStatus: transition.workflowRuns?.[0]?.status
           },
           createdAt: now
         }
@@ -125,6 +129,7 @@ interface RepositoryTransition {
   transitionType: WorkflowEngineTransitionType;
   documentStatus: DocumentStatus;
   documentFields?: Partial<Pick<Document, "currentVersionId" | "currentMarkdownArtifactId" | "currentWikiArtifactId">>;
+  workflowRuns?: WorkflowRun[];
   documents: Document[];
   workflowTasks: WorkflowTask[];
   workflowJobs: WorkflowJob[];
@@ -403,11 +408,19 @@ function repositoryTransitionFor(
       };
     }
 
+    const implementationTask = implementationTaskForJob(
+      input,
+      input.result,
+      now,
+      merged || reviewed ? "completed" : "in_progress"
+    );
+
     return {
       transitionType: merged ? "implementation_pr_merged" : reviewed ? "implementation_pr_reviewed" : "implementation_pr_in_review",
       documentStatus: input.document.status,
+      workflowRuns: merged ? completedWorkflowRunFor(input, now, implementationTask) : undefined,
       documents: [],
-      workflowTasks: [implementationTaskForJob(input, input.result, now, merged || reviewed ? "completed" : "in_progress")],
+      workflowTasks: [implementationTask],
       workflowJobs: [],
       artifacts: pullRequestArtifacts
     };
@@ -586,6 +599,9 @@ function pullRequestArtifactFor(input: {
       repositoryCloneUrl: stringOrUndefined(input.output.repositoryCloneUrl),
       pullRequestNumber: input.pullNumber,
       pullRequestState: stringOrUndefined(input.output.pullRequestState),
+      pullRequestTitle: stringOrUndefined(input.output.pullRequestTitle),
+      pullRequestBody: stringOrUndefined(input.output.pullRequestBody),
+      runnerSkill: isRecord(input.output.runnerSkill) ? input.output.runnerSkill : undefined,
       branchName: stringOrUndefined(input.output.branchName),
       baseBranch: stringOrUndefined(input.output.baseBranch),
       draft: booleanOrUndefined(input.output.draft),
@@ -685,12 +701,20 @@ function implementationUpdateJobInputFor(input: PlanRepositoryWorkflowTransition
     reviewStatus,
     ciStatus,
     checkRuns: output.checkRuns,
+    runnerSkill: implementationPrUpdaterSkill(),
     runnerJobTemplate: {
       runner: {
         sandbox: "workspace-write",
         workdir: "implementation"
       }
     }
+  };
+}
+
+function implementationPrUpdaterSkill(): Record<string, string> {
+  return {
+    id: "implementation.pr-updater",
+    version: "0.1.0"
   };
 }
 
@@ -1138,6 +1162,40 @@ function implementationTaskForJob(
     createdAt: input.job.createdAt,
     updatedAt: now
   };
+}
+
+function completedWorkflowRunFor(
+  input: PlanRepositoryWorkflowTransitionInput,
+  now: string,
+  completedTask: WorkflowTask
+): WorkflowRun[] | undefined {
+  if (!input.workflowRun || !allCodeTasksCompleted(input, completedTask)) {
+    return undefined;
+  }
+
+  return [
+    {
+      ...input.workflowRun,
+      status: "completed",
+      updatedAt: now
+    }
+  ];
+}
+
+function allCodeTasksCompleted(input: PlanRepositoryWorkflowTransitionInput, completedTask: WorkflowTask): boolean {
+  const codeTasks = (input.workflowTasks ?? []).filter((task) => task.taskType === "code");
+
+  if (codeTasks.length === 0) {
+    return true;
+  }
+
+  return codeTasks.every((task) => {
+    if (task.id === completedTask.id) {
+      return completedTask.status === "completed";
+    }
+
+    return task.status === "completed";
+  });
 }
 
 function documentStatusToTaskStatus(status: DocumentStatus): WorkflowTask["status"] {
