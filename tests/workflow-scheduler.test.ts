@@ -266,6 +266,280 @@ describe("WorkflowScheduler", () => {
     ]);
   });
 
+  it("lets an operator manually retry a failed job", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const task = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "hld",
+      sourceKey: "PRD-100-HLD-1",
+      title: "HLD",
+      status: "failed",
+      currentDocumentId: "doc_hld",
+      now
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.evaluate",
+      input: {
+        taskId: task.id
+      },
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.evaluate"],
+      requiredEngine: "claude",
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner-planner-a",
+      ownerUserId: "planner-a",
+      mode: "local",
+      capabilities: ["document.evaluate"],
+      engines: ["claude"],
+      now
+    });
+    const claim = await scheduler.claim("runner-planner-a", now);
+    await scheduler.startJob(claim?.job.id ?? "", "runner-planner-a", now);
+    await scheduler.failJob({
+      jobId: claim?.job.id ?? "",
+      runnerId: "runner-planner-a",
+      output: { status: "failed" },
+      errorCode: "invalid_output",
+      errorMessage: "Runner output was invalid",
+      retryable: false,
+      now
+    });
+
+    const retried = await scheduler.requestJobRetry({
+      jobId: "job_1",
+      requestedBy: "planner-a",
+      reason: "Runner fixed its config",
+      now: new Date("2026-05-20T00:00:01.000Z")
+    });
+
+    expect(retried).toMatchObject({
+      id: "job_1",
+      status: "retrying",
+      claimedByRunnerId: undefined,
+      leaseExpiresAt: undefined
+    });
+    expect(repository.workflowTasks[0]).toMatchObject({
+      id: "task_1",
+      status: "quality_review",
+      updatedAt: "2026-05-20T00:00:01.000Z"
+    });
+    expect(repository.workflowEvents.map((event) => event.type)).toEqual(["job.failed", "job.retry_requested"]);
+    expect(repository.workflowEvents.at(-1)).toMatchObject({
+      type: "job.retry_requested",
+      message: "Job retry requested",
+      metadata: {
+        severity: "warning",
+        requestedBy: "planner-a",
+        reason: "Runner fixed its config",
+        status: "retrying",
+        taskId: "task_1",
+        taskStatus: "quality_review",
+        metric: "workflow_job_manual_retries_total"
+      }
+    });
+
+    const nextClaim = await scheduler.claim("runner-planner-a", new Date("2026-05-20T00:00:02.000Z"));
+
+    expect(nextClaim?.job).toMatchObject({
+      id: "job_1",
+      status: "claimed",
+      claimedByRunnerId: "runner-planner-a"
+    });
+  });
+
+  it("lets an operator retry the latest retryable job for a task", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const task = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "hld",
+      sourceKey: "PRD-100-HLD-1",
+      title: "HLD",
+      status: "failed",
+      now
+    });
+    const otherTask = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "spec",
+      sourceKey: "PRD-100-SPEC-1",
+      title: "Spec",
+      status: "failed",
+      now
+    });
+    const oldJob = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: task.id,
+      jobType: "document.generate",
+      now
+    });
+    const latestRetryableJob = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: task.id,
+      jobType: "document.evaluate",
+      now: new Date("2026-05-20T00:00:01.000Z")
+    });
+    const otherTaskJob = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: otherTask.id,
+      jobType: "document.evaluate",
+      now: new Date("2026-05-20T00:00:02.000Z")
+    });
+    oldJob.status = "failed";
+    oldJob.updatedAt = "2026-05-20T00:00:01.000Z";
+    latestRetryableJob.status = "canceled";
+    latestRetryableJob.updatedAt = "2026-05-20T00:00:03.000Z";
+    otherTaskJob.status = "failed";
+    otherTaskJob.updatedAt = "2026-05-20T00:00:04.000Z";
+
+    const retried = await scheduler.requestTaskRetry({
+      taskId: task.id,
+      requestedBy: "planner-a",
+      reason: "Task needs another quality pass",
+      now: new Date("2026-05-20T00:00:05.000Z")
+    });
+
+    expect(retried).toMatchObject({
+      task: {
+        id: task.id,
+        status: "quality_review",
+        updatedAt: "2026-05-20T00:00:05.000Z"
+      },
+      job: {
+        id: latestRetryableJob.id,
+        status: "retrying",
+        claimedByRunnerId: undefined,
+        leaseExpiresAt: undefined
+      }
+    });
+    expect(oldJob.status).toBe("failed");
+    expect(otherTaskJob.status).toBe("failed");
+    expect(repository.workflowEvents).toMatchObject([
+      {
+        type: "job.retry_requested",
+        jobId: latestRetryableJob.id,
+        metadata: {
+          requestedBy: "planner-a",
+          reason: "Task needs another quality pass",
+          taskId: task.id,
+          taskStatus: "quality_review"
+        }
+      }
+    ]);
+  });
+
+  it("lets an operator send a task back to an upstream revision task", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const lldTask = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "lld",
+      sourceKey: "PRD-100-LLD-1",
+      title: "LLD",
+      status: "completed",
+      currentDocumentId: "doc_lld",
+      metadata: {
+        currentDocumentVersionId: "docv_lld_1"
+      },
+      now
+    });
+    const specTask = repository.createWorkflowTask({
+      runId: run.id,
+      parentTaskId: lldTask.id,
+      taskType: "spec",
+      sourceKey: "PRD-100-SPEC-1",
+      title: "Spec",
+      status: "completed",
+      currentDocumentId: "doc_spec",
+      now
+    });
+    const codeTask = repository.createWorkflowTask({
+      runId: run.id,
+      parentTaskId: specTask.id,
+      taskType: "code",
+      sourceKey: "PRD-100-SPEC-1",
+      title: "Code Implementation",
+      status: "failed",
+      currentDocumentId: "doc_spec",
+      now
+    });
+
+    const result = await scheduler.requestTaskRevision({
+      sourceTaskId: codeTask.id,
+      targetTaskId: lldTask.id,
+      requestedBy: "dev-a@example.com",
+      reason: "Implementation exposed an LLD gap",
+      feedback: "Clarify retry semantics before implementation continues.",
+      now: new Date("2026-05-20T00:00:05.000Z")
+    });
+
+    expect(result).toMatchObject({
+      sourceTask: {
+        id: codeTask.id,
+        status: "blocked",
+        updatedAt: "2026-05-20T00:00:05.000Z"
+      },
+      targetTask: {
+        id: lldTask.id,
+        status: "in_progress",
+        updatedAt: "2026-05-20T00:00:05.000Z"
+      },
+      job: {
+        id: "job_1",
+        taskId: lldTask.id,
+        jobType: "document.revise",
+        assignedUserId: "dev-a@example.com",
+        requiredCapabilities: ["document.revise"],
+        input: {
+          taskId: lldTask.id,
+          requestedBy: "dev-a@example.com",
+          documentType: "lld",
+          sourceDocumentId: "doc_lld",
+          currentDocumentVersionId: "docv_lld_1",
+          feedback: "Clarify retry semantics before implementation continues.",
+          revisionSource: "workflow.task_revision_request",
+          sourceTaskId: codeTask.id,
+          targetTaskId: lldTask.id
+        }
+      }
+    });
+    expect(repository.workflowEvents).toMatchObject([
+      {
+        type: "task.revision_requested",
+        jobId: "job_1",
+        metadata: {
+          requestedBy: "dev-a@example.com",
+          sourceTaskId: codeTask.id,
+          sourceTaskStatus: "blocked",
+          targetTaskId: lldTask.id,
+          targetTaskStatus: "in_progress",
+          jobType: "document.revise"
+        }
+      }
+    ]);
+  });
+
   it("recovers expired leases so another eligible runner can claim stale work", async () => {
     const repository = new InMemoryWorkflowRepository();
     const scheduler = new WorkflowScheduler(repository, { leaseMs: 10_000 });

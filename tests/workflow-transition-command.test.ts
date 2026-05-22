@@ -192,6 +192,32 @@ describe("MysqlWorkflowTransitionCommand", () => {
     );
   });
 
+  it("preserves a workflow task link embedded in the job input payload", async () => {
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
+
+    await command.recordWorkflowJob({
+      runId: "run_1",
+      job: {
+        id: "job_4",
+        workItemId: "wi_2",
+        jobType: "document.generate",
+        primaryJiraKey: "PRD-100-HLD-1",
+        status: "pending",
+        input: {
+          taskId: "task_wi_2",
+          sourceDocumentId: "doc_wi_2"
+        }
+      }
+    });
+
+    expect(database.statements[0].params).toEqual(expect.arrayContaining(["job_4", "run_1", "task_wi_2"]));
+    expect(JSON.parse(String(database.statements[1].params[5]))).toMatchObject({
+      jobId: "job_4",
+      taskId: "task_wi_2"
+    });
+  });
+
   it("records engine document states and follow-up jobs in one transaction", async () => {
     const database = new FakeMysqlDatabase();
     const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
@@ -299,6 +325,41 @@ describe("MysqlWorkflowTransitionCommand", () => {
       documentIds: ["doc_wi_1", "doc_wi_2"],
       createdJobIds: ["job_2"]
     });
+  });
+
+  it("does not record an engine transition event when batch records span multiple runs", async () => {
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
+
+    await command.recordEngineTransition({
+      transitionType: "prd_draft_generated",
+      workflowTasks: [
+        workflowTask({
+          runId: "run_1"
+        })
+      ],
+      documents: [
+        document({
+          workflowRunId: "run_2"
+        })
+      ],
+      jobs: [
+        {
+          runId: "run_1",
+          job: {
+            id: "job_2",
+            workItemId: "wi_1",
+            jobType: "prd.evaluate_quality",
+            primaryJiraKey: "PRD-100",
+            status: "pending",
+            input: {}
+          }
+        }
+      ],
+      now: new Date("2026-05-20T00:00:00.000Z")
+    });
+
+    expect(database.statements.some((statement) => statement.sql.includes("INSERT INTO workflow_event"))).toBe(false);
   });
 
   it("rolls back and releases the connection when transition recording fails", async () => {

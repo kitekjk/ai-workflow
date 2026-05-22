@@ -93,6 +93,13 @@ export interface RequestWorkflowJobCancellationInput {
   now: Date;
 }
 
+export interface RequestWorkflowJobRetryInput {
+  jobId: string;
+  requestedBy?: string;
+  reason?: string;
+  now: Date;
+}
+
 export interface AcknowledgeWorkflowJobCancellationInput {
   jobId: string;
   runnerId: string;
@@ -130,6 +137,7 @@ export interface WorkflowRepository {
   updateWorkflowTask(input: UpdateWorkflowTaskInput): Awaitable<WorkflowTask>;
   createWorkflowJob(input: CreateWorkflowJobInput): Awaitable<WorkflowJob>;
   getWorkflowJob(jobId: string): Awaitable<WorkflowJob | undefined>;
+  listWorkflowJobs(runId: string): Awaitable<WorkflowJob[]>;
   upsertRunner(runner: Runner): Awaitable<Runner>;
   listRunners(): Awaitable<Runner[]>;
   setRunnerStatus(runnerId: string, status: Runner["status"], now: Date): Awaitable<Runner>;
@@ -140,6 +148,7 @@ export interface WorkflowRepository {
   completeJob(input: CompleteWorkflowJobInput): Awaitable<WorkflowJobResult>;
   failJob(input: FailWorkflowJobInput): Awaitable<WorkflowJobResult>;
   requestJobCancellation(input: RequestWorkflowJobCancellationInput): Awaitable<WorkflowJob>;
+  requestJobRetry(input: RequestWorkflowJobRetryInput): Awaitable<WorkflowJob>;
   acknowledgeJobCancellation(input: AcknowledgeWorkflowJobCancellationInput): Awaitable<WorkflowJobResult>;
   recoverExpiredLeases(now: Date): Awaitable<WorkflowJob[]>;
   recordJobResult(input: RecordWorkflowJobResultInput): Awaitable<WorkflowJobResult>;

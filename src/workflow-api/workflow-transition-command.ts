@@ -146,7 +146,7 @@ function workflowJobForInput(input: RecordWorkflowJobCommandInput): NonNullable<
   return createWorkflowJobRecord({
     id: input.job.id,
     runId: input.runId,
-    taskId: input.taskId ?? input.workflowTask?.id,
+    taskId: workflowJobTaskId(input),
     jobType: input.job.jobType,
     status: input.job.status,
     input: input.job.input,
@@ -200,7 +200,7 @@ function engineTransitionEvent(
     return undefined;
   }
 
-  const runId = input.documents[0]?.workflowRunId ?? input.jobs[0]?.runId;
+  const runId = runIdForEngineTransition(input);
 
   if (!runId) {
     return undefined;
@@ -227,6 +227,21 @@ function engineTransitionEvent(
     },
     createdAt: toIso(input.now)
   };
+}
+
+function runIdForEngineTransition(input: RecordEngineTransitionCommandInput): string | undefined {
+  return singleRunId([
+    ...(input.workflowTasks ?? []).map((task) => task.runId),
+    ...input.jobs.flatMap((job) => (job.workflowTask ? [job.workflowTask.runId] : [])),
+    ...input.documents.map((document) => document.workflowRunId),
+    ...input.jobs.map((job) => job.runId)
+  ]);
+}
+
+function singleRunId(runIds: string[]): string | undefined {
+  const uniqueRunIds = [...new Set(runIds.filter(Boolean))];
+
+  return uniqueRunIds.length === 1 ? uniqueRunIds[0] : undefined;
 }
 
 function documentStateRecordedEvent(input: RecordDocumentStateCommandInput): NonNullable<WorkflowMutation["events"]>[number] {
@@ -257,10 +272,18 @@ function workflowJobRecordedEvent(input: RecordWorkflowJobCommandInput): NonNull
       jobType: input.job.jobType,
       status: input.job.status,
       sourceKey: input.job.primaryJiraKey,
-      taskId: input.taskId ?? input.workflowTask?.id
+      taskId: workflowJobTaskId(input)
     },
     createdAt: toIso(input.now)
   };
+}
+
+function workflowJobTaskId(input: RecordWorkflowJobCommandInput): string | undefined {
+  return input.taskId ?? input.workflowTask?.id ?? stringOrUndefined(input.job.input.taskId);
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function toIso(date: Date | undefined): string {

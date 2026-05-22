@@ -1051,6 +1051,273 @@ describe("Runner API", () => {
       }
     });
   });
+
+  it("exposes a manual retry endpoint for terminal runner jobs", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.generate",
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["spec.generate"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerUserId: "dev-a",
+      mode: "local",
+      capabilities: ["spec.generate"],
+      engines: ["codex"],
+      now
+    });
+    await postJson(`${baseUrl}/runners/runner-dev-a/claim`, { now });
+    await postJson(`${baseUrl}/runner-jobs/job_1/start`, {
+      runnerId: "runner-dev-a",
+      now
+    });
+    await postJson(`${baseUrl}/runner-jobs/job_1/fail`, {
+      runnerId: "runner-dev-a",
+      output: { status: "failed" },
+      errorCode: "invalid_output",
+      errorMessage: "Runner output was invalid",
+      retryable: false,
+      now: "2026-05-20T00:00:01.000Z"
+    });
+
+    const retry = await postJson(`${baseUrl}/runner-jobs/job_1/retry`, {
+      requestedBy: "planner-a",
+      reason: "Fix prompt and run again",
+      now: "2026-05-20T00:00:02.000Z"
+    });
+    const claim = await postJson(`${baseUrl}/runners/runner-dev-a/claim`, {
+      now: "2026-05-20T00:00:03.000Z"
+    });
+    const events = await getJson(`${baseUrl}/workflow-runs/${run.id}/events?type=job.retry_requested`);
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({
+      job: {
+        id: "job_1",
+        status: "retrying"
+      }
+    });
+    expect(claim.status).toBe(200);
+    expect(await claim.json()).toMatchObject({
+      claim: {
+        job: {
+          id: "job_1",
+          status: "claimed",
+          claimedByRunnerId: "runner-dev-a"
+        }
+      }
+    });
+    expect(events).toMatchObject({
+      events: [
+        {
+          jobId: "job_1",
+          type: "job.retry_requested",
+          metadata: {
+            requestedBy: "planner-a",
+            reason: "Fix prompt and run again",
+            status: "retrying"
+          }
+        }
+      ]
+    });
+  });
+
+  it("exposes a task retry endpoint that retries the task's latest terminal job", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    const task = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "hld",
+      sourceKey: "PRD-100-HLD-1",
+      title: "HLD",
+      status: "failed",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      taskId: task.id,
+      jobType: "document.evaluate",
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.evaluate"],
+      requiredEngine: "claude",
+      now: new Date(now)
+    });
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-planner-a",
+      ownerUserId: "planner-a",
+      mode: "local",
+      capabilities: ["document.evaluate"],
+      engines: ["claude"],
+      now
+    });
+    await postJson(`${baseUrl}/runners/runner-planner-a/claim`, { now });
+    await postJson(`${baseUrl}/runner-jobs/job_1/start`, {
+      runnerId: "runner-planner-a",
+      now
+    });
+    await postJson(`${baseUrl}/runner-jobs/job_1/fail`, {
+      runnerId: "runner-planner-a",
+      output: { status: "failed" },
+      errorCode: "invalid_output",
+      errorMessage: "Runner output was invalid",
+      retryable: false,
+      now: "2026-05-20T00:00:01.000Z"
+    });
+
+    const retry = await postJson(`${baseUrl}/workflow-tasks/${encodeURIComponent(task.id)}/retry`, {
+      requestedBy: "planner-a",
+      reason: "Task-level retry",
+      now: "2026-05-20T00:00:02.000Z"
+    });
+    const claim = await postJson(`${baseUrl}/runners/runner-planner-a/claim`, {
+      now: "2026-05-20T00:00:03.000Z"
+    });
+    const events = await getJson(`${baseUrl}/workflow-runs/${run.id}/events?type=job.retry_requested`);
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({
+      task: {
+        id: task.id,
+        status: "quality_review"
+      },
+      job: {
+        id: "job_1",
+        status: "retrying"
+      }
+    });
+    expect(claim.status).toBe(200);
+    expect(await claim.json()).toMatchObject({
+      claim: {
+        job: {
+          id: "job_1",
+          status: "claimed",
+          claimedByRunnerId: "runner-planner-a"
+        }
+      }
+    });
+    expect(events).toMatchObject({
+      events: [
+        {
+          jobId: "job_1",
+          type: "job.retry_requested",
+          metadata: {
+            requestedBy: "planner-a",
+            reason: "Task-level retry",
+            status: "retrying",
+            taskId: task.id,
+            taskStatus: "quality_review"
+          }
+        }
+      ]
+    });
+  });
+
+  it("exposes a task revision endpoint that sends work back to an upstream task", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    const lldTask = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "lld",
+      sourceKey: "PRD-100-LLD-1",
+      title: "LLD",
+      status: "completed",
+      currentDocumentId: "doc_lld",
+      metadata: {
+        currentDocumentVersionId: "docv_lld_1"
+      },
+      now: new Date(now)
+    });
+    const specTask = repository.createWorkflowTask({
+      runId: run.id,
+      parentTaskId: lldTask.id,
+      taskType: "spec",
+      sourceKey: "PRD-100-SPEC-1",
+      title: "Spec",
+      status: "completed",
+      currentDocumentId: "doc_spec",
+      now: new Date(now)
+    });
+    const codeTask = repository.createWorkflowTask({
+      runId: run.id,
+      parentTaskId: specTask.id,
+      taskType: "code",
+      sourceKey: "PRD-100-SPEC-1",
+      title: "Code Implementation",
+      status: "failed",
+      currentDocumentId: "doc_spec",
+      now: new Date(now)
+    });
+
+    const revision = await postJson(`${baseUrl}/workflow-tasks/${encodeURIComponent(codeTask.id)}/request-revision`, {
+      targetTaskId: lldTask.id,
+      requestedBy: "dev-a@example.com",
+      reason: "Implementation exposed an LLD gap",
+      feedback: "Clarify retry semantics before implementation continues.",
+      now: "2026-05-20T00:00:05.000Z"
+    });
+    const payload = await revision.json();
+    const events = await getJson(`${baseUrl}/workflow-runs/${run.id}/events?type=task.revision_requested`);
+
+    expect(revision.status).toBe(202);
+    expect(payload).toMatchObject({
+      sourceTask: {
+        id: codeTask.id,
+        status: "blocked"
+      },
+      targetTask: {
+        id: lldTask.id,
+        status: "in_progress"
+      },
+      job: {
+        id: "job_1",
+        taskId: lldTask.id,
+        jobType: "document.revise",
+        assignedUserId: "dev-a@example.com",
+        requiredCapabilities: ["document.revise"],
+        input: {
+          taskId: lldTask.id,
+          sourceDocumentId: "doc_lld",
+          currentDocumentVersionId: "docv_lld_1",
+          feedback: "Clarify retry semantics before implementation continues.",
+          sourceTaskId: codeTask.id,
+          targetTaskId: lldTask.id
+        }
+      }
+    });
+    expect(events).toMatchObject({
+      events: [
+        {
+          jobId: "job_1",
+          type: "task.revision_requested",
+          metadata: {
+            requestedBy: "dev-a@example.com",
+            sourceTaskId: codeTask.id,
+            sourceTaskStatus: "blocked",
+            targetTaskId: lldTask.id,
+            targetTaskStatus: "in_progress",
+            jobType: "document.revise"
+          }
+        }
+      ]
+    });
+  });
 });
 
 async function postJson(url: string, body: Record<string, unknown>, token?: string): Promise<Response> {

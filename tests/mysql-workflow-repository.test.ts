@@ -75,6 +75,29 @@ describe("MysqlWorkflowRepository", () => {
     expect(database.statements[1]?.params).toContain("task_1");
   });
 
+  it("lists workflow jobs for a run in stable creation order", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    database.queueRows([
+      workflowJobRow({ id: "job_1", run_id: "run_1", task_id: "task_1" }),
+      workflowJobRow({
+        id: "job_2",
+        run_id: "run_1",
+        task_id: "task_1",
+        created_at: "2026-05-20T00:00:01.000Z",
+        updated_at: "2026-05-20T00:00:01.000Z"
+      })
+    ]);
+
+    const jobs = await repository.listWorkflowJobs("run_1");
+
+    expect(jobs.map((job) => job.id)).toEqual(["job_1", "job_2"]);
+    expect(database.statements[0]).toMatchObject({
+      sql: expect.stringContaining("FROM workflow_job WHERE run_id = ? ORDER BY created_at ASC, id ASC"),
+      params: ["run_1"]
+    });
+  });
+
   it("claims an eligible job inside a transaction using runner scope and capabilities", async () => {
     const database = new FakeMysqlDatabase();
     const repository = new MysqlWorkflowRepository(database);
@@ -349,6 +372,43 @@ describe("MysqlWorkflowRepository", () => {
     expect(ackDatabase.events).toEqual(["begin", "commit", "release"]);
     expect(ackDatabase.statements[2]?.sql).toContain("INSERT INTO workflow_job_result");
     expect(ackDatabase.statements[3]?.sql).toContain("status = 'canceled'");
+  });
+
+  it("manually retries terminal jobs in a transaction", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    database.queueRows([
+      workflowJobRow({
+        id: "job_1",
+        status: "failed",
+        claimed_by_runner_id: "runner-a",
+        claimed_at: "2026-05-20 00:00:00.000",
+        lease_expires_at: "2026-05-20 00:01:00.000"
+      })
+    ]);
+    database.queueResult({ affectedRows: 1 });
+
+    const retried = await repository.requestJobRetry({
+      jobId: "job_1",
+      requestedBy: "planner-a",
+      reason: "Manual retry",
+      now
+    });
+
+    expect(retried).toMatchObject({
+      id: "job_1",
+      status: "retrying",
+      claimedByRunnerId: undefined,
+      claimedAt: undefined,
+      leaseExpiresAt: undefined
+    });
+    expect(database.events).toEqual(["begin", "commit", "release"]);
+    expect(database.statements[0]?.sql).toContain("FOR UPDATE");
+    expect(database.statements[1]).toMatchObject({
+      sql: expect.stringContaining("SET status = 'retrying'"),
+      params: ["2026-05-20 00:00:00.000", "job_1"]
+    });
   });
 
   it("lists runner log events with job/type filters and a limit", async () => {

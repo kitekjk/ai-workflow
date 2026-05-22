@@ -18,7 +18,14 @@ import {
 } from "../prd-confirmation/domain";
 import type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../prd-confirmation/ports";
 import { redactSecrets } from "../runtime/secrets";
-import type { RunnerMode, WorkflowJob, WorkflowJobResult, WorkflowTask } from "../workflow-core/domain";
+import type {
+  Runner,
+  RunnerClaimDiagnostics,
+  RunnerMode,
+  WorkflowJob,
+  WorkflowJobResult,
+  WorkflowTask
+} from "../workflow-core/domain";
 import type { WorkflowScheduler } from "../workflow-core/scheduler";
 import {
   createEngineTransitionCommandInput,
@@ -421,25 +428,8 @@ async function routeRequest(
   if (method === "GET" && path === "/runners") {
     const scheduler = requireScheduler(context);
     const requestedAt = parseNow(url.searchParams.get("now"), context.now);
-    const runners = await scheduler.listRunners(requestedAt);
-    const runnersWithDiagnostics = await Promise.all(
-      runners.map(async (runner) => {
-        const claimDiagnostics = await scheduler.diagnoseClaim(runner.id, requestedAt);
-        const status =
-          runner.status === "online" && claimDiagnostics.reason === "runner_capacity_full" ? "busy" : runner.status;
 
-        return {
-          ...runner,
-          status,
-          claimDiagnostics: {
-            ...claimDiagnostics,
-            runnerStatus: status
-          }
-        };
-      })
-    );
-
-    writeJson(response, 200, { runners: runnersWithDiagnostics });
+    writeJson(response, 200, { runners: await listRunnersWithDiagnostics(scheduler, requestedAt) });
     return;
   }
 
@@ -522,6 +512,40 @@ async function routeRequest(
     }
   }
 
+  if (path.startsWith("/workflow-tasks/")) {
+    const scheduler = requireScheduler(context);
+    const [taskId, action] = path.slice("/workflow-tasks/".length).split("/");
+    const decodedTaskId = decodeURIComponent(taskId);
+
+    if (method === "POST" && action === "retry") {
+      const body = await readJsonBody<WorkflowTaskRetryBody>(request);
+      const result = await scheduler.requestTaskRetry({
+        taskId: decodedTaskId,
+        requestedBy: optionalString(body.requestedBy, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
+        now: parseNow(body.now, context.now)
+      });
+
+      writeJson(response, 202, result);
+      return;
+    }
+
+    if (method === "POST" && action === "request-revision") {
+      const body = await readJsonBody<WorkflowTaskRevisionBody>(request);
+      const result = await scheduler.requestTaskRevision({
+        sourceTaskId: decodedTaskId,
+        targetTaskId: optionalString(body.targetTaskId, "targetTaskId"),
+        requestedBy: optionalString(body.requestedBy, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
+        feedback: optionalString(body.feedback, "feedback"),
+        now: parseNow(body.now, context.now)
+      });
+
+      writeJson(response, 202, result);
+      return;
+    }
+  }
+
   if (path.startsWith("/runner-jobs/")) {
     const scheduler = requireScheduler(context);
     const [jobId, action] = path.slice("/runner-jobs/".length).split("/");
@@ -551,6 +575,19 @@ async function routeRequest(
     if (method === "POST" && action === "cancel") {
       const body = await readJsonBody<RunnerJobCancelBody>(request);
       const job = await scheduler.requestJobCancellation({
+        jobId: decodedJobId,
+        requestedBy: optionalString(body.requestedBy, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
+        now: parseNow(body.now, context.now)
+      });
+
+      writeJson(response, 202, { job });
+      return;
+    }
+
+    if (method === "POST" && action === "retry") {
+      const body = await readJsonBody<RunnerJobRetryBody>(request);
+      const job = await scheduler.requestJobRetry({
         jobId: decodedJobId,
         requestedBy: optionalString(body.requestedBy, "requestedBy"),
         reason: optionalString(body.reason, "reason"),
@@ -689,6 +726,12 @@ async function routeRequest(
   if (method === "GET" && path.startsWith("/workflow-runs/")) {
     const [runId, child] = path.slice("/workflow-runs/".length).split("/");
     const decodedRunId = decodeURIComponent(runId);
+
+    if (child === "dashboard") {
+      const dashboard = await summarizeWorkflowRunDashboard(context, request, url, decodedRunId);
+      writeJson(response, dashboard ? 200 : 404, dashboard ?? { error: "Workflow run not found" });
+      return;
+    }
 
     if (child === "tree") {
       const tree = context.readModel
@@ -1290,6 +1333,34 @@ function runnerOnboardingForRequest(request: IncomingMessage, url: URL): RunnerO
   };
 }
 
+async function listRunnersWithDiagnostics(
+  scheduler: WorkflowScheduler,
+  requestedAt: Date
+): Promise<RunnerWithDiagnostics[]> {
+  const runners = await scheduler.listRunners(requestedAt);
+
+  return Promise.all(
+    runners.map(async (runner) => {
+      const claimDiagnostics = await scheduler.diagnoseClaim(runner.id, requestedAt);
+      const status =
+        runner.status === "online" && claimDiagnostics.reason === "runner_capacity_full" ? "busy" : runner.status;
+
+      return {
+        ...runner,
+        status,
+        claimDiagnostics: {
+          ...claimDiagnostics,
+          runnerStatus: status
+        }
+      };
+    })
+  );
+}
+
+type RunnerWithDiagnostics = Runner & {
+  claimDiagnostics: RunnerClaimDiagnostics;
+};
+
 function runnerIdForOwnerEmail(ownerEmail: string): string {
   const slug = ownerEmail
     .trim()
@@ -1483,6 +1554,90 @@ async function recordPrdIntakeCommand(
     requestedBy,
     now: context.now()
   });
+}
+
+async function summarizeWorkflowRunDashboard(
+  context: WorkflowApiRequestContext,
+  request: IncomingMessage,
+  url: URL,
+  runId: string
+): Promise<Record<string, unknown> | undefined> {
+  const readModel = context.readModel;
+
+  if (readModel) {
+    const summary = await readModel.summarizeWorkflowRun(runId);
+
+    if (!summary) {
+      return undefined;
+    }
+
+    const documents = documentsFromReadModelSummary(summary);
+    const [tree, currentViews, histories, events, runners] = await Promise.all([
+      readModel.summarizeWorkflowRunTree(runId),
+      Promise.all(documents.map((document) => readModel.summarizeDocumentCurrent(document.id))),
+      Promise.all(documents.map((document) => readModel.summarizeDocumentHistory(document.id))),
+      dashboardRunEvents(context, runId),
+      dashboardRunners(context)
+    ]);
+
+    return {
+      ...summary,
+      tree,
+      currentViews: currentViews.filter((current): current is DocumentCurrentReadModel => Boolean(current)),
+      histories: histories.filter((history): history is Record<string, unknown> => Boolean(history)),
+      events,
+      runners,
+      runnerOnboarding: runnerOnboardingForRequest(request, url)
+    };
+  }
+
+  const fixture = requireCompatibilityFixture(context);
+  const snapshot = createGenericPrdSnapshot(fixture.store);
+  const summary = summarizeWorkflowRun(snapshot, runId);
+
+  if (!summary) {
+    return undefined;
+  }
+
+  const documents = (summary.documents as Document[] | undefined) ?? [];
+
+  return {
+    ...summary,
+    tree: summarizeWorkflowRunTree(snapshot, runId),
+    currentViews: documents
+      .map((document) => summarizeDocumentCurrent(fixture, snapshot, document.id))
+      .filter((current): current is Record<string, unknown> => Boolean(current)),
+    histories: documents
+      .map((document) => summarizeDocumentHistory(snapshot, document.id))
+      .filter((history): history is Record<string, unknown> => Boolean(history)),
+    events: await dashboardRunEvents(context, runId),
+    runners: await dashboardRunners(context),
+    runnerOnboarding: runnerOnboardingForRequest(request, url)
+  };
+}
+
+async function dashboardRunEvents(
+  context: WorkflowApiRequestContext,
+  runId: string
+): Promise<unknown[]> {
+  if (!context.scheduler) {
+    return [];
+  }
+
+  const events = await context.scheduler.listRunEvents({
+    runId,
+    limit: 80
+  });
+
+  return events.events;
+}
+
+async function dashboardRunners(context: WorkflowApiRequestContext): Promise<RunnerWithDiagnostics[]> {
+  if (!context.scheduler) {
+    return [];
+  }
+
+  return listRunnersWithDiagnostics(context.scheduler, context.now());
 }
 
 async function intakePrdTicketWithoutFixture(
@@ -1849,6 +2004,26 @@ interface RunnerJobCancelBody {
   now?: unknown;
 }
 
+interface RunnerJobRetryBody {
+  requestedBy?: unknown;
+  reason?: unknown;
+  now?: unknown;
+}
+
+interface WorkflowTaskRetryBody {
+  requestedBy?: unknown;
+  reason?: unknown;
+  now?: unknown;
+}
+
+interface WorkflowTaskRevisionBody {
+  targetTaskId?: unknown;
+  requestedBy?: unknown;
+  reason?: unknown;
+  feedback?: unknown;
+  now?: unknown;
+}
+
 interface RunnerJobLogBody extends RunnerJobActionBody {
   level?: unknown;
   message?: unknown;
@@ -2014,7 +2189,7 @@ function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): 
         jobType: job.jobType,
         status: job.status,
         taskId: taskIdForWorkflowJob(job),
-        primaryDocumentId: primaryDocumentIdForJob(job, documents)
+        primaryDocumentId: primaryDocumentIdForJob(job, documents, tasks, taskIdForWorkflowJob(job))
       }))
     ],
     edges: workflowRunTreeEdges(tasks, jobs),
@@ -2312,10 +2487,28 @@ function workItemForDocument(fixture: Fixture, document: Document) {
   return fixture.store.workItems.find((candidate) => candidate.id === workItemId);
 }
 
-function primaryDocumentIdForJob(job: { id: string; input: Record<string, unknown> }, documents: Document[]): string | undefined {
+function primaryDocumentIdForJob(
+  job: { id: string; input: Record<string, unknown> },
+  documents: Document[],
+  tasks: WorkflowTask[] = [],
+  taskId?: string
+): string | undefined {
+  const documentIds = new Set(documents.map((document) => document.id));
+  const taskDocumentId = taskId ? tasks.find((task) => task.id === taskId)?.currentDocumentId : undefined;
+
+  if (taskDocumentId && documentIds.has(taskDocumentId)) {
+    return taskDocumentId;
+  }
+
+  const inputDocumentId = stringOrUndefined(job.input.documentId);
+
+  if (inputDocumentId && documentIds.has(inputDocumentId)) {
+    return inputDocumentId;
+  }
+
   const sourceDocumentId = stringOrUndefined(job.input.sourceDocumentId);
 
-  if (sourceDocumentId && documents.some((document) => document.id === sourceDocumentId)) {
+  if (sourceDocumentId && documentIds.has(sourceDocumentId)) {
     return sourceDocumentId;
   }
 
@@ -2327,11 +2520,11 @@ function primaryDocumentIdForJob(job: { id: string; input: Record<string, unknow
 
   const parentDocumentId = stringOrUndefined(job.input.parentDocumentId);
 
-  if (parentDocumentId && documents.some((document) => document.id === parentDocumentId)) {
+  if (parentDocumentId && documentIds.has(parentDocumentId)) {
     return parentDocumentId;
   }
 
-  return documents[0]?.id;
+  return undefined;
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
@@ -3039,7 +3232,12 @@ function statusCodeForError(error: unknown): number {
     return 500;
   }
 
-  if (error.message.startsWith("Job not found:") || error.message.startsWith("Runner not found:")) {
+  if (
+    error.message.startsWith("Job not found:") ||
+    error.message.startsWith("Runner not found:") ||
+    error.message.startsWith("Task not found:") ||
+    error.message.startsWith("Revision target task not found:")
+  ) {
     return 404;
   }
 
@@ -3068,7 +3266,11 @@ function statusCodeForError(error: unknown): number {
 
   if (
     error.message.startsWith("Job cancellation requested:") ||
-    error.message.startsWith("Job cancellation not requested:")
+    error.message.startsWith("Job cancellation not requested:") ||
+    error.message.startsWith("Job is not retryable:") ||
+    error.message.startsWith("No retryable job found for task:") ||
+    error.message.startsWith("Revision target task belongs to a different run:") ||
+    error.message.startsWith("Revision target task is not revisable:")
   ) {
     return 409;
   }

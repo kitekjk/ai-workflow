@@ -126,8 +126,8 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
           type: "workflow_job",
           jobType: job.jobType,
           status: job.status,
-          taskId: job.taskId,
-          primaryDocumentId: primaryDocumentIdForJob(job, documents)
+          taskId: taskIdForWorkflowJob(job),
+          primaryDocumentId: primaryDocumentIdForJob(job, documents, tasks)
         }))
       ],
       edges: workflowRunTreeEdges(tasks, jobs),
@@ -382,10 +382,28 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
   }
 }
 
-function primaryDocumentIdForJob(job: WorkflowJob, documents: Document[]): string | undefined {
+function primaryDocumentIdForJob(
+  job: WorkflowJob,
+  documents: Document[],
+  tasks: WorkflowTask[]
+): string | undefined {
+  const documentIds = new Set(documents.map((document) => document.id));
+  const taskId = taskIdForWorkflowJob(job);
+  const taskDocumentId = taskId ? tasks.find((task) => task.id === taskId)?.currentDocumentId : undefined;
+
+  if (taskDocumentId && documentIds.has(taskDocumentId)) {
+    return taskDocumentId;
+  }
+
+  const inputDocumentId = stringOrUndefined(job.input.documentId);
+
+  if (inputDocumentId && documentIds.has(inputDocumentId)) {
+    return inputDocumentId;
+  }
+
   const sourceDocumentId = stringOrUndefined(job.input.sourceDocumentId);
 
-  if (sourceDocumentId && documents.some((document) => document.id === sourceDocumentId)) {
+  if (sourceDocumentId && documentIds.has(sourceDocumentId)) {
     return sourceDocumentId;
   }
 
@@ -397,11 +415,11 @@ function primaryDocumentIdForJob(job: WorkflowJob, documents: Document[]): strin
 
   const parentDocumentId = stringOrUndefined(job.input.parentDocumentId);
 
-  if (parentDocumentId && documents.some((document) => document.id === parentDocumentId)) {
+  if (parentDocumentId && documentIds.has(parentDocumentId)) {
     return parentDocumentId;
   }
 
-  return documents[0]?.id;
+  return undefined;
 }
 
 type WorkflowRunTreeEdge = {
@@ -424,20 +442,26 @@ function workflowRunTreeEdges(tasks: WorkflowTask[], jobs: WorkflowJob[]): Workf
         ]
       : []
   );
-  const jobEdges = jobs.flatMap((job): WorkflowRunTreeEdge[] =>
-    job.taskId
+  const jobEdges = jobs.flatMap((job): WorkflowRunTreeEdge[] => {
+    const taskId = taskIdForWorkflowJob(job);
+
+    return taskId
       ? [
           {
-            id: `edge_${job.taskId}_${job.id}`,
+            id: `edge_${taskId}_${job.id}`,
             type: "workflow_task_job",
-            from: job.taskId,
+            from: taskId,
             to: job.id
           }
         ]
-      : []
-  );
+      : [];
+  });
 
   return [...parentEdges, ...jobEdges];
+}
+
+function taskIdForWorkflowJob(job: WorkflowJob): string | undefined {
+  return job.taskId ?? stringOrUndefined(job.input.taskId);
 }
 
 function rowToWorkflowRun(row: MysqlRow): WorkflowRun {

@@ -918,6 +918,270 @@ describe("repository transition planner", () => {
       }
     ]);
   });
+
+  it("carries manual revision resume context into the quality evaluation job", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "needs_revision"
+      }),
+      job: workflowJob({
+        id: "job_revise_spec",
+        taskId: "task_spec",
+        jobType: "document.revise",
+        input: {
+          taskId: "task_spec",
+          revisionSource: "workflow.task_revision_request",
+          sourceTaskId: "task_code",
+          targetTaskId: "task_spec",
+          sourceDocumentId: "doc_spec"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_revise_spec",
+        jobId: "job_revise_spec",
+        output: {
+          status: "succeeded",
+          markdown: "# Revised Spec",
+          summary: "Spec revised.",
+          revisionSummary: "Clarified rollback behavior."
+        }
+      }),
+      now: new Date("2026-05-21T00:08:00.000Z"),
+      idGenerator: sequenceGenerator()
+    });
+
+    expect(plan.transitionType).toBe("document_revision_applied");
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_1",
+        taskId: "task_spec",
+        jobType: "document.evaluate",
+        input: {
+          documentType: "spec",
+          sourceDocumentId: "doc_spec",
+          revisionSource: "workflow.task_revision_request",
+          sourceTaskId: "task_code",
+          targetTaskId: "task_spec"
+        }
+      }
+    ]);
+  });
+
+  it("resumes a blocked code task after its revised Spec passes quality", () => {
+    const plan = planRepositoryWorkflowTransition({
+      workflowTasks: [
+        workflowTask({
+          id: "task_spec",
+          taskType: "spec",
+          sourceKey: "PRD-100-SPEC-1",
+          title: "Spec",
+          status: "quality_review",
+          currentDocumentId: "doc_spec"
+        }),
+        workflowTask({
+          id: "task_code",
+          parentTaskId: "task_spec",
+          taskType: "code",
+          sourceKey: "PRD-100-SPEC-1",
+          title: "Code Implementation",
+          status: "blocked",
+          currentDocumentId: "doc_spec"
+        })
+      ],
+      workflowJobs: [
+        workflowJob({
+          id: "job_collect",
+          taskId: "task_code",
+          jobType: "implementation.collect_pr_status",
+          input: {
+            taskId: "task_code",
+            documentId: "doc_spec",
+            documentVersionId: "docv_spec_1",
+            pullNumber: 42,
+            pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+            repository: "acme/app",
+            repositoryCloneUrl: "https://github.example.com/acme/app.git",
+            branchName: "workflow/prd-100-spec-1",
+            baseBranch: "main"
+          },
+          updatedAt: "2026-05-21T00:07:00.000Z"
+        })
+      ],
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "quality_review",
+        currentVersionId: "docv_spec_2"
+      }),
+      job: workflowJob({
+        id: "job_evaluate_spec",
+        taskId: "task_spec",
+        jobType: "document.evaluate",
+        input: {
+          sourceDocumentId: "doc_spec",
+          revisionSource: "workflow.task_revision_request",
+          sourceTaskId: "task_code",
+          targetTaskId: "task_spec"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_evaluate_spec",
+        jobId: "job_evaluate_spec",
+        output: {
+          status: "passed",
+          score: 91,
+          summary: "Spec quality passed."
+        }
+      }),
+      now: new Date("2026-05-21T00:09:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_resume`
+    });
+
+    expect(plan.transitionType).toBe("document_quality_passed");
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_spec",
+          status: "approval_pending"
+        }),
+        expect.objectContaining({
+          id: "task_code",
+          status: "in_progress",
+          updatedAt: "2026-05-21T00:09:00.000Z"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_resume",
+        taskId: "task_code",
+        jobType: "implementation.update_pr",
+        input: {
+          taskId: "task_code",
+          requestedBy: "workflow.task_revision_resume",
+          documentType: "spec",
+          documentId: "doc_spec",
+          documentVersionId: "docv_spec_2",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          repositoryCloneUrl: "https://github.example.com/acme/app.git",
+          branchName: "workflow/prd-100-spec-1",
+          reworkSource: "workflow.task_revision_resume",
+          sourceRevisionEvaluationJobId: "job_evaluate_spec",
+          sourceRevisionEvaluationResultId: "result_evaluate_spec",
+          runnerSkill: {
+            id: "implementation.pr-updater"
+          }
+        },
+        requiredCapabilities: ["implementation.update_pr"]
+      }
+    ]);
+  });
+
+  it("cascades a revised LLD into a child Spec revision before resuming Code", () => {
+    const plan = planRepositoryWorkflowTransition({
+      workflowTasks: [
+        workflowTask({
+          id: "task_lld",
+          taskType: "lld",
+          sourceKey: "PRD-100-LLD-1",
+          title: "LLD",
+          status: "quality_review",
+          currentDocumentId: "doc_lld"
+        }),
+        workflowTask({
+          id: "task_spec",
+          parentTaskId: "task_lld",
+          taskType: "spec",
+          sourceKey: "PRD-100-SPEC-1",
+          title: "Spec",
+          status: "completed",
+          currentDocumentId: "doc_spec",
+          metadata: {
+            currentDocumentVersionId: "docv_spec_1"
+          }
+        }),
+        workflowTask({
+          id: "task_code",
+          parentTaskId: "task_spec",
+          taskType: "code",
+          sourceKey: "PRD-100-SPEC-1",
+          title: "Code Implementation",
+          status: "blocked",
+          currentDocumentId: "doc_spec"
+        })
+      ],
+      document: document({
+        id: "doc_lld",
+        workflowTaskId: "task_lld",
+        type: "lld",
+        sourceKey: "PRD-100-LLD-1",
+        status: "quality_review",
+        currentVersionId: "docv_lld_2"
+      }),
+      job: workflowJob({
+        id: "job_evaluate_lld",
+        taskId: "task_lld",
+        jobType: "document.evaluate",
+        input: {
+          sourceDocumentId: "doc_lld",
+          revisionSource: "workflow.task_revision_request",
+          sourceTaskId: "task_code",
+          targetTaskId: "task_lld"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_evaluate_lld",
+        jobId: "job_evaluate_lld",
+        output: {
+          status: "passed",
+          score: 92,
+          summary: "LLD quality passed."
+        }
+      }),
+      now: new Date("2026-05-21T00:10:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_cascade`
+    });
+
+    expect(plan.transitionType).toBe("document_quality_passed");
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_lld",
+          status: "approval_pending"
+        }),
+        expect.objectContaining({
+          id: "task_spec",
+          status: "in_progress"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_cascade",
+        taskId: "task_spec",
+        jobType: "document.revise",
+        input: {
+          taskId: "task_spec",
+          requestedBy: "workflow.task_revision_resume",
+          documentType: "spec",
+          sourceDocumentId: "doc_spec",
+          currentDocumentVersionId: "docv_spec_1",
+          revisionSource: "workflow.task_revision_resume",
+          sourceTaskId: "task_code",
+          targetTaskId: "task_spec",
+          upstreamTaskId: "task_lld",
+          upstreamDocumentId: "doc_lld"
+        }
+      }
+    ]);
+  });
 });
 
 function document(overrides: Partial<Document> = {}): Document {

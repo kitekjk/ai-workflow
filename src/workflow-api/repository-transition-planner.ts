@@ -20,6 +20,7 @@ import type {
 export interface PlanRepositoryWorkflowTransitionInput {
   workflowRun?: WorkflowRun;
   workflowTasks?: WorkflowTask[];
+  workflowJobs?: WorkflowJob[];
   document: Document;
   job: WorkflowJob;
   result: WorkflowJobResult;
@@ -177,7 +178,9 @@ function repositoryTransitionFor(
       documentStatus: "quality_review",
       documents: [],
       workflowTasks: [],
-      workflowJobs: [createFollowUpJob(input, "prd.evaluate_quality", nextJobInputFor(input.document, "prd.evaluate_quality"))],
+      workflowJobs: [
+        createFollowUpJob(input, "prd.evaluate_quality", nextRevisionEvaluationInputFor(input, "prd.evaluate_quality"))
+      ],
       ...projection
     };
   }
@@ -203,19 +206,22 @@ function repositoryTransitionFor(
       documentStatus: "quality_review",
       documents: [],
       workflowTasks: [],
-      workflowJobs: [createFollowUpJob(input, "document.evaluate", nextJobInputFor(input.document, "document.evaluate"))],
+      workflowJobs: [
+        createFollowUpJob(input, "document.evaluate", nextRevisionEvaluationInputFor(input, "document.evaluate"))
+      ],
       ...projection
     };
   }
 
   if (input.job.jobType === "prd.evaluate_quality" || input.job.jobType === "document.evaluate") {
     const passed = resultStatusFor(input.result) === "passed";
+    const revisionResume = passed ? revisionResumeForQualityPass(input, idGenerator, now) : undefined;
     return {
       transitionType: qualityTransitionTypeFor(input.job.jobType, passed),
       documentStatus: passed ? "approval_pending" : "needs_revision",
       documents: [],
-      workflowTasks: [],
-      workflowJobs: [],
+      workflowTasks: revisionResume?.workflowTasks ?? [],
+      workflowJobs: revisionResume?.workflowJobs ?? [],
       qualityResults: [qualityResultFor(input, passed, now)],
       qualityStatus: passed ? "passed" : "needs_revision"
     };
@@ -799,6 +805,8 @@ function implementationRevisionTargetFor(
       feedback,
       feedbackItemIds: [feedbackId],
       revisionSource: "implementation.collect_pr_status",
+      sourceTaskId: input.job.taskId,
+      targetTaskId: taskId,
       sourceImplementationJobId: input.job.id,
       sourceImplementationResultId: input.result.id,
       pullNumber,
@@ -918,6 +926,200 @@ function nextJobInputFor(document: Document, jobType: string): Record<string, un
   }
 
   return {};
+}
+
+function nextRevisionEvaluationInputFor(
+  input: PlanRepositoryWorkflowTransitionInput,
+  jobType: string
+): Record<string, unknown> {
+  const nextInput = nextJobInputFor(input.document, jobType);
+  const resumeInput = revisionResumeInputFor(input.job);
+
+  return {
+    ...nextInput,
+    ...resumeInput
+  };
+}
+
+function revisionResumeInputFor(job: WorkflowJob): Record<string, unknown> {
+  const sourceTaskId = stringOrUndefined(job.input.sourceTaskId);
+  const targetTaskId = stringOrUndefined(job.input.targetTaskId) ?? job.taskId;
+
+  if (!sourceTaskId || !targetTaskId) {
+    return {};
+  }
+
+  return {
+    revisionSource: stringOrUndefined(job.input.revisionSource),
+    sourceTaskId,
+    targetTaskId
+  };
+}
+
+function revisionResumeForQualityPass(
+  input: PlanRepositoryWorkflowTransitionInput,
+  idGenerator: (prefix: string) => string,
+  now: string
+): Pick<RepositoryTransition, "workflowTasks" | "workflowJobs"> | undefined {
+  const sourceTaskId = stringOrUndefined(input.job.input.sourceTaskId);
+  const targetTaskId = stringOrUndefined(input.job.input.targetTaskId) ?? input.document.workflowTaskId;
+
+  if (!sourceTaskId || !targetTaskId || sourceTaskId === targetTaskId) {
+    return undefined;
+  }
+
+  const tasks = input.workflowTasks ?? [];
+  const sourceTask = tasks.find((task) => task.id === sourceTaskId);
+  const nextTask = sourceTask ? nextTaskAfterTargetOnPath(sourceTask, targetTaskId, tasks) : undefined;
+
+  if (!sourceTask || !nextTask) {
+    return undefined;
+  }
+
+  const resumedTask: WorkflowTask = {
+    ...nextTask,
+    status: "in_progress",
+    updatedAt: now
+  };
+  const resumeJob = createResumeJobForTask(input, resumedTask, sourceTask, idGenerator, now);
+
+  return {
+    workflowTasks: [resumedTask],
+    workflowJobs: resumeJob ? [resumeJob] : []
+  };
+}
+
+function nextTaskAfterTargetOnPath(
+  sourceTask: WorkflowTask,
+  targetTaskId: string,
+  tasks: WorkflowTask[]
+): WorkflowTask | undefined {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  const path: WorkflowTask[] = [];
+  const seen = new Set<string>();
+  let current: WorkflowTask | undefined = sourceTask;
+
+  while (current && !seen.has(current.id)) {
+    path.push(current);
+    seen.add(current.id);
+
+    if (current.id === targetTaskId) {
+      return path.at(-2);
+    }
+
+    current = current.parentTaskId ? tasksById.get(current.parentTaskId) : undefined;
+  }
+
+  return undefined;
+}
+
+function createResumeJobForTask(
+  input: PlanRepositoryWorkflowTransitionInput,
+  task: WorkflowTask,
+  sourceTask: WorkflowTask,
+  idGenerator: (prefix: string) => string,
+  now: string
+): WorkflowJob | undefined {
+  if (task.taskType === "code") {
+    return createImplementationResumeJob(input, task, idGenerator);
+  }
+
+  if (!isRevisableTask(task) || !task.currentDocumentId) {
+    return undefined;
+  }
+
+  return createFollowUpJob(
+    input,
+    task.taskType === "prd" ? "prd.apply_feedback_revision" : "document.revise",
+    {
+      taskId: task.id,
+      requestedBy: "workflow.task_revision_resume",
+      documentType: task.taskType,
+      sourceDocumentId: task.currentDocumentId,
+      currentDocumentVersionId: stringOrUndefined(task.metadata.currentDocumentVersionId),
+      feedback: `Upstream ${input.document.type.toUpperCase()} task ${input.document.sourceKey} was revised; refresh ${task.title}.`,
+      revisionSource: "workflow.task_revision_resume",
+      sourceTaskId: sourceTask.id,
+      targetTaskId: task.id,
+      upstreamTaskId: input.document.workflowTaskId,
+      upstreamDocumentId: input.document.id,
+      upstreamEvaluationJobId: input.job.id,
+      upstreamEvaluationResultId: input.result.id
+    },
+    idGenerator
+  );
+}
+
+function createImplementationResumeJob(
+  input: PlanRepositoryWorkflowTransitionInput,
+  task: WorkflowTask,
+  idGenerator: (prefix: string) => string
+): WorkflowJob {
+  const previousJob = latestWorkflowJobForTask(input.workflowJobs ?? [], task.id);
+  const previousInput = previousJob?.input ?? {};
+  const pullNumber = positiveIntegerOrUndefined(previousInput.pullNumber) ?? positiveIntegerOrUndefined(previousInput.pullRequestNumber);
+  const pullRequestUrl = stringOrUndefined(previousInput.pullRequestUrl);
+  const repository = stringOrUndefined(previousInput.repository);
+  const repositoryCloneUrl =
+    stringOrUndefined(previousInput.repositoryCloneUrl) ??
+    stringOrUndefined(previousInput.implementationRepositoryCloneUrl);
+  const branchName = stringOrUndefined(previousInput.branchName) ?? stringOrUndefined(previousInput.pullRequestBranch);
+  const baseBranch = stringOrUndefined(previousInput.baseBranch);
+  const latestCommitSha = stringOrUndefined(previousInput.latestCommitSha) ?? stringOrUndefined(previousInput.commitSha);
+  const jobType = pullNumber || pullRequestUrl || branchName ? "implementation.update_pr" : "implementation.open_pr";
+  const jobInput: Record<string, unknown> = {
+    taskId: task.id,
+    requestedBy: "workflow.task_revision_resume",
+    documentType: input.document.type,
+    documentId: input.document.id,
+    documentVersionId: input.document.currentVersionId,
+    sourceDocumentId: input.document.id,
+    currentDocumentVersionId: input.document.currentVersionId,
+    feedback: `Upstream ${input.document.type.toUpperCase()} task ${input.document.sourceKey} was revised; update the implementation.`,
+    reworkSource: "workflow.task_revision_resume",
+    sourceRevisionEvaluationJobId: input.job.id,
+    sourceRevisionEvaluationResultId: input.result.id,
+    pullNumber,
+    pullRequestUrl,
+    repository,
+    repositoryCloneUrl,
+    branchName,
+    baseBranch,
+    latestCommitSha
+  };
+
+  if (jobType === "implementation.update_pr") {
+    jobInput.runnerSkill = implementationPrUpdaterSkill();
+    jobInput.runnerJobTemplate = {
+      runner: {
+        sandbox: "workspace-write",
+        workdir: "implementation"
+      }
+    };
+  }
+
+  return createFollowUpJob(input, jobType, jobInput, idGenerator);
+}
+
+function latestWorkflowJobForTask(jobs: WorkflowJob[], taskId: string): WorkflowJob | undefined {
+  return jobs
+    .filter((job) => (job.taskId ?? stringOrUndefined(job.input.taskId)) === taskId)
+    .sort(
+      (left, right) =>
+        right.updatedAt.localeCompare(left.updatedAt) ||
+        right.createdAt.localeCompare(left.createdAt) ||
+        right.id.localeCompare(left.id)
+    )[0];
+}
+
+function isRevisableTask(task: WorkflowTask): boolean {
+  return (
+    task.taskType === "prd" ||
+    task.taskType === "hld" ||
+    task.taskType === "lld" ||
+    task.taskType === "adr" ||
+    task.taskType === "spec"
+  );
 }
 
 function createDownstreamDocuments(

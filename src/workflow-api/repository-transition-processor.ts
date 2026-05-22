@@ -69,8 +69,9 @@ export class RepositoryTransitionProcessor {
     const summary = await this.input.readModel.summarizeWorkflowRun(input.job.runId);
     const workflowRun = workflowRunFromWorkflowRunSummary(summary);
     const workflowTasks = workflowTasksFromWorkflowRunSummary(summary);
+    const workflowJobs = workflowJobsFromWorkflowRunSummary(summary);
     const documents = documentsFromWorkflowRunSummary(summary);
-    const documentId = primaryDocumentIdForJob(input.job, documents);
+    const documentId = primaryDocumentIdForJob(input.job, documents, workflowTasks);
     const document = documentId ? documents.find((candidate) => candidate.id === documentId) : undefined;
 
     if (!document) {
@@ -80,6 +81,7 @@ export class RepositoryTransitionProcessor {
     const transition = planRepositoryWorkflowTransition({
       workflowRun,
       workflowTasks,
+      workflowJobs,
       document,
       job: input.job,
       result: input.jobResult,
@@ -103,6 +105,14 @@ function workflowRunFromWorkflowRunSummary(summary: Record<string, unknown> | un
   }
 
   return run;
+}
+
+function workflowJobsFromWorkflowRunSummary(summary: Record<string, unknown> | undefined): WorkflowJob[] {
+  if (!summary || !Array.isArray(summary.jobs)) {
+    return [];
+  }
+
+  return summary.jobs.filter(isWorkflowJobRecord);
 }
 
 function documentsFromWorkflowRunSummary(summary: Record<string, unknown> | undefined): Document[] {
@@ -136,6 +146,21 @@ function isWorkflowRunRecord(value: unknown): value is WorkflowRun {
   );
 }
 
+function isWorkflowJobRecord(value: unknown): value is WorkflowJob {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as WorkflowJob).id === "string" &&
+    typeof (value as WorkflowJob).runId === "string" &&
+    typeof (value as WorkflowJob).jobType === "string" &&
+    typeof (value as WorkflowJob).status === "string" &&
+    typeof (value as WorkflowJob).input === "object" &&
+    (value as WorkflowJob).input !== null &&
+    typeof (value as WorkflowJob).createdAt === "string" &&
+    typeof (value as WorkflowJob).updatedAt === "string"
+  );
+}
+
 function isWorkflowTaskRecord(value: unknown): value is WorkflowTask {
   return (
     typeof value === "object" &&
@@ -162,28 +187,46 @@ function isDocumentRecord(value: unknown): value is Document {
   );
 }
 
-function primaryDocumentIdForJob(job: { input: Record<string, unknown> }, documents: Document[]): string | undefined {
+function primaryDocumentIdForJob(
+  job: { taskId?: string; input: Record<string, unknown> },
+  documents: Document[],
+  workflowTasks: WorkflowTask[]
+): string | undefined {
+  const documentIds = new Set(documents.map((document) => document.id));
+  const taskId = taskIdForJob(job);
+  const taskDocumentId = taskId
+    ? workflowTasks.find((task) => task.id === taskId)?.currentDocumentId
+    : undefined;
+
+  if (taskDocumentId && documentIds.has(taskDocumentId)) {
+    return taskDocumentId;
+  }
+
   const sourceDocumentId = stringOrUndefined(job.input.sourceDocumentId);
 
-  if (sourceDocumentId && documents.some((document) => document.id === sourceDocumentId)) {
+  if (sourceDocumentId && documentIds.has(sourceDocumentId)) {
     return sourceDocumentId;
   }
 
   const documentId = stringOrUndefined(job.input.documentId);
 
-  if (documentId && documents.some((document) => document.id === documentId)) {
+  if (documentId && documentIds.has(documentId)) {
     return documentId;
   }
 
   const parentDocumentId = stringOrUndefined(job.input.parentDocumentId);
 
-  if (parentDocumentId && documents.some((document) => document.id === parentDocumentId)) {
+  if (parentDocumentId && documentIds.has(parentDocumentId)) {
     return parentDocumentId;
   }
 
-  return documents[0]?.id;
+  return undefined;
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function taskIdForJob(job: { taskId?: string; input: Record<string, unknown> }): string | undefined {
+  return job.taskId ?? stringOrUndefined(job.input.taskId);
 }

@@ -732,7 +732,36 @@ describe("Workflow API", () => {
   it("serves read-model GET views without a compatibility fixture", async () => {
     const readModel: WorkflowApiReadModel = {
       async summarizeWorkflowRun(runId) {
-        return { run: { id: runId, sourceKey: "PRD-DB" }, jobs: [], documents: [] };
+        return {
+          run: { id: runId, sourceKey: "PRD-DB" },
+          tasks: [
+            {
+              id: "task_db_1",
+              runId,
+              taskType: "prd",
+              sourceKey: "PRD-DB",
+              title: "Read model PRD",
+              status: "approval_pending",
+              currentDocumentId: "doc_db_1",
+              createdAt: "2026-05-20T00:00:00.000Z",
+              updatedAt: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          jobs: [],
+          documents: [
+            {
+              id: "doc_db_1",
+              workflowRunId: runId,
+              workflowTaskId: "task_db_1",
+              type: "prd",
+              sourceKey: "PRD-DB",
+              title: "Read model PRD",
+              status: "approval_pending",
+              createdAt: "2026-05-20T00:00:00.000Z",
+              updatedAt: "2026-05-20T00:00:00.000Z"
+            }
+          ]
+        };
       },
       async summarizeState(sourceKey) {
         return { prdJiraKey: sourceKey, jobs: [], artifacts: [] };
@@ -786,6 +815,20 @@ describe("Workflow API", () => {
       });
       await expect(getJson(`${localServer.url}/workflow-runs/run_db_1/tree`)).resolves.toMatchObject({
         run: { id: "run_db_1" }
+      });
+      await expect(
+        getJson(`${localServer.url}/workflow-runs/run_db_1/dashboard?ownerEmail=planner%40example.com`)
+      ).resolves.toMatchObject({
+        run: { id: "run_db_1" },
+        tasks: [{ id: "task_db_1", currentDocumentId: "doc_db_1" }],
+        tree: { run: { id: "run_db_1" } },
+        currentViews: [{ document: { id: "doc_db_1" }, workflowTask: { id: "task_db_1" } }],
+        histories: [{ documentId: "doc_db_1" }],
+        runners: [],
+        runnerOnboarding: {
+          ownerEmail: "planner@example.com",
+          runnerId: "runner-planner-example-com-pc"
+        }
       });
       await expect(getJson(`${localServer.url}/documents/doc_db_1/current`)).resolves.toMatchObject({
         document: { id: "doc_db_1" },
@@ -2780,6 +2823,7 @@ describe("Workflow API", () => {
 
     const run = await getJson(`${baseUrl}/workflow-runs/run_1`);
     const tree = await getJson(`${baseUrl}/workflow-runs/run_1/tree`);
+    const dashboard = await getJson(`${baseUrl}/workflow-runs/run_1/dashboard`);
 
     expect(run).toMatchObject({
       run: {
@@ -2848,6 +2892,59 @@ describe("Workflow API", () => {
           to: "job_2"
         }
       ]
+    });
+    expect(dashboard).toMatchObject({
+      run: {
+        id: "run_1"
+      },
+      tasks: [
+        {
+          id: "task_wi_1",
+          currentDocumentId: "doc_wi_1"
+        }
+      ],
+      tree: {
+        edges: [
+          {
+            id: "edge_task_wi_1_job_1",
+            type: "workflow_task_job",
+            from: "task_wi_1",
+            to: "job_1"
+          },
+          {
+            id: "edge_task_wi_1_job_2",
+            type: "workflow_task_job",
+            from: "task_wi_1",
+            to: "job_2"
+          }
+        ]
+      },
+      currentViews: [
+        {
+          document: {
+            id: "doc_wi_1"
+          },
+          workflowTask: {
+            id: "task_wi_1"
+          }
+        }
+      ],
+      histories: [
+        {
+          documentId: "doc_wi_1",
+          versions: [
+            {
+              id: "docv_1"
+            }
+          ]
+        }
+      ],
+      events: [],
+      runners: [],
+      runnerOnboarding: {
+        ownerEmail: "developer@example.com",
+        runnerId: "runner-developer-example-com-pc"
+      }
     });
   });
 

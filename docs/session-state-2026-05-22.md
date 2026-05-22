@@ -60,8 +60,8 @@ PRD intake
   `document.revise`/`prd.apply_feedback_revision` job under the target task,
   so Code work can block and route back to the current Spec or an explicit
   upstream HLD/LLD/PRD task.
-- Runner onboarding is now exposed through `GET /runner-onboarding` and the
-  dashboard `Local Runner Onboarding` panel. It returns/copies PowerShell env
+- Runner onboarding is now exposed through `GET /runner-onboarding` for the
+  future settings or runner management surface. It returns PowerShell env
   setup, `npm install`, `npm run doctor:local-runner`, bounded drain, and
   watch commands scoped to the current actor email.
 - Code-only implementation rework now has a distinct loop:
@@ -161,6 +161,65 @@ PRD intake
   fan-out, and Spec implementation scheduling now prefer
   `current.workflowTask.id` for task ownership before using the legacy
   document-derived task ID fallback.
+- Operator-driven manual job retry now exists end-to-end:
+  `POST /runner-jobs/:id/retry` moves failed/canceled/skipped jobs back to
+  `retrying`, records a `job.retry_requested` event, and dashboard API mode has
+  selected-job Cancel/Retry controls wired to the scheduler.
+- The API now exposes a task-first dashboard bundle at
+  `GET /workflow-runs/:id/dashboard`. The dashboard uses it when available so
+  run, task tree, document current/history, and ledger events travel together;
+  older multi-request mapping remains as a fallback for legacy servers.
+- The dashboard bundle still includes runner diagnostics and local-runner
+  onboarding scoped by `ownerEmail`, so a future runner management page can
+  hydrate status and setup commands from one run-scoped snapshot.
+- Workflow run tree job nodes now resolve `primaryDocumentId` from the
+  first-class task link before input/document fallbacks, and the dashboard task
+  mapper only uses document-based job grouping when no task-job edge or
+  `job.taskId` link exists.
+- Repository transition processing now follows the same task-first document
+  selection rule: `job.taskId` resolves through the read-model task's
+  `currentDocumentId` before older job input document fields are considered.
+- Result projection and compatibility engine-transition events no longer guess
+  a run from the first job/document when the target job is missing or the batch
+  spans multiple runs; they only emit run-scoped events when the run id is
+  explicit or unambiguous.
+- Workflow job recording now preserves `job.input.taskId` as the durable task
+  link when explicit command task fields are absent, and job-recorded events
+  carry the same task ID.
+- MySQL read-model task/job edges and repository transition document selection
+  now use the same durable task-link rule: `workflow_job.task_id` first, then
+  `job.input.taskId`. Older rows with only input metadata still render under
+  the correct task and process against that task's current document.
+- Manual job retry now reopens the owning task as executable work:
+  `prd.evaluate_quality`/`document.evaluate` retries move the task to
+  `quality_review`, other retries move it to `in_progress`, and the retry
+  event records `taskId`/`taskStatus`. Dashboard task rows let active task
+  state override stale document state so a retrying task appears running.
+- Operator task retry now exists end-to-end:
+  `POST /workflow-tasks/:id/retry` finds that task's latest failed/canceled/
+  skipped job, routes it through the same manual retry path, returns the
+  reopened task plus retried job, and the dashboard exposes a Retry Task
+  control alongside lower-level Retry Job.
+- Manual upstream rework now exists end-to-end:
+  `POST /workflow-tasks/:id/request-revision` blocks the source task, reopens
+  the selected upstream PRD/HLD/LLD/ADR/Spec task as `in_progress`, creates the
+  correct revision job under that target task, records a
+  `task.revision_requested` event, and the dashboard exposes a Target selector
+  plus Send Back control for task-level rerouting.
+- Upstream rework now resumes downstream work after quality passes:
+  revision jobs carry `sourceTaskId`/`targetTaskId` into their evaluation jobs.
+  When that evaluation passes, repository transitions walk the target-to-source
+  task path, reopen the next blocked child task, and create the next revision
+  or implementation update job. Revising LLD resumes Spec first; revising Spec
+  resumes Code with `implementation.update_pr` when PR metadata is available.
+- Dashboard information architecture was simplified: `Task Delivery Map` is now
+  the canonical task-first table, the redundant `Workflow Execution Tree` panel
+  was removed, and the lower content area now focuses on Selected Item plus
+  Status Events side by side on desktop-sized widths.
+- Runner operations were removed from the workflow detail surface: `Runner
+  Status` and `Local Runner Onboarding` no longer render on the current detail
+  page, and runner setup/status is reserved for a future settings or runner
+  management screen.
 
 ## Next Work
 
@@ -175,7 +234,7 @@ Continue in large feature slices:
 Current good after the full slice:
 
 - `npm run typecheck`
-- `npm test` passed: 43 files / 286 tests
+- `npm test` passed: 43 files / 305 tests
 - `npm run smoke:mysql:no-fixture` passed through PRD/HLD/LLD/Spec approval,
   implementation PR creation/status collection, final workflow-run completion,
   4 completed Code tasks, and 8 pull request artifacts with 28 processed jobs
@@ -188,9 +247,10 @@ Current good after the full slice:
 - `npm test -- tests/runner-engines/prd-cli-engine-script.test.ts tests/document-prompt-contracts.test.ts tests/local-runner.test.ts`
 - `npm test -- tests/local-runner-github-implementation.test.ts tests/document-prompt-contracts.test.ts tests/runner-engines/prd-cli-engine-script.test.ts`
 - `npm test -- tests/local-runner-github-implementation.test.ts`
-- Browser check passed after onboarding/update-pr changes: dashboard rendered
-  `implementation.update_pr` in Local Runner Onboarding, had no visible
-  overflow in that panel, and reported no console errors.
+- Browser check passed after onboarding/update-pr API changes:
+  `implementation.update_pr` appeared in the generated runner setup data and
+  the page reported no console errors before the runner detail panels were
+  later removed from the workflow detail screen.
 - Browser check passed for `Full API Slice`: 28 jobs processed, 8 documents
   approved, 12 visible tasks, no raw job rows, and 4 Code tasks with PR
   artifacts and nested implementation job history
@@ -199,3 +259,36 @@ Current good after the full slice:
 - Browser check passed after task domain promotion: dashboard reloaded at
   `http://127.0.0.1:5173/ai-workflow/`, rendered 13 flow nodes in the current
   view, and reported no console errors.
+- Browser check passed after manual retry and dashboard bundle work: dashboard
+  reloaded at `http://127.0.0.1:5173/ai-workflow/`, rendered Connected
+  Workflow View, Selected Item, and Cancel/Retry Job controls, with no console
+  errors.
+- Browser check passed after retry task-state mapping: dashboard reloaded at
+  `http://127.0.0.1:5173/ai-workflow/`, rendered 13 flow nodes, 11 task rows,
+  Connected Workflow View, Task Delivery Map, Selected Item, and Status Events
+  with no console errors.
+- `npm test -- tests\workflow-scheduler.test.ts tests\runner-api.test.ts tests\mysql-workflow-repository.test.ts`
+  passed after task-level retry.
+- Browser check passed after task-level retry UI: dashboard reloaded at
+  `http://127.0.0.1:5173/ai-workflow/`, rendered Retry Task/Retry Job
+  controls, had no horizontal body overflow, and reported no console errors.
+- `npm test -- tests\workflow-scheduler.test.ts tests\runner-api.test.ts`
+  passed after manual upstream rework.
+- Browser check passed after Send Back UI: dashboard reloaded at
+  `http://127.0.0.1:5173/ai-workflow/`, rendered Target and Send Back
+  controls, had no horizontal body overflow, and reported no console errors.
+- `npm test -- tests\repository-transition-planner.test.ts tests\repository-transition-processor.test.ts`
+  passed after downstream resume/cascade transitions.
+- Browser check passed after removing Workflow Execution Tree: dashboard
+  rendered Task Delivery Map, did not render Workflow Execution Tree, showed
+  Selected Item and Status Events side by side at the current browser width,
+  had no horizontal body overflow, and reported no console errors.
+- Browser check passed after compacting Status Events: event rows no longer
+  overflow inside the side panel, the log panel sizes to its content, Selected
+  Item and Status Events remain side by side, and the page reports no console
+  errors.
+- Browser check passed after removing runner detail panels: the dashboard no
+  longer renders `Runner Status` or `Local Runner Onboarding`, still renders
+  Workflow List, Connected Workflow View, Task Delivery Map, Selected Item, and
+  Status Events, has no horizontal body overflow, and reports no console
+  errors.

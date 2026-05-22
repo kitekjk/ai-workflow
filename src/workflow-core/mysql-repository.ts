@@ -23,6 +23,7 @@ import type {
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
   RequestWorkflowJobCancellationInput,
+  RequestWorkflowJobRetryInput,
   UpdateWorkflowTaskInput,
   WorkflowRepository
 } from "./repository";
@@ -213,6 +214,18 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
     const row = rows[0];
 
     return row ? rowToWorkflowJob(row) : undefined;
+  }
+
+  async listWorkflowJobs(runId: string): Promise<WorkflowJob[]> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_job
+       WHERE run_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [runId]
+    );
+
+    return rows.map(rowToWorkflowJob);
   }
 
   async upsertRunner(runner: Runner): Promise<Runner> {
@@ -493,6 +506,36 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         claimedByRunnerId: clearClaim ? undefined : job.claimedByRunnerId,
         claimedAt: clearClaim ? undefined : job.claimedAt,
         leaseExpiresAt: clearClaim ? undefined : job.leaseExpiresAt,
+        updatedAt: input.now.toISOString()
+      };
+    });
+  }
+
+  async requestJobRetry(input: RequestWorkflowJobRetryInput): Promise<WorkflowJob> {
+    return this.withTransaction(async (connection) => {
+      const job = await this.requireJobInTransaction(connection, input.jobId, true);
+
+      if (!isRetryableTerminalJobStatus(job.status)) {
+        throw new Error(`Job is not retryable: ${input.jobId}`);
+      }
+
+      await connection.execute(
+        `UPDATE workflow_job
+         SET status = 'retrying',
+             claimed_by_runner_id = NULL,
+             claimed_at = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?
+         WHERE id = ?`,
+        [toMysqlDateTime(input.now), input.jobId]
+      );
+
+      return {
+        ...job,
+        status: "retrying",
+        claimedByRunnerId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
         updatedAt: input.now.toISOString()
       };
     });
@@ -969,6 +1012,10 @@ function normalizeLimit(value: number | undefined): number {
 
 function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function isRetryableTerminalJobStatus(status: WorkflowJob["status"]): boolean {
+  return status === "failed" || status === "canceled" || status === "skipped";
 }
 
 function claimDiagnostics(

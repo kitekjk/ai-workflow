@@ -209,6 +209,125 @@ describe("MysqlWorkflowApiReadModel", () => {
       feedbackItems: [{ id: "fb_1" }]
     });
   });
+
+  it("uses job input taskId as the task edge when workflow_job.task_id is empty", async () => {
+    const database = new FakeMysqlReadDatabase({
+      workflowRuns: [
+        {
+          id: "run_1",
+          workflow_definition_id: "prd_confirmation",
+          status: "active",
+          source_type: "jira",
+          source_key: "PRD-100",
+          output_language: "ko",
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:00:00.000Z"
+        }
+      ],
+      workflowTasks: [
+        {
+          id: "task_1",
+          run_id: "run_1",
+          parent_task_id: null,
+          task_type: "hld",
+          source_key: "PRD-100-HLD-1",
+          title: "HLD task",
+          status: "quality_review",
+          current_document_id: "doc_current",
+          metadata_json: JSON.stringify({ documentId: "doc_current" }),
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:01:00.000Z"
+        }
+      ],
+      workflowJobs: [
+        {
+          id: "job_legacy",
+          run_id: "run_1",
+          task_id: null,
+          job_type: "document.evaluate",
+          status: "pending",
+          input_json: JSON.stringify({
+            taskId: "task_1",
+            sourceDocumentId: "doc_stale"
+          }),
+          priority: 0,
+          project_id: "prd-confirmation",
+          repository_id: "prd-docs",
+          assigned_user_id: null,
+          assigned_team_id: null,
+          required_role: "developer",
+          required_capabilities_json: JSON.stringify(["document.evaluate"]),
+          preferred_engine: null,
+          required_engine: null,
+          execution_policy: "local_allowed",
+          assigned_runner_id: null,
+          claimed_by_runner_id: null,
+          claimed_at: null,
+          lease_expires_at: null,
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:01:00.000Z"
+        }
+      ],
+      documents: [
+        {
+          id: "doc_stale",
+          workflow_run_id: "run_1",
+          workflow_task_id: null,
+          parent_document_id: null,
+          type: "hld",
+          source_key: "PRD-OLD-HLD-1",
+          title: "Stale HLD",
+          status: "quality_review",
+          current_version_id: null,
+          current_markdown_artifact_id: null,
+          current_wiki_artifact_id: null,
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:00:00.000Z"
+        },
+        {
+          id: "doc_current",
+          workflow_run_id: "run_1",
+          workflow_task_id: "task_1",
+          parent_document_id: null,
+          type: "hld",
+          source_key: "PRD-100-HLD-1",
+          title: "Current HLD",
+          status: "quality_review",
+          current_version_id: null,
+          current_markdown_artifact_id: null,
+          current_wiki_artifact_id: null,
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:00:00.000Z"
+        }
+      ]
+    });
+    const readModel = new MysqlWorkflowApiReadModel(database);
+
+    const tree = await readModel.summarizeWorkflowRunTree("run_1");
+
+    expect(tree).toMatchObject({
+      nodes: [
+        expect.objectContaining({
+          id: "task_1",
+          type: "workflow_task"
+        }),
+        expect.objectContaining({
+          id: "job_legacy",
+          type: "workflow_job",
+          taskId: "task_1",
+          primaryDocumentId: "doc_current"
+        })
+      ],
+      edges: [
+        {
+          id: "edge_task_1_job_legacy",
+          type: "workflow_task_job",
+          from: "task_1",
+          to: "job_legacy"
+        }
+      ]
+    });
+  });
 });
 
 interface FakeRows {

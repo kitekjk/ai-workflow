@@ -5,11 +5,13 @@ import type {
   RunnerClaimDiagnostics,
   WorkflowEvent,
   WorkflowJob,
-  WorkflowJobResult
+  WorkflowJobResult,
+  WorkflowTask
 } from "./domain";
 import { runnerStatusAt } from "./domain";
 import type { WorkflowEventCursor } from "./repository";
 import type { WorkflowRepository } from "./repository";
+import { requiredCapabilitiesForWorkflowJobType } from "./job-metadata";
 
 export interface RegisterRunnerInput {
   id: string;
@@ -231,6 +233,191 @@ export class WorkflowScheduler {
     return job;
   }
 
+  async requestJobRetry(input: {
+    jobId: string;
+    requestedBy?: string;
+    reason?: string;
+    now: Date;
+  }): Promise<WorkflowJob> {
+    const job = await this.repository.requestJobRetry(input);
+    const task = await this.reopenTaskForRetriedJob(job, input.now);
+    await this.repository.appendEvent({
+      runId: job.runId,
+      jobId: job.id,
+      type: "job.retry_requested",
+      message: "Job retry requested",
+      metadata: {
+        severity: "warning",
+        requestedBy: input.requestedBy,
+        reason: input.reason,
+        status: job.status,
+        taskId: task?.id ?? taskIdForJob(job),
+        taskStatus: task?.status,
+        metric: "workflow_job_manual_retries_total"
+      },
+      now: input.now
+    });
+
+    return job;
+  }
+
+  async requestTaskRetry(input: {
+    taskId: string;
+    requestedBy?: string;
+    reason?: string;
+    now: Date;
+  }): Promise<{ task: WorkflowTask; job: WorkflowJob }> {
+    const task = await this.repository.getWorkflowTask(input.taskId);
+
+    if (!task) {
+      throw new Error(`Task not found: ${input.taskId}`);
+    }
+
+    const jobs = await this.repository.listWorkflowJobs(task.runId);
+    const job = latestRetryableJobForTask(jobs, task.id);
+
+    if (!job) {
+      throw new Error(`No retryable job found for task: ${input.taskId}`);
+    }
+
+    const retriedJob = await this.requestJobRetry({
+      jobId: job.id,
+      requestedBy: input.requestedBy,
+      reason: input.reason,
+      now: input.now
+    });
+    const updatedTask = (await this.repository.getWorkflowTask(task.id)) ?? task;
+
+    return {
+      task: updatedTask,
+      job: retriedJob
+    };
+  }
+
+  async requestTaskRevision(input: {
+    sourceTaskId: string;
+    targetTaskId?: string;
+    requestedBy?: string;
+    reason?: string;
+    feedback?: string;
+    now: Date;
+  }): Promise<{ sourceTask: WorkflowTask; targetTask: WorkflowTask; job: WorkflowJob }> {
+    const sourceTask = await this.repository.getWorkflowTask(input.sourceTaskId);
+
+    if (!sourceTask) {
+      throw new Error(`Task not found: ${input.sourceTaskId}`);
+    }
+
+    const targetTaskId = input.targetTaskId ?? sourceTask.parentTaskId;
+
+    if (!targetTaskId) {
+      throw new Error(`Revision target task not found: ${input.sourceTaskId}`);
+    }
+
+    const targetTask = await this.repository.getWorkflowTask(targetTaskId);
+
+    if (!targetTask) {
+      throw new Error(`Revision target task not found: ${targetTaskId}`);
+    }
+
+    if (targetTask.runId !== sourceTask.runId) {
+      throw new Error(`Revision target task belongs to a different run: ${targetTaskId}`);
+    }
+
+    const jobType = revisionJobTypeForTask(targetTask);
+    const feedback = input.feedback ?? input.reason ?? `Revision requested from task ${sourceTask.id}.`;
+    let updatedSourceTask = sourceTask;
+
+    if (sourceTask.id !== targetTask.id && sourceTask.status !== "blocked") {
+      updatedSourceTask = await this.repository.updateWorkflowTask({
+        taskId: sourceTask.id,
+        status: "blocked",
+        now: input.now
+      });
+    }
+
+    const updatedTargetTask =
+      targetTask.status === "in_progress"
+        ? targetTask
+        : await this.repository.updateWorkflowTask({
+            taskId: targetTask.id,
+            status: "in_progress",
+            now: input.now
+          });
+    const job = await this.repository.createWorkflowJob({
+      runId: targetTask.runId,
+      taskId: targetTask.id,
+      jobType,
+      input: {
+        taskId: targetTask.id,
+        requestedBy: input.requestedBy,
+        documentType: targetTask.taskType,
+        sourceDocumentId: targetTask.currentDocumentId,
+        currentDocumentVersionId: stringOrUndefined(targetTask.metadata.currentDocumentVersionId),
+        feedback,
+        revisionSource: "workflow.task_revision_request",
+        sourceTaskId: sourceTask.id,
+        targetTaskId: targetTask.id
+      },
+      assignedUserId: input.requestedBy,
+      requiredCapabilities: requiredCapabilitiesForWorkflowJobType(jobType),
+      now: input.now
+    });
+
+    await this.repository.appendEvent({
+      runId: targetTask.runId,
+      jobId: job.id,
+      type: "task.revision_requested",
+      message: "Task revision requested",
+      metadata: {
+        severity: "warning",
+        requestedBy: input.requestedBy,
+        reason: input.reason,
+        sourceTaskId: sourceTask.id,
+        sourceTaskStatus: updatedSourceTask.status,
+        targetTaskId: targetTask.id,
+        targetTaskStatus: updatedTargetTask.status,
+        jobId: job.id,
+        jobType: job.jobType,
+        feedback,
+        metric: "workflow_task_manual_revision_requests_total"
+      },
+      now: input.now
+    });
+
+    return {
+      sourceTask: updatedSourceTask,
+      targetTask: updatedTargetTask,
+      job
+    };
+  }
+
+  private async reopenTaskForRetriedJob(job: WorkflowJob, now: Date): Promise<WorkflowTask | undefined> {
+    const taskId = taskIdForJob(job);
+
+    if (!taskId) {
+      return undefined;
+    }
+
+    const task = await this.repository.getWorkflowTask(taskId);
+
+    if (!task) {
+      return undefined;
+    }
+
+    const status = taskStatusForRetriedJob(job);
+
+    if (task.status === status) {
+      return task;
+    }
+
+    return this.repository.updateWorkflowTask({
+      taskId,
+      status,
+      now
+    });
+  }
+
   async acknowledgeJobCancellation(input: {
     jobId: string;
     runnerId: string;
@@ -370,4 +557,53 @@ function decodeWorkflowEventCursor(cursor: string | undefined): WorkflowEventCur
   }
 
   throw new Error("Invalid event cursor");
+}
+
+function taskIdForJob(job: WorkflowJob): string | undefined {
+  return job.taskId ?? stringOrUndefined(job.input.taskId);
+}
+
+function taskStatusForRetriedJob(job: WorkflowJob): WorkflowTask["status"] {
+  return job.jobType === "prd.evaluate_quality" || job.jobType === "document.evaluate"
+    ? "quality_review"
+    : "in_progress";
+}
+
+function latestRetryableJobForTask(jobs: WorkflowJob[], taskId: string): WorkflowJob | undefined {
+  return jobs
+    .filter((job) => taskIdForJob(job) === taskId && isRetryableTerminalJobStatus(job.status))
+    .sort(compareJobsNewestFirst)[0];
+}
+
+function isRetryableTerminalJobStatus(status: WorkflowJob["status"]): boolean {
+  return status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function compareJobsNewestFirst(left: WorkflowJob, right: WorkflowJob): number {
+  return (
+    right.updatedAt.localeCompare(left.updatedAt) ||
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.id.localeCompare(left.id)
+  );
+}
+
+function revisionJobTypeForTask(task: WorkflowTask): string {
+  if (task.taskType === "prd") {
+    return "prd.apply_feedback_revision";
+  }
+
+  if (
+    task.taskType === "hld" ||
+    task.taskType === "lld" ||
+    task.taskType === "adr" ||
+    task.taskType === "spec"
+  ) {
+    return "document.revise";
+  }
+
+  throw new Error(`Revision target task is not revisable: ${task.id}`);
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

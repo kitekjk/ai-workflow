@@ -96,9 +96,30 @@ function workflowResultProjectionEvent(
 }
 
 function runIdForResultProjection(input: RecordWorkflowResultProjectionInput): string | undefined {
-  return input.jobs.find((job) => job.id === input.jobId)?.runId ?? input.jobs[0]?.runId ?? input.documents[0]?.workflowRunId;
+  const targetJob = input.jobs.find((job) => job.id === input.jobId);
+
+  if (targetJob) {
+    return targetJob.runId;
+  }
+
+  return singleRunId([
+    ...input.jobs.map((job) => job.runId),
+    ...input.workflowTasks.map((task) => task.runId),
+    ...input.documents.map((document) => document.workflowRunId)
+  ]);
 }
 
 function createdAtForResultProjection(input: RecordWorkflowResultProjectionInput): string {
-  return input.jobResults[0]?.createdAt ?? input.jobs.find((job) => job.id === input.jobId)?.updatedAt ?? new Date().toISOString();
+  return (
+    input.jobResults.find((result) => result.jobId === input.jobId)?.createdAt ??
+    input.jobs.find((job) => job.id === input.jobId)?.updatedAt ??
+    input.jobResults[0]?.createdAt ??
+    new Date().toISOString()
+  );
+}
+
+function singleRunId(runIds: string[]): string | undefined {
+  const uniqueRunIds = [...new Set(runIds.filter(Boolean))];
+
+  return uniqueRunIds.length === 1 ? uniqueRunIds[0] : undefined;
 }

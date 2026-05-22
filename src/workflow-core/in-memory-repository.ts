@@ -21,6 +21,7 @@ import type {
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
   RequestWorkflowJobCancellationInput,
+  RequestWorkflowJobRetryInput,
   UpdateWorkflowTaskInput,
   WorkflowRepository
 } from "./repository";
@@ -127,6 +128,12 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
 
   getWorkflowJob(jobId: string): WorkflowJob | undefined {
     return this.workflowJobs.find((candidate) => candidate.id === jobId);
+  }
+
+  listWorkflowJobs(runId: string): WorkflowJob[] {
+    return this.workflowJobs
+      .filter((job) => job.runId === runId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   }
 
   upsertRunner(runner: Runner): Runner {
@@ -341,6 +348,21 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
     return job;
   }
 
+  requestJobRetry(input: RequestWorkflowJobRetryInput): WorkflowJob {
+    const job = this.requireJob(input.jobId);
+
+    if (!isRetryableTerminalJobStatus(job.status)) {
+      throw new Error(`Job is not retryable: ${input.jobId}`);
+    }
+
+    job.status = "retrying";
+    job.claimedByRunnerId = undefined;
+    job.claimedAt = undefined;
+    job.leaseExpiresAt = undefined;
+    job.updatedAt = input.now.toISOString();
+    return job;
+  }
+
   acknowledgeJobCancellation(input: AcknowledgeWorkflowJobCancellationInput): WorkflowJobResult {
     const job = this.requireJob(input.jobId);
 
@@ -481,6 +503,10 @@ function toIso(date: Date | undefined): string {
 
 function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function isRetryableTerminalJobStatus(status: WorkflowJob["status"]): boolean {
+  return status === "failed" || status === "canceled" || status === "skipped";
 }
 
 function isActiveRunnerJob(job: WorkflowJob, now: Date): boolean {

@@ -69,6 +69,58 @@ describe("MysqlWorkflowResultCommand", () => {
     });
   });
 
+  it("records projection events only when the run id is unambiguous", async () => {
+    const ambiguousDatabase = new FakeMysqlDatabase();
+    const ambiguousCommand = new MysqlWorkflowResultCommand(ambiguousDatabase);
+
+    await ambiguousCommand.recordResultProjection({
+      jobId: "job_missing",
+      jobs: [
+        workflowJob("job_1", "succeeded", { runId: "run_1" }),
+        workflowJob("job_2", "pending", { runId: "run_2" })
+      ],
+      jobResults: [workflowJobResult({ jobId: "job_missing" })],
+      workflowTasks: [],
+      documents: [],
+      documentVersions: [],
+      artifacts: [],
+      qualityResults: []
+    });
+
+    expect(
+      ambiguousDatabase.statements.some((statement) => statement.sql.includes("INSERT INTO workflow_event"))
+    ).toBe(false);
+
+    const taskScopedDatabase = new FakeMysqlDatabase();
+    const taskScopedCommand = new MysqlWorkflowResultCommand(taskScopedDatabase, { idGenerator: fixedIds("event_task") });
+
+    await taskScopedCommand.recordResultProjection({
+      jobId: "job_missing",
+      jobs: [],
+      jobResults: [workflowJobResult({ jobId: "job_missing", createdAt: "2026-01-02T00:00:00.000Z" })],
+      workflowTasks: [workflowTask({ runId: "run_task" })],
+      documents: [document({ workflowRunId: "run_task" })],
+      documentVersions: [],
+      artifacts: [],
+      qualityResults: []
+    });
+
+    const eventStatement = taskScopedDatabase.statements.find((statement) =>
+      statement.sql.includes("INSERT INTO workflow_event")
+    );
+
+    expect(eventStatement?.params).toEqual(
+      expect.arrayContaining([
+        "event_task",
+        "run_task",
+        "job_missing",
+        "workflow.result_projection",
+        "Workflow result projection recorded for job job_missing"
+      ])
+    );
+    expect(eventStatement?.params.at(-1)).toBe("2026-01-02 00:00:00.000");
+  });
+
   it("rolls back and releases the connection when projection recording fails", async () => {
     const database = new FakeMysqlDatabase({ failOnStatement: 3 });
     const command = new MysqlWorkflowResultCommand(database);
@@ -90,7 +142,7 @@ describe("MysqlWorkflowResultCommand", () => {
   });
 });
 
-function workflowTask(): WorkflowTask {
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
   return {
     id: "task_wi_1",
     runId: "run_1",
@@ -103,11 +155,16 @@ function workflowTask(): WorkflowTask {
       documentId: "doc_wi_1"
     },
     createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z"
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides
   };
 }
 
-function workflowJob(id: string, status: WorkflowJob["status"]): WorkflowJob {
+function workflowJob(
+  id: string,
+  status: WorkflowJob["status"],
+  overrides: Partial<WorkflowJob> = {}
+): WorkflowJob {
   return {
     id,
     runId: "run_1",
@@ -121,11 +178,12 @@ function workflowJob(id: string, status: WorkflowJob["status"]): WorkflowJob {
     requiredCapabilities: id === "job_2" ? ["document.evaluate"] : ["document.generate"],
     executionPolicy: "local_allowed",
     createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z"
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides
   };
 }
 
-function workflowJobResult(): WorkflowJobResult {
+function workflowJobResult(overrides: Partial<WorkflowJobResult> = {}): WorkflowJobResult {
   return {
     id: "result_1",
     jobId: "job_1",
@@ -134,11 +192,12 @@ function workflowJobResult(): WorkflowJobResult {
     output: {
       status: "succeeded"
     },
-    createdAt: "2026-01-01T00:00:00.000Z"
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides
   };
 }
 
-function document(): Document {
+function document(overrides: Partial<Document> = {}): Document {
   return {
     id: "doc_wi_1",
     workflowRunId: "run_1",
@@ -149,7 +208,8 @@ function document(): Document {
     currentVersionId: "docv_1",
     currentMarkdownArtifactId: "art_1",
     createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z"
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides
   };
 }
 

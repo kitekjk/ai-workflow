@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleDot,
-  Clipboard,
   Cpu,
   ExternalLink,
   FileText,
@@ -14,7 +13,6 @@ import {
   RotateCcw,
   ShieldCheck,
   StepForward,
-  Terminal,
   Timer,
   UserRound,
 } from 'lucide-react'
@@ -34,14 +32,15 @@ import {
 } from './data/mockWorkflow'
 import {
   approveApiGate,
+  cancelApiJob,
   defaultRunId,
   defaultActorEmail,
   fetchApiDashboard,
-  fetchApiRunnerOnboarding,
-  pauseApiRunner,
   recordApiFeedback,
   requestApiRevision,
-  resumeApiRunner,
+  requestApiTaskRevision,
+  retryApiJob,
+  retryApiTask,
   runApiFullSlice,
   runApiLocalRunnerDrain,
   seedApiRun,
@@ -49,8 +48,6 @@ import {
   tickApiRun,
   type ApiActionResult,
   type DashboardProjectSummary,
-  type RunnerOnboardingSummary,
-  type RunnerStatusSummary,
 } from './data/workflowApi'
 
 const stateLabels: Record<WorkState, string> = {
@@ -63,73 +60,8 @@ const stateLabels: Record<WorkState, string> = {
 }
 
 const visibleStates: WorkState[] = ['running', 'failed', 'waiting_approval', 'completed']
+const retryableJobStatuses = new Set(['failed', 'canceled', 'skipped'])
 const actorEmailStorageKey = 'workflow-dashboard-actor-email'
-const initialRunnerStatuses: RunnerStatusSummary[] = [
-  {
-    id: 'runner-planner-laptop',
-    owner: 'planner@example.com',
-    mode: 'local',
-    status: 'busy',
-    capacity: '1/1 slots',
-    claim: 'runner capacity full',
-    capabilities: 'document.generate, document.evaluate',
-    engines: 'codex',
-    heartbeat: '09:00:00',
-  },
-  {
-    id: 'managed-router-a',
-    owner: 'Workflow API',
-    mode: 'managed',
-    status: 'online',
-    capacity: '0/1 slots',
-    claim: 'no available job',
-    capabilities: 'workflow.route, workflow.fanout',
-    engines: 'claude',
-    heartbeat: '09:00:04',
-  },
-]
-const initialRunnerOnboarding: RunnerOnboardingSummary = {
-  runnerId: 'runner-dashboard-example-com-pc',
-  ownerEmail: defaultActorEmail,
-  apiBaseUrl: '/api',
-  mode: 'local',
-  defaultEngine: 'codex',
-  capabilities: [
-    'document.generate',
-    'document.evaluate',
-    'document.revise',
-    'workflow.route',
-    'workflow.fanout',
-    'implementation.open_pr',
-    'implementation.update_pr',
-    'implementation.collect_pr_status',
-  ],
-  engines: ['codex', 'claude'],
-  environment: {
-    WORKFLOW_API_BASE_URL: '/api',
-    LOCAL_RUNNER_ID: 'runner-dashboard-example-com-pc',
-    LOCAL_RUNNER_OWNER_EMAIL: defaultActorEmail,
-    LOCAL_RUNNER_MODE: 'local',
-    LOCAL_RUNNER_CAPABILITIES: 'document.generate,document.evaluate,document.revise,workflow.route,workflow.fanout,implementation.open_pr,implementation.update_pr,implementation.collect_pr_status',
-    LOCAL_RUNNER_ENGINES: 'codex,claude',
-    RUNNER_ENGINE: 'codex',
-    LOCAL_RUNNER_WORKSPACE_ROOT: '.runner-workspaces',
-    LOCAL_RUNNER_MAX_JOBS: '6',
-    GITHUB_CLONE_URL: 'https://github.com/org/service-repo.git',
-  },
-  powershellSetup: [
-    '$env:WORKFLOW_API_BASE_URL="/api"',
-    `$env:LOCAL_RUNNER_OWNER_EMAIL="${defaultActorEmail}"`,
-    '$env:LOCAL_RUNNER_WORKSPACE_ROOT=".runner-workspaces"',
-    '$env:LOCAL_RUNNER_MAX_JOBS="6"',
-  ],
-  commands: [
-    { label: 'Install', command: 'npm install' },
-    { label: 'Doctor', command: 'npm run doctor:local-runner' },
-    { label: 'Drain', command: 'npm run start:local-runner' },
-  ],
-  requirements: ['Codex or Claude CLI available on this PC.'],
-}
 
 function initialActorEmail() {
   try {
@@ -144,8 +76,6 @@ function App() {
   const [events, setEvents] = useState<ExecutionEvent[]>(() => structuredClone(initialEvents))
   const [workflows, setWorkflows] = useState<WorkflowRunSummary[]>(() => structuredClone(mockWorkflowCatalog))
   const [summary, setSummary] = useState<DashboardProjectSummary>(() => ({ ...mockProjectSummary }))
-  const [runners, setRunners] = useState<RunnerStatusSummary[]>(() => structuredClone(initialRunnerStatuses))
-  const [runnerOnboarding, setRunnerOnboarding] = useState<RunnerOnboardingSummary>(() => structuredClone(initialRunnerOnboarding))
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(mockWorkflowCatalog[0].id)
   const [selectedId, setSelectedId] = useState(initialWorkItems[4].id)
   const [paused, setPaused] = useState(false)
@@ -155,6 +85,7 @@ function App() {
   const [apiStatus, setApiStatus] = useState('Mock snapshot loaded')
   const [apiRunId, setApiRunId] = useState(defaultRunId)
   const [actorEmail, setActorEmail] = useState(initialActorEmail)
+  const [revisionTargetId, setRevisionTargetId] = useState('')
 
   const selectedWorkflow =
     workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? workflows[0] ?? mockWorkflowCatalog[0]
@@ -162,23 +93,30 @@ function App() {
   const visibleItems = useMemo(() => items.filter((item) => visibleItemIds.has(item.id)), [items, visibleItemIds])
   const visibleEvents = useMemo(() => events.filter((event) => visibleItemIds.has(event.itemId)), [events, visibleItemIds])
   const selected = visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0] ?? items[0]
+  const visibleItemById = useMemo(() => new Map(visibleItems.map((item) => [item.id, item])), [visibleItems])
   const counts = useMemo(() => summarize(visibleItems), [visibleItems])
   const progress = visibleItems.length > 0 ? Math.round((counts.completed / visibleItems.length) * 100) : 0
   const selectedEvents = visibleEvents.filter((event) => event.itemId === selected.id)
   const selectedDocumentId = selected.documentId ?? (selected.itemKind !== 'job' ? selected.id : undefined)
   const selectedApprovalGateId = selected.approvalGateId ?? (selectedDocumentId ? `gate_${selectedDocumentId}` : undefined)
-  const runnerDetail = useMemo(() => summarizeRunners(runners), [runners])
   const visibleTasks = useMemo(() => visibleItems.filter((item) => item.itemKind !== 'job'), [visibleItems])
   const deliveryDetail = useMemo(() => summarizeDelivery(visibleTasks), [visibleTasks])
   const selectedJobCount = selected.jobHistory?.length ?? 0
   const currentActorEmail = actorEmail.trim() || defaultActorEmail
+  const selectedApiRetryableJobId = apiMode
+    ? [...(selected.jobHistory ?? [])].reverse().find((job) => retryableJobStatuses.has(job.status))?.id
+    : undefined
+  const selectedApiJobId = apiMode
+    ? selected.jobHistory?.at(-1)?.id ?? (selected.agentJobId !== 'not-started' ? selected.agentJobId : undefined)
+    : undefined
+  const selectedApiTaskId = apiMode && selected.itemKind !== 'job' ? selected.id : undefined
+  const revisionTargetOptions = useMemo(() => revisionTargetsFor(selected, visibleItemById), [selected, visibleItemById])
+  const selectedRevisionTargetId = revisionTargetOptions.some((item) => item.id === revisionTargetId)
+    ? revisionTargetId
+    : revisionTargetOptions[0]?.id
 
   function updateActorEmail(value: string) {
     setActorEmail(value)
-    setRunnerOnboarding((current) => ({
-      ...current,
-      ownerEmail: value || defaultActorEmail,
-    }))
 
     try {
       window.localStorage.setItem(actorEmailStorageKey, value)
@@ -206,7 +144,6 @@ function App() {
     setEvents(structuredClone(initialEvents))
     setWorkflows(structuredClone(mockWorkflowCatalog))
     setSummary({ ...mockProjectSummary })
-    setRunners(structuredClone(initialRunnerStatuses))
     setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId('be-spec-002')
     setPaused(false)
@@ -294,7 +231,6 @@ function App() {
     setEvents(structuredClone(initialEvents))
     setWorkflows(structuredClone(mockWorkflowCatalog))
     setSummary({ ...mockProjectSummary })
-    setRunners(structuredClone(initialRunnerStatuses))
     setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId(initialWorkItems[4].id)
     setPaused(false)
@@ -311,14 +247,11 @@ function App() {
     try {
       const actionResult = await action()
       const nextRunId = actionResult?.runId ?? apiRunId
-      const data = await fetchApiDashboard(nextRunId)
-      const onboarding = await fetchApiRunnerOnboarding(currentActorEmail)
+      const data = await fetchApiDashboard(nextRunId, currentActorEmail)
       setItems(data.items)
       setEvents(data.events)
       setWorkflows(data.workflows)
       setSummary(data.summary)
-      setRunners(data.runners)
-      setRunnerOnboarding(onboarding)
       setApiRunId(data.summary.runId)
       setSelectedWorkflowId(data.workflows[0]?.id ?? '')
       setSelectedId((current) => data.items.find((item) => item.id === current)?.id ?? data.items[0]?.id ?? '')
@@ -372,6 +305,45 @@ function App() {
     })
   }
 
+  function cancelSelectedJobFromApi() {
+    if (!selectedApiJobId) return
+    void runApiAction('Cancel Job', async () => {
+      await cancelApiJob(selectedApiJobId, currentActorEmail)
+      return { runId: apiRunId }
+    })
+  }
+
+  function retrySelectedJobFromApi() {
+    if (!selectedApiRetryableJobId || selected.state !== 'failed') return
+    void runApiAction('Retry Job', async () => {
+      await retryApiJob(selectedApiRetryableJobId, currentActorEmail)
+      return { runId: apiRunId }
+    })
+  }
+
+  function retrySelectedTaskFromApi() {
+    if (!selectedApiTaskId || selected.state !== 'failed') return
+    void runApiAction('Retry Task', async () => {
+      await retryApiTask(selectedApiTaskId, currentActorEmail)
+      return { runId: apiRunId }
+    })
+  }
+
+  function requestTaskRevisionFromApi() {
+    if (!selectedApiTaskId || !selectedRevisionTargetId) return
+    const target = revisionTargetOptions.find((item) => item.id === selectedRevisionTargetId)
+
+    void runApiAction('Send Back', async () => {
+      await requestApiTaskRevision(
+        selectedApiTaskId,
+        selectedRevisionTargetId,
+        currentActorEmail,
+        `Manual revision requested from ${selected.title} to ${target?.title ?? selectedRevisionTargetId}.`,
+      )
+      return { runId: apiRunId }
+    })
+  }
+
   function passQualityFromApi() {
     void runApiAction('Quality Pass', async () => {
       await setApiQualityPasses(true)
@@ -388,25 +360,6 @@ function App() {
 
   function runFullSliceFromApi() {
     void runApiAction('Full API Slice', () => runApiFullSlice(currentActorEmail))
-  }
-
-  function pauseRunnerFromApi(runnerId: string) {
-    void runApiAction('Pause Runner', async () => {
-      await pauseApiRunner(runnerId)
-      return { runId: apiRunId }
-    })
-  }
-
-  function resumeRunnerFromApi(runnerId: string) {
-    void runApiAction('Resume Runner', async () => {
-      await resumeApiRunner(runnerId)
-      return { runId: apiRunId }
-    })
-  }
-
-  function copyOnboardingText(value: string) {
-    void navigator.clipboard?.writeText(value)
-    setApiStatus('Copied runner setup')
   }
 
   return (
@@ -444,16 +397,21 @@ function App() {
         <button type="button" onClick={startDemoRun}>
           <Play size={16} /> Start Demo Run
         </button>
-        <button type="button" onClick={advanceStep} disabled={paused}>
+        <button type="button" onClick={advanceStep} disabled={paused || apiMode}>
           <StepForward size={16} /> Advance Step
         </button>
-        <button type="button" onClick={failSelected}>
+        <button type="button" onClick={failSelected} disabled={apiMode}>
           <AlertTriangle size={16} /> Fail Selected
         </button>
-        <button type="button" onClick={retrySelected}>
+        <button type="button" onClick={retrySelected} disabled={apiMode}>
           <RefreshCcw size={16} /> Retry Selected
         </button>
-        <button type="button" onClick={() => setPaused((value) => !value)} className={paused ? 'is-paused' : ''}>
+        <button
+          type="button"
+          onClick={() => setPaused((value) => !value)}
+          className={paused ? 'is-paused' : ''}
+          disabled={apiMode}
+        >
           {paused ? <Play size={16} /> : <Pause size={16} />} Toggle Pause
         </button>
         <button type="button" onClick={resetDemo}>
@@ -498,101 +456,52 @@ function App() {
         <button type="button" onClick={approveFromApi} disabled={apiBusy || !apiMode || !selectedApprovalGateId}>
           <CheckCircle2 size={16} /> Approve
         </button>
+        <button type="button" onClick={cancelSelectedJobFromApi} disabled={apiBusy || !apiMode || !selectedApiJobId}>
+          <AlertTriangle size={16} /> Cancel Job
+        </button>
+        <button
+          type="button"
+          onClick={retrySelectedTaskFromApi}
+          disabled={apiBusy || !apiMode || !selectedApiTaskId || !selectedApiRetryableJobId || selected.state !== 'failed'}
+        >
+          <RefreshCcw size={16} /> Retry Task
+        </button>
+        <button
+          type="button"
+          onClick={retrySelectedJobFromApi}
+          disabled={apiBusy || !apiMode || !selectedApiRetryableJobId || selected.state !== 'failed'}
+        >
+          <RefreshCcw size={16} /> Retry Job
+        </button>
+        <label className="target-field">
+          <GitBranch size={15} />
+          <span>Target</span>
+          <select
+            value={selectedRevisionTargetId ?? ''}
+            onChange={(event) => setRevisionTargetId(event.target.value)}
+            disabled={apiBusy || !apiMode || revisionTargetOptions.length === 0}
+          >
+            {revisionTargetOptions.length > 0 ? (
+              revisionTargetOptions.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.artifactType} / {item.jiraKey}
+                </option>
+              ))
+            ) : (
+              <option value="">No upstream</option>
+            )}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={requestTaskRevisionFromApi}
+          disabled={apiBusy || !apiMode || !selectedApiTaskId || !selectedRevisionTargetId}
+        >
+          <RotateCcw size={16} /> Send Back
+        </button>
         <span className="control-status">
           {apiBusy ? 'API request running' : apiMode ? apiStatus : paused ? 'Paused' : demoStarted ? 'Demo run active' : apiStatus}
         </span>
-      </section>
-
-      <section className="panel runner-panel" aria-label="Runner status">
-        <PanelTitle icon={<Cpu size={18} />} title="Runner Status" detail={runnerDetail} />
-        <div className="runner-list">
-          {runners.length > 0 ? (
-            runners.map((runner) => (
-              <div className={`runner-row ${runner.status}`} key={runner.id}>
-                <span className="runner-status-cell">
-                  <span className="runner-dot" />
-                  <strong>{runner.id}</strong>
-                </span>
-                <span>{runner.owner}</span>
-                <code>{runner.mode}</code>
-                <span>{runner.status}</span>
-                <span>{runner.capacity}</span>
-                <span title={runner.claim}>{runner.claim}</span>
-                <span>{runner.engines}</span>
-                <span>{runner.capabilities}</span>
-                <time>{runner.heartbeat}</time>
-                <span className="runner-actions">
-                  <button
-                    type="button"
-                    onClick={() => pauseRunnerFromApi(runner.id)}
-                    disabled={apiBusy || !apiMode || runner.status === 'disabled'}
-                    title="Pause runner claims"
-                    aria-label={`Pause ${runner.id}`}
-                  >
-                    <Pause size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => resumeRunnerFromApi(runner.id)}
-                    disabled={apiBusy || !apiMode || runner.status !== 'disabled'}
-                    title="Resume runner claims"
-                    aria-label={`Resume ${runner.id}`}
-                  >
-                    <Play size={14} />
-                  </button>
-                </span>
-              </div>
-            ))
-          ) : (
-            <p className="runner-empty">No runners registered.</p>
-          )}
-        </div>
-      </section>
-
-      <section className="panel runner-onboarding-panel" aria-label="Local runner onboarding">
-        <PanelTitle icon={<Terminal size={18} />} title="Local Runner Onboarding" detail={runnerOnboarding.runnerId} />
-        <div className="onboarding-grid">
-          <div className="onboarding-env">
-            {Object.entries(runnerOnboarding.environment).slice(0, 8).map(([key, value]) => (
-              <button
-                type="button"
-                className="env-row"
-                key={key}
-                onClick={() => copyOnboardingText(`$env:${key}=${JSON.stringify(value)}`)}
-                title={`Copy ${key}`}
-              >
-                <span>{key}</span>
-                <code>{value}</code>
-                <Clipboard size={14} />
-              </button>
-            ))}
-          </div>
-          <div className="onboarding-commands">
-            <button
-              type="button"
-              className="setup-command"
-              onClick={() => copyOnboardingText(runnerOnboarding.powershellSetup.join('\n'))}
-              title="Copy PowerShell setup"
-            >
-              <span>PowerShell</span>
-              <code>{runnerOnboarding.powershellSetup.slice(0, 3).join('  ')}</code>
-              <Clipboard size={14} />
-            </button>
-            {runnerOnboarding.commands.map((command) => (
-              <button
-                type="button"
-                className="command-row"
-                key={`${command.label}-${command.command}`}
-                onClick={() => copyOnboardingText(command.command)}
-                title={`Copy ${command.label}`}
-              >
-                <span>{command.label}</span>
-                <code>{command.command}</code>
-                <Clipboard size={14} />
-              </button>
-            ))}
-          </div>
-        </div>
       </section>
 
       <section className="workflow-browser" aria-label="Workflow list and connected execution map">
@@ -648,57 +557,6 @@ function App() {
       </section>
 
       <section className="content-grid">
-        <section className="panel tree-panel" aria-label="Workflow execution tree">
-          <PanelTitle
-            icon={<GitBranch size={18} />}
-            title="Workflow Execution Tree"
-            detail="PRD -> HLD -> LLD -> Spec -> Code tasks"
-          />
-          <div className="tree-table" role="table">
-            <div className="tree-header" role="row">
-              <span>Work item</span>
-              <span>State</span>
-              <span>Latest job</span>
-              <span>Score</span>
-              <span>Jobs</span>
-              <span>PR</span>
-              <span>Time</span>
-            </div>
-            <div className="tree-body">
-              {visibleItems.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={`tree-row ${item.id === selected.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedId(item.id)}
-                  role="row"
-                >
-                  <span className="tree-title" style={{ paddingLeft: `${item.depth * 22 + 8}px` }}>
-                    <span className={`branch-dot ${item.state}`} />
-                    <span>
-                      <strong>{item.title}</strong>
-                      <small>
-                        {item.artifactType} / {item.jiraKey} / {item.owner}
-                      </small>
-                    </span>
-                  </span>
-                  <StatusBadge state={item.state} />
-                  <code>{item.agentJobId}</code>
-                  <span className="score">{formatScore(item.qualityScore)}</span>
-                  <span>{item.jobHistory?.length ?? item.retryCount + 1}</span>
-                  <span className="link-pill">
-                    <GitPullRequest size={14} /> {item.githubPr}
-                  </span>
-                  <span className="time-cell">
-                    {item.startedAt} / {item.finishedAt ?? '--'}
-                  </span>
-                  {item.error ? <span className="row-error">{item.error}</span> : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
         <aside className="panel detail-panel" aria-label="Selected work item details">
           <PanelTitle icon={<FileText size={18} />} title="Selected Item" detail={selected.jiraKey} />
           <div className="detail-heading">
@@ -1056,25 +914,36 @@ function documentTypeRank(document: WorkItem): number {
   return 6
 }
 
-function summarizeRunners(runners: RunnerStatusSummary[]): string {
-  if (runners.length === 0) {
-    return '0 connected'
+function revisionTargetsFor(selected: WorkItem, itemsById: Map<string, WorkItem>): WorkItem[] {
+  const targets: WorkItem[] = []
+  const seen = new Set<string>()
+
+  if (isRevisableTask(selected)) {
+    targets.push(selected)
   }
 
-  const counts = runners.reduce<Record<string, number>>((accumulator, runner) => {
-    accumulator[runner.status] = (accumulator[runner.status] ?? 0) + 1
-    return accumulator
-  }, {})
-  const orderedStatuses = ['busy', 'offline', 'disabled', 'online']
-  const knownParts = orderedStatuses
-    .filter((status) => counts[status])
-    .map((status) => `${counts[status]} ${status}`)
-  const otherParts = Object.keys(counts)
-    .filter((status) => !orderedStatuses.includes(status))
-    .sort()
-    .map((status) => `${counts[status]} ${status}`)
+  let parentId = selected.parentId
 
-  return `${runners.length} connected / ${[...knownParts, ...otherParts].join(' / ')}`
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId)
+    const parent = itemsById.get(parentId)
+
+    if (!parent) {
+      break
+    }
+
+    if (isRevisableTask(parent)) {
+      targets.push(parent)
+    }
+
+    parentId = parent.parentId
+  }
+
+  return targets
+}
+
+function isRevisableTask(item: WorkItem): boolean {
+  return item.itemKind !== 'job' && item.taskKind !== 'code'
 }
 
 function StatusBadge({ state }: { state: WorkState }) {

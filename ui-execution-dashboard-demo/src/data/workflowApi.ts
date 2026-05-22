@@ -223,6 +223,15 @@ type WorkflowRunTreeResponse = WorkflowRunResponse & {
   edges?: WorkflowRunTreeEdge[]
 }
 
+type WorkflowDashboardResponse = WorkflowRunResponse & {
+  tree?: WorkflowRunTreeResponse
+  currentViews: DocumentCurrentResponse[]
+  histories: DocumentHistoryResponse[]
+  events?: WorkflowEvent[]
+  runners?: WorkflowRunner[]
+  runnerOnboarding?: RunnerOnboardingSummary
+}
+
 type DocumentCurrentResponse = {
   document: WorkflowDocument
   currentVersion: DocumentVersion | null
@@ -254,6 +263,7 @@ export type ApiDashboardData = {
   items: WorkItem[]
   events: ExecutionEvent[]
   runners: RunnerStatusSummary[]
+  runnerOnboarding?: RunnerOnboardingSummary
 }
 
 export type RunnerStatusSummary = {
@@ -308,10 +318,30 @@ export type LocalRunnerDrainSummary = {
   }>
 }
 
-export async function fetchApiDashboard(runId = defaultRunId): Promise<ApiDashboardData> {
-  const [runResponse, treeResponse] = await Promise.all([
+export async function fetchApiDashboard(
+  runId = defaultRunId,
+  ownerEmail = defaultActorEmail,
+): Promise<ApiDashboardData> {
+  const dashboardBundle = await fetchApiDashboardBundle(runId, ownerEmail)
+
+  if (dashboardBundle) {
+    const runners = dashboardBundle.runners ?? await fetchApiRunners()
+
+    return mapApiDashboard(
+      runResponseFromDashboardBundle(dashboardBundle),
+      dashboardBundle.currentViews,
+      dashboardBundle.histories,
+      dashboardBundle.events ?? [],
+      runners,
+      dashboardBundle.tree,
+      dashboardBundle.runnerOnboarding,
+    )
+  }
+
+  const [runResponse, treeResponse, runners] = await Promise.all([
     apiGet<WorkflowRunResponse>(`/workflow-runs/${encodeURIComponent(runId)}`),
     fetchApiRunTree(runId),
+    fetchApiRunners(),
   ])
   const currentViews = await Promise.all(
     runResponse.documents.map((document) =>
@@ -324,7 +354,6 @@ export async function fetchApiDashboard(runId = defaultRunId): Promise<ApiDashbo
     ),
   )
   const ledgerEvents = await fetchApiRunEvents(runResponse.run.id)
-  const runners = await fetchApiRunners()
 
   return mapApiDashboard(runResponse, currentViews, histories, ledgerEvents, runners, treeResponse)
 }
@@ -366,6 +395,41 @@ export async function requestApiRevision(documentId: string, actorEmail = defaul
 export async function approveApiGate(approvalGateId: string, actorEmail = defaultActorEmail): Promise<void> {
   await apiPost(`/approval-gates/${encodeURIComponent(approvalGateId)}/approve`, {
     requestedBy: actorEmail,
+  })
+}
+
+export async function cancelApiJob(jobId: string, actorEmail = defaultActorEmail): Promise<void> {
+  await apiPost(`/runner-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    requestedBy: actorEmail,
+    reason: 'Canceled from the workflow dashboard.',
+  })
+}
+
+export async function retryApiJob(jobId: string, actorEmail = defaultActorEmail): Promise<void> {
+  await apiPost(`/runner-jobs/${encodeURIComponent(jobId)}/retry`, {
+    requestedBy: actorEmail,
+    reason: 'Retried from the workflow dashboard.',
+  })
+}
+
+export async function retryApiTask(taskId: string, actorEmail = defaultActorEmail): Promise<void> {
+  await apiPost(`/workflow-tasks/${encodeURIComponent(taskId)}/retry`, {
+    requestedBy: actorEmail,
+    reason: 'Retried task from the workflow dashboard.',
+  })
+}
+
+export async function requestApiTaskRevision(
+  sourceTaskId: string,
+  targetTaskId: string,
+  actorEmail = defaultActorEmail,
+  feedback = 'Manual upstream revision requested from the workflow dashboard.',
+): Promise<void> {
+  await apiPost(`/workflow-tasks/${encodeURIComponent(sourceTaskId)}/request-revision`, {
+    targetTaskId,
+    requestedBy: actorEmail,
+    reason: 'Manual upstream revision requested from the workflow dashboard.',
+    feedback,
   })
 }
 
@@ -670,6 +734,41 @@ async function fetchApiRunTree(runId: string): Promise<WorkflowRunTreeResponse |
   }
 }
 
+async function fetchApiDashboardBundle(
+  runId: string,
+  ownerEmail: string,
+): Promise<WorkflowDashboardResponse | undefined> {
+  try {
+    const query = new URLSearchParams({ ownerEmail })
+    const bundle = await apiGet<WorkflowDashboardResponse>(
+      `/workflow-runs/${encodeURIComponent(runId)}/dashboard?${query.toString()}`,
+    )
+
+    if (
+      !bundle.run ||
+      !Array.isArray(bundle.jobs) ||
+      !Array.isArray(bundle.documents) ||
+      !Array.isArray(bundle.currentViews) ||
+      !Array.isArray(bundle.histories)
+    ) {
+      return undefined
+    }
+
+    return bundle
+  } catch {
+    return undefined
+  }
+}
+
+function runResponseFromDashboardBundle(bundle: WorkflowDashboardResponse): WorkflowRunResponse {
+  return {
+    run: bundle.run,
+    tasks: bundle.tasks,
+    jobs: bundle.jobs,
+    documents: bundle.documents,
+  }
+}
+
 async function fetchApiRunners(): Promise<WorkflowRunner[]> {
   try {
     const response = await apiGet<WorkflowRunnersResponse>('/runners')
@@ -705,6 +804,7 @@ function mapApiDashboard(
   ledgerEvents: WorkflowEvent[],
   runners: WorkflowRunner[],
   treeResponse?: WorkflowRunTreeResponse,
+  runnerOnboarding?: RunnerOnboardingSummary,
 ): ApiDashboardData {
   const workflowTreeEdges = treeResponse?.edges ?? []
   const apiTasks = applyWorkflowTreeParentEdges(
@@ -744,6 +844,7 @@ function mapApiDashboard(
     items,
     events,
     runners: runners.map(mapRunnerSummary),
+    runnerOnboarding,
   }
 }
 
@@ -1068,7 +1169,8 @@ function mapDocumentItem(
   const latestJob = jobs.at(-1)
   const firstJob = jobs[0]
   const documentState = mapDocumentState(document.status, current.approvalGate?.status)
-  const state = task && documentState === 'pending' ? mapTaskState(task.status, jobs) : documentState
+  const taskState = task ? mapTaskState(task.status, jobs) : undefined
+  const state = taskDocumentDisplayState(documentState, taskState)
 
   return {
     id: task?.id ?? document.workflowTaskId ?? document.id,
@@ -1227,6 +1329,12 @@ function itemIdForLedgerEvent(
 
   if (documentId && documentIds.has(documentId)) {
     return documentToItemId.get(documentId) ?? documentId
+  }
+
+  const taskId = stringMetadata(event.metadata.taskId)
+
+  if (taskId) {
+    return taskId
   }
 
   return fallbackId
@@ -1478,6 +1586,22 @@ function mapTaskState(status: string, jobs: WorkflowJob[]): WorkState {
   }
 
   return 'pending'
+}
+
+function taskDocumentDisplayState(documentState: WorkState, taskState: WorkState | undefined): WorkState {
+  if (!taskState) {
+    return documentState
+  }
+
+  if (taskState === 'running' || taskState === 'blocked' || taskState === 'failed') {
+    return taskState
+  }
+
+  if (documentState === 'pending') {
+    return taskState
+  }
+
+  return documentState
 }
 
 function taskGateResult(state: WorkState): WorkItem['gateResult'] {
@@ -1849,26 +1973,12 @@ function groupWorkflowJobsByTask(
   documents: WorkflowDocument[],
   workflowTreeEdges: WorkflowRunTreeEdge[] = [],
 ): Map<string, WorkflowJob[]> {
-  const jobsByDocumentId = groupWorkflowJobsByDocument(jobs, documents)
   const taskIdByJobId = createWorkflowTaskJobEdgeMap(tasks, jobs, workflowTreeEdges)
-  const documentToTaskId = new Map<string, string>()
-
-  for (const task of tasks) {
-    if (task.currentDocumentId) {
-      documentToTaskId.set(task.currentDocumentId, task.id)
-    }
-  }
-
-  for (const document of documents) {
-    if (document.workflowTaskId) {
-      documentToTaskId.set(document.id, document.workflowTaskId)
-    }
-  }
-
+  const taskIds = new Set(tasks.map((task) => task.id))
   const jobsByTaskId = new Map<string, WorkflowJob[]>()
 
   for (const job of jobs) {
-    const taskId = taskIdByJobId.get(job.id) ?? job.taskId ?? documentToTaskId.get(jobDocumentId(job, documents, null) ?? '')
+    const taskId = taskIdByJobId.get(job.id) ?? (job.taskId && taskIds.has(job.taskId) ? job.taskId : undefined)
 
     if (!taskId) {
       continue
@@ -1879,14 +1989,31 @@ function groupWorkflowJobsByTask(
     jobsByTaskId.set(taskId, taskJobs)
   }
 
-  for (const [documentId, documentJobs] of jobsByDocumentId) {
-    const taskId = documentToTaskId.get(documentId)
+  if (!jobsByTaskId.size) {
+    const jobsByDocumentId = groupWorkflowJobsByDocument(jobs, documents)
+    const documentToTaskId = new Map<string, string>()
 
-    if (!taskId || jobsByTaskId.has(taskId)) {
-      continue
+    for (const task of tasks) {
+      if (task.currentDocumentId) {
+        documentToTaskId.set(task.currentDocumentId, task.id)
+      }
     }
 
-    jobsByTaskId.set(taskId, documentJobs)
+    for (const document of documents) {
+      if (document.workflowTaskId) {
+        documentToTaskId.set(document.id, document.workflowTaskId)
+      }
+    }
+
+    for (const [documentId, documentJobs] of jobsByDocumentId) {
+      const taskId = documentToTaskId.get(documentId)
+
+      if (!taskId) {
+        continue
+      }
+
+      jobsByTaskId.set(taskId, documentJobs)
+    }
   }
 
   for (const taskJobs of jobsByTaskId.values()) {
