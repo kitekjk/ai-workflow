@@ -23,6 +23,7 @@ export class InMemoryDocumentRepository implements DocumentRepository {
     const document: Document = {
       id: `doc_${this.documentSequence++}`,
       workflowRunId: input.workflowRunId,
+      workflowTaskId: input.workflowTaskId,
       parentDocumentId: input.parentDocumentId,
       type: input.type,
       sourceKey: input.sourceKey,

@@ -41,7 +41,7 @@ describe("MysqlRepositoryTransitionWorkReader", () => {
       sql: expect.stringContaining("FROM workflow_job_result result"),
       params: expect.arrayContaining([
         "workflow.engine_transition",
-        "2026-05-21T00:02:00.000Z",
+        "2026-05-21 00:02:00.000",
         "prd.evaluate_quality"
       ])
     });
@@ -59,9 +59,9 @@ describe("MysqlRepositoryTransitionWorkReader", () => {
         "run_1",
         "claimed",
         "transition-worker-a",
-        "2026-05-21T00:02:00.000Z",
-        "2026-05-21T00:02:30.000Z",
-        "2026-05-21T00:02:00.000Z"
+        "2026-05-21 00:02:00.000",
+        "2026-05-21 00:02:30.000",
+        "2026-05-21 00:02:00.000"
       ]
     });
   });
@@ -89,9 +89,96 @@ describe("MysqlRepositoryTransitionWorkReader", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("retries the next visible result after losing a claim race", async () => {
+    const database = new FakeMysqlDatabase();
+    const reader = new MysqlRepositoryTransitionWorkReader(database, {
+      workerId: "transition-worker-a"
+    });
+    database.queueRows([pendingResultRow({ id: "job_1", result_id: "result_1", result_job_id: "job_1" })]);
+    database.queueResult({ affectedRows: 0 });
+    database.queueRows([pendingResultRow({ id: "job_2", result_id: "result_2", result_job_id: "job_2" })]);
+    database.queueResult({ affectedRows: 1 });
+
+    const pending = await reader.nextPendingJobResult({
+      now: new Date("2026-05-21T00:02:00.000Z")
+    });
+
+    expect(pending?.job.id).toBe("job_2");
+    expect(pending?.jobResult.id).toBe("result_2");
+    expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("FROM workflow_job_result result"),
+      expect.stringContaining("INSERT INTO workflow_transition_claim"),
+      expect.stringContaining("FROM workflow_job_result result"),
+      expect.stringContaining("INSERT INTO workflow_transition_claim")
+    ]);
+  });
+
+  it("lets parallel transition workers claim distinct results under contention", async () => {
+    const workerCount = 8;
+    const now = new Date("2026-05-21T00:02:00.000Z");
+    const processedAt = new Date("2026-05-21T00:03:00.000Z");
+    const database = new ConcurrentTransitionMysqlDatabase(
+      Array.from({ length: workerCount }, (_, index) =>
+        pendingResultRow({
+          id: `job_${index + 1}`,
+          result_id: `result_${index + 1}`,
+          result_job_id: `job_${index + 1}`,
+          result_created_at: `2026-05-21T00:01:0${index}.000Z`
+        })
+      )
+    );
+    const readers = Array.from({ length: workerCount }, (_, index) =>
+      new MysqlRepositoryTransitionWorkReader(database, {
+        workerId: `transition-worker-${index + 1}`,
+        leaseMs: 30_000,
+        claimAttemptLimit: workerCount
+      })
+    );
+
+    const pendingResults = await Promise.all(
+      readers.map((reader) =>
+        reader.nextPendingJobResult({
+          now
+        })
+      )
+    );
+    const claimedResults = pendingResults.filter(
+      (pending): pending is NonNullable<(typeof pendingResults)[number]> => pending !== undefined
+    );
+    const claimedResultIds = claimedResults.map((pending) => pending.jobResult.id);
+
+    expect(claimedResults).toHaveLength(workerCount);
+    expect(new Set(claimedResultIds).size).toBe(workerCount);
+    expect(claimedResultIds.sort()).toEqual([
+      "result_1",
+      "result_2",
+      "result_3",
+      "result_4",
+      "result_5",
+      "result_6",
+      "result_7",
+      "result_8"
+    ]);
+
+    await Promise.all(
+      pendingResults.map((pending, index) =>
+        pending
+          ? readers[index]?.markJobResultProcessed({
+              jobResultId: pending.jobResult.id,
+              now: processedAt
+            })
+          : Promise.resolve()
+      )
+    );
+
+    expect(database.processedResultIds().sort()).toEqual(claimedResultIds.sort());
+  });
+
   it("marks a claimed transition result as processed", async () => {
     const database = new FakeMysqlDatabase();
-    const reader = new MysqlRepositoryTransitionWorkReader(database);
+    const reader = new MysqlRepositoryTransitionWorkReader(database, {
+      workerId: "transition-worker-a"
+    });
     database.queueResult({ affectedRows: 1 });
 
     await reader.markJobResultProcessed({
@@ -103,12 +190,16 @@ describe("MysqlRepositoryTransitionWorkReader", () => {
       sql: expect.stringContaining("UPDATE workflow_transition_claim"),
       params: [
         "processed",
-        "2026-05-21T00:03:00.000Z",
-        "2026-05-21T00:03:00.000Z",
-        "result_1"
+        "2026-05-21 00:03:00.000",
+        "2026-05-21 00:03:00.000",
+        "result_1",
+        "transition-worker-a",
+        "claimed"
       ]
     });
     expect(database.statements[0]?.sql).toContain("WHERE workflow_job_result_id = ?");
+    expect(database.statements[0]?.sql).toContain("claimed_by_worker_id = ?");
+    expect(database.statements[0]?.sql).toContain("status = ?");
   });
 });
 
@@ -168,6 +259,96 @@ function pendingResultRow(overrides: Record<string, unknown> = {}): Record<strin
     result_created_at: "2026-05-21T00:01:00.000Z",
     ...overrides
   };
+}
+
+interface TransitionClaim {
+  status: string;
+  claimedByWorkerId: string;
+  leaseExpiresAt: string;
+  processedAt?: string;
+}
+
+class ConcurrentTransitionMysqlDatabase implements MysqlDatabase {
+  readonly statements: Array<{ sql: string; params: readonly unknown[] }> = [];
+  private readonly claims = new Map<string, TransitionClaim>();
+
+  constructor(private readonly rows: Record<string, unknown>[]) {}
+
+  async execute<T = unknown>(sql: string, params: readonly unknown[] = []): Promise<[T, unknown]> {
+    const normalized = normalizeSql(sql);
+    this.statements.push({ sql: normalized, params });
+
+    if (normalized.includes("FROM workflow_job_result result")) {
+      const nowIso = stringValue(params[1]);
+      return [[this.oldestVisibleResult(nowIso)].filter(Boolean) as T, undefined];
+    }
+
+    if (normalized.includes("INSERT INTO workflow_transition_claim")) {
+      const resultId = stringValue(params[0]);
+      const claim = this.claims.get(resultId);
+      const claimedAt = stringValue(params[5]);
+
+      if (!claim || (claim.status !== "processed" && claim.leaseExpiresAt <= claimedAt)) {
+        this.claims.set(resultId, {
+          status: stringValue(params[3]),
+          claimedByWorkerId: stringValue(params[4]),
+          leaseExpiresAt: stringValue(params[6])
+        });
+        return [{ affectedRows: claim ? 2 : 1 } as T, undefined];
+      }
+
+      return [{ affectedRows: 0 } as T, undefined];
+    }
+
+    if (normalized.includes("UPDATE workflow_transition_claim")) {
+      const resultId = stringValue(params[3]);
+      const workerId = stringValue(params[4]);
+      const requiredStatus = stringValue(params[5]);
+      const claim = this.claims.get(resultId);
+
+      if (claim?.claimedByWorkerId === workerId && claim.status === requiredStatus) {
+        claim.status = stringValue(params[0]);
+        claim.processedAt = stringValue(params[1]);
+        return [{ affectedRows: 1 } as T, undefined];
+      }
+
+      return [{ affectedRows: 0 } as T, undefined];
+    }
+
+    throw new Error(`Unexpected SQL: ${normalized}`);
+  }
+
+  async getConnection(): Promise<never> {
+    throw new Error("reader does not need a transaction connection");
+  }
+
+  processedResultIds(): string[] {
+    return Array.from(this.claims.entries()).flatMap(([resultId, claim]) =>
+      claim.status === "processed" ? [resultId] : []
+    );
+  }
+
+  private oldestVisibleResult(nowIso: string): Record<string, unknown> | undefined {
+    return this.rows
+      .filter((row) => {
+        const claim = this.claims.get(stringValue(row.result_id));
+        return !claim || (claim.status !== "processed" && claim.leaseExpiresAt <= nowIso);
+      })
+      .sort((left, right) => {
+        const byCreatedAt = stringValue(left.result_created_at).localeCompare(stringValue(right.result_created_at));
+        return byCreatedAt === 0
+          ? stringValue(left.result_id).localeCompare(stringValue(right.result_id))
+          : byCreatedAt;
+      })[0];
+  }
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(`Expected string value, got: ${String(value)}`);
+  }
+
+  return value;
 }
 
 function normalizeSql(sql: string): string {

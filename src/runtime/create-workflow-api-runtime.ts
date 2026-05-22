@@ -23,7 +23,13 @@ import {
 } from "../workflow-api/workflow-transition-command";
 import { MysqlRepositoryTransitionWorkReader } from "../workflow-api/repository-transition-work-reader";
 import type { RepositoryTransitionPendingResultReader } from "../workflow-api/repository-transition-processor";
-import { createJiraIssueReaderFromEnv, createRuntimeFromEnv, type RuntimeFixture } from "./create-runtime";
+import type { WorkflowApiAuthConfig } from "../workflow-api/server";
+import {
+  createJiraIssueReaderFromEnv,
+  createRuntimeFromEnv,
+  createStubJiraIssueReader,
+  type RuntimeFixture
+} from "./create-runtime";
 
 export interface WorkflowApiRuntime {
   fixture?: RuntimeFixture;
@@ -40,7 +46,9 @@ export interface WorkflowApiRuntime {
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
   repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
+  auth?: WorkflowApiAuthConfig;
   repositoryTransitionIntervalMs?: number;
+  schedulerRecoveryIntervalMs?: number;
   internalTickIntervalMs?: number;
   runtimeStore: WorkflowRuntimeStore;
   close(): Promise<void>;
@@ -51,11 +59,15 @@ export type WorkflowRuntimeStore = "memory" | "mysql";
 export interface WorkflowApiRuntimeEnv extends NodeJS.ProcessEnv, MysqlPoolEnv {
   WORKFLOW_RUNTIME_STORE?: string;
   WORKFLOW_JOB_LEASE_MS?: string;
+  WORKFLOW_RUNNER_OFFLINE_AFTER_MS?: string;
   WORKFLOW_COMPATIBILITY_FIXTURE?: string;
   WORKFLOW_INTERNAL_TICK_MS?: string;
+  WORKFLOW_SCHEDULER_RECOVERY_MS?: string;
   WORKFLOW_REPOSITORY_TRANSITION_MS?: string;
   WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID?: string;
   WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS?: string;
+  WORKFLOW_APP_API_TOKEN?: string;
+  WORKFLOW_RUNNER_TOKENS?: string;
 }
 
 export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): WorkflowApiRuntime {
@@ -63,6 +75,7 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
   const useCompatibilityFixture = parseCompatibilityFixtureMode(env.WORKFLOW_COMPATIBILITY_FIXTURE, runtimeStore);
   const fixture = useCompatibilityFixture ? createRuntimeFromEnv(env) : undefined;
   const internalTickIntervalMs = fixture ? parseInternalTickIntervalMs(env.WORKFLOW_INTERNAL_TICK_MS) : undefined;
+  const auth = parseWorkflowApiAuthConfig(env);
 
   if (runtimeStore === "memory") {
     if (!fixture) {
@@ -73,6 +86,7 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
       fixture,
       wikiFeedbackCollector: fixture.wikiFeedbackCollector,
       internalTickIntervalMs,
+      auth,
       runtimeStore,
       close: async () => {}
     };
@@ -81,9 +95,12 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
   const database = createWorkflowMysqlPoolFromEnv(env);
   const workflowRepository = new MysqlWorkflowRepository(database);
   const documentRepository = new MysqlDocumentRepository(database);
+  const leaseMs = parseLeaseMs(env.WORKFLOW_JOB_LEASE_MS);
   const scheduler = new WorkflowScheduler(workflowRepository, {
-    leaseMs: parseLeaseMs(env.WORKFLOW_JOB_LEASE_MS)
+    leaseMs,
+    runnerOfflineAfterMs: parseRunnerOfflineAfterMs(env.WORKFLOW_RUNNER_OFFLINE_AFTER_MS, leaseMs)
   });
+  const schedulerRecoveryIntervalMs = parseSchedulerRecoveryIntervalMs(env.WORKFLOW_SCHEDULER_RECOVERY_MS);
   const snapshotMirror = fixture ? new MysqlPrdSnapshotMirror(database) : undefined;
   const snapshotLoader = fixture ? new MysqlPrdSnapshotLoader(database) : undefined;
   const readModel = new MysqlWorkflowApiReadModel(database);
@@ -100,7 +117,7 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
   const repositoryTransitionIntervalMs = fixture
     ? undefined
     : parseRepositoryTransitionIntervalMs(env.WORKFLOW_REPOSITORY_TRANSITION_MS);
-  const jiraIssueReader = !fixture && env.INTEGRATION_MODE === "real" ? createJiraIssueReaderFromEnv(env) : undefined;
+  const jiraIssueReader = !fixture ? createNoFixtureJiraIssueReader(env) : undefined;
 
   return {
     fixture,
@@ -117,7 +134,9 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     workflowResultCommand,
     workflowTransitionCommand,
     repositoryTransitionResultReader,
+    auth,
     repositoryTransitionIntervalMs,
+    schedulerRecoveryIntervalMs,
     internalTickIntervalMs,
     runtimeStore,
     close: () => closeMysqlDatabase(database)
@@ -166,6 +185,88 @@ export function parseLeaseMs(value: string | undefined): number {
   return parsed;
 }
 
+export function parseRunnerOfflineAfterMs(value: string | undefined, leaseMs = 30_000): number {
+  if (!value) {
+    return leaseMs * 2;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`WORKFLOW_RUNNER_OFFLINE_AFTER_MS must be a positive integer, got: ${value}`);
+  }
+
+  return parsed;
+}
+
+export function parseWorkflowApiAuthConfig(env: Pick<
+  WorkflowApiRuntimeEnv,
+  "WORKFLOW_APP_API_TOKEN" | "WORKFLOW_RUNNER_TOKENS"
+>): WorkflowApiAuthConfig | undefined {
+  const appToken = optionalNonEmptyString(env.WORKFLOW_APP_API_TOKEN);
+  const runnerTokens = parseRunnerTokens(env.WORKFLOW_RUNNER_TOKENS);
+
+  if (!appToken && Object.keys(runnerTokens).length === 0) {
+    return undefined;
+  }
+
+  return {
+    appToken,
+    runnerTokens: Object.keys(runnerTokens).length > 0 ? runnerTokens : undefined
+  };
+}
+
+function parseRunnerTokens(value: string | undefined): Record<string, string> {
+  const trimmed = optionalNonEmptyString(value);
+
+  if (!trimmed) {
+    return {};
+  }
+
+  if (trimmed.startsWith("{")) {
+    const parsed = JSON.parse(trimmed) as unknown;
+
+    if (!isStringRecord(parsed)) {
+      throw new Error("WORKFLOW_RUNNER_TOKENS JSON must be an object of runner id to token strings");
+    }
+
+    return parsed;
+  }
+
+  return Object.fromEntries(
+    trimmed.split(",").map((pair) => {
+      const separatorIndex = pair.indexOf(":");
+
+      if (separatorIndex < 1 || separatorIndex === pair.length - 1) {
+        throw new Error("WORKFLOW_RUNNER_TOKENS must use runnerId:token pairs");
+      }
+
+      const runnerId = pair.slice(0, separatorIndex).trim();
+      const token = pair.slice(separatorIndex + 1).trim();
+
+      if (!runnerId || !token) {
+        throw new Error("WORKFLOW_RUNNER_TOKENS must use non-empty runnerId:token pairs");
+      }
+
+      return [runnerId, token];
+    })
+  );
+}
+
+function optionalNonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item === "string" && item.length > 0)
+  );
+}
+
 function parseInternalTickIntervalMs(value: string | undefined): number | undefined {
   if (!value) {
     return 1_000;
@@ -202,6 +303,24 @@ function parseRepositoryTransitionIntervalMs(value: string | undefined): number 
   return parsed;
 }
 
+function parseSchedulerRecoveryIntervalMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return 1_000;
+  }
+
+  if (value === "0" || value === "disabled") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`WORKFLOW_SCHEDULER_RECOVERY_MS must be a positive integer, 0, or "disabled", got: ${value}`);
+  }
+
+  return parsed;
+}
+
 function parseRepositoryTransitionLeaseMs(value: string | undefined): number {
   if (!value) {
     return 30_000;
@@ -218,4 +337,8 @@ function parseRepositoryTransitionLeaseMs(value: string | undefined): number {
 
 async function closeMysqlDatabase(database: MysqlDatabase): Promise<void> {
   await database.end?.();
+}
+
+function createNoFixtureJiraIssueReader(env: WorkflowApiRuntimeEnv): JiraIssueReader {
+  return env.INTEGRATION_MODE === "real" ? createJiraIssueReaderFromEnv(env) : createStubJiraIssueReader();
 }

@@ -15,6 +15,10 @@ describe("MySQL core workflow migration", () => {
     join(process.cwd(), "migrations", "mysql", "003_workflow_transition_claim.sql"),
     "utf8"
   );
+  const taskHierarchyMigration = readFileSync(
+    join(process.cwd(), "migrations", "mysql", "004_workflow_task_hierarchy.sql"),
+    "utf8"
+  );
 
   it("creates the core workflow, runner, document, and artifact tables", () => {
     for (const table of [
@@ -89,6 +93,15 @@ describe("MySQL core workflow migration", () => {
     expect(transitionClaimMigration).toContain("claimed_by_worker_id");
     expect(transitionClaimMigration).toContain("lease_expires_at");
     expect(transitionClaimMigration).toContain("fk_workflow_transition_claim_result");
+  });
+
+  it("promotes workflow tasks above jobs and links documents to tasks", () => {
+    expect(taskHierarchyMigration).toContain("CREATE TABLE IF NOT EXISTS workflow_task");
+    expect(taskHierarchyMigration).toContain("ADD COLUMN workflow_task_id");
+    expect(taskHierarchyMigration).toContain("ADD COLUMN task_id");
+    expect(taskHierarchyMigration).toContain("fk_document_workflow_task");
+    expect(taskHierarchyMigration).toContain("fk_workflow_job_task");
+    expect(taskHierarchyMigration).toContain("backfilledFromDocumentId");
   });
 });
 

@@ -48,6 +48,9 @@ export interface GitHubPullRequestStatus {
   state: string;
   draft: boolean;
   merged: boolean;
+  branchName?: string;
+  baseBranch?: string;
+  repositoryCloneUrl?: string;
   latestCommitSha: string;
   reviewStatus: GitHubReviewStatus;
   ciStatus: GitHubCiStatus;
@@ -69,6 +72,14 @@ interface GitHubPullResponse {
   merged?: boolean;
   head: {
     sha: string;
+    ref?: string;
+    repo?: {
+      clone_url?: string;
+      full_name?: string;
+    } | null;
+  };
+  base?: {
+    ref?: string;
   };
 }
 
@@ -152,6 +163,9 @@ export class GitHubRestClient {
       state: pull.state,
       draft: pull.draft ?? false,
       merged: pull.merged ?? false,
+      ...(pull.head.ref ? { branchName: pull.head.ref } : {}),
+      ...(pull.base?.ref ? { baseBranch: pull.base.ref } : {}),
+      ...(pull.head.repo?.clone_url ? { repositoryCloneUrl: pull.head.repo.clone_url } : {}),
       latestCommitSha: pull.head.sha,
       reviewStatus: reviewStatusFor(reviews),
       ciStatus: ciStatusFor(checks),

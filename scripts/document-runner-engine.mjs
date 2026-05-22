@@ -24,6 +24,42 @@ export function buildPrompt(input) {
   const promptContract = input.promptContract ?? buildPromptContract({ jobType, documentType });
   const contractBlock = buildContractBlock(promptContract);
 
+  if (isImplementationOpenPrJob(jobType)) {
+    return [
+      "You are implementing an approved Spec and preparing its first pull request for an AI workflow system.",
+      "The target repository branch has been checked out in the current working directory when repositoryCloneUrl and branchName are present.",
+      "Use the approved Spec artifact, branch metadata, and input context to make the smallest complete implementation for this PR.",
+      "Run relevant tests when practical. Commit the change to the current branch and push it when credentials are available.",
+      "Do not rewrite workflow documents for this job; produce code changes only.",
+      languageInstruction,
+      contractBlock,
+      "Return only a JSON object with this shape:",
+      '{"status":"implemented","latestCommitSha":"...","summary":"...","artifacts":[],"generatedFiles":[]}',
+      "Omit artifacts or generatedFiles unless the job explicitly asks for file outputs.",
+      "",
+      "Input context:",
+      JSON.stringify(input, null, 2),
+    ].join("\n");
+  }
+
+  if (isImplementationUpdateJob(jobType)) {
+    return [
+      "You are updating an existing implementation pull request for an AI workflow system.",
+      "The PR branch has already been checked out in the current working directory when repositoryCloneUrl and branchName are present.",
+      "Use the feedback, failing checks, current document version, and PR metadata from the input context to make the smallest correct code change.",
+      "Run relevant tests when practical. Commit the change to the current branch and push it when credentials are available.",
+      "Do not rewrite workflow documents for this job; if the code cannot be fixed without changing the document, explain that in summary and still return the requested JSON.",
+      languageInstruction,
+      contractBlock,
+      "Return only a JSON object with this shape:",
+      '{"status":"succeeded","pullRequestNumber":1,"pullRequestUrl":"https://...","latestCommitSha":"...","summary":"...","artifacts":[],"generatedFiles":[]}',
+      "Omit artifacts or generatedFiles unless the job explicitly asks for file outputs.",
+      "",
+      "Input context:",
+      JSON.stringify(input, null, 2),
+    ].join("\n");
+  }
+
   if (isEvaluationJob(jobType)) {
     return [
       `You are evaluating a generated ${documentType} for approval readiness.`,
@@ -448,6 +484,36 @@ function outputSchemaForJob(jobType, documentType, downstreamTarget) {
     };
   }
 
+  if (isImplementationOpenPrJob(jobType)) {
+    return {
+      type: "object",
+      required: ["status", "summary"],
+      properties: {
+        status: { type: "string", enum: ["implemented", "succeeded"] },
+        latestCommitSha: { type: "string" },
+        summary: { type: "string" },
+        artifacts: { type: "array", items: { type: "object" } },
+        generatedFiles: { type: "array", items: { type: "object" } },
+      },
+    };
+  }
+
+  if (isImplementationUpdateJob(jobType)) {
+    return {
+      type: "object",
+      required: ["status", "pullRequestNumber", "pullRequestUrl", "summary"],
+      properties: {
+        status: { type: "string", enum: ["succeeded"] },
+        pullRequestNumber: { type: "integer", minimum: 1 },
+        pullRequestUrl: { type: "string" },
+        latestCommitSha: { type: "string" },
+        summary: { type: "string" },
+        artifacts: { type: "array", items: { type: "object" } },
+        generatedFiles: { type: "array", items: { type: "object" } },
+      },
+    };
+  }
+
   return {
     type: "object",
     required: isRevisionJob(jobType) ? ["status", "markdown", "summary", "revisionSummary"] : ["status", "markdown", "summary"],
@@ -473,6 +539,14 @@ function isPlanningJob(jobType) {
 
 function isRevisionJob(jobType) {
   return jobType === "prd.apply_feedback_revision" || jobType === "document.revise" || jobType.endsWith(".revise");
+}
+
+function isImplementationOpenPrJob(jobType) {
+  return jobType === "implementation.open_pr";
+}
+
+function isImplementationUpdateJob(jobType) {
+  return jobType === "implementation.update_pr";
 }
 
 function buildLanguageInstruction(outputLanguage) {

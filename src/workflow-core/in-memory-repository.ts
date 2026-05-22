@@ -2,35 +2,41 @@ import type {
   ClaimJobInput,
   ClaimJobResult,
   Runner,
+  RunnerClaimDiagnostics,
   WorkflowEvent,
   WorkflowJob,
   WorkflowJobResult,
-  WorkflowRun
+  WorkflowRun,
+  WorkflowTask
 } from "./domain";
-import { canRunnerClaimJob } from "./domain";
+import { canRunnerClaimJob, runnerJobClaimBlocker, runnerStatusAt } from "./domain";
 import type {
   AppendWorkflowEventInput,
   AcknowledgeWorkflowJobCancellationInput,
   CompleteWorkflowJobInput,
   CreateWorkflowJobInput,
   CreateWorkflowRunInput,
+  CreateWorkflowTaskInput,
   FailWorkflowJobInput,
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
   RequestWorkflowJobCancellationInput,
+  UpdateWorkflowTaskInput,
   WorkflowRepository
 } from "./repository";
 
-export type { CreateWorkflowJobInput, CreateWorkflowRunInput } from "./repository";
+export type { CreateWorkflowJobInput, CreateWorkflowRunInput, CreateWorkflowTaskInput } from "./repository";
 
 export class InMemoryWorkflowRepository implements WorkflowRepository {
   readonly workflowRuns: WorkflowRun[] = [];
+  readonly workflowTasks: WorkflowTask[] = [];
   readonly workflowJobs: WorkflowJob[] = [];
   readonly workflowJobResults: WorkflowJobResult[] = [];
   readonly workflowEvents: WorkflowEvent[] = [];
   readonly runners: Runner[] = [];
 
   private runSequence = 1;
+  private taskSequence = 1;
   private jobSequence = 1;
   private resultSequence = 1;
   private eventSequence = 1;
@@ -52,11 +58,51 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
     return run;
   }
 
+  createWorkflowTask(input: CreateWorkflowTaskInput): WorkflowTask {
+    const now = toIso(input.now);
+    const task: WorkflowTask = {
+      id: `task_${this.taskSequence++}`,
+      runId: input.runId,
+      parentTaskId: input.parentTaskId,
+      taskType: input.taskType,
+      sourceKey: input.sourceKey,
+      title: input.title,
+      status: input.status ?? "draft",
+      currentDocumentId: input.currentDocumentId,
+      metadata: input.metadata ?? {},
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.workflowTasks.push(task);
+    return task;
+  }
+
+  getWorkflowTask(taskId: string): WorkflowTask | undefined {
+    return this.workflowTasks.find((candidate) => candidate.id === taskId);
+  }
+
+  listWorkflowTasks(runId: string): WorkflowTask[] {
+    return this.workflowTasks
+      .filter((task) => task.runId === runId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  updateWorkflowTask(input: UpdateWorkflowTaskInput): WorkflowTask {
+    const task = this.requireTask(input.taskId);
+    task.status = input.status ?? task.status;
+    task.currentDocumentId = input.currentDocumentId ?? task.currentDocumentId;
+    task.metadata = input.metadata ?? task.metadata;
+    task.updatedAt = toIso(input.now);
+    return task;
+  }
+
   createWorkflowJob(input: CreateWorkflowJobInput): WorkflowJob {
     const now = toIso(input.now);
     const job: WorkflowJob = {
       id: `job_${this.jobSequence++}`,
       runId: input.runId,
+      taskId: input.taskId,
       jobType: input.jobType,
       status: "pending",
       input: input.input ?? {},
@@ -85,13 +131,31 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
 
   upsertRunner(runner: Runner): Runner {
     const existing = this.runners.findIndex((candidate) => candidate.id === runner.id);
+    const nextRunner =
+      existing >= 0 && this.runners[existing].status === "disabled"
+        ? {
+            ...runner,
+            status: "disabled" as const
+          }
+        : runner;
 
     if (existing >= 0) {
-      this.runners[existing] = runner;
+      this.runners[existing] = nextRunner;
       return this.runners[existing];
     }
 
-    this.runners.push(runner);
+    this.runners.push(nextRunner);
+    return nextRunner;
+  }
+
+  listRunners(): Runner[] {
+    return [...this.runners].sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  setRunnerStatus(runnerId: string, status: Runner["status"], now: Date): Runner {
+    const runner = this.requireRunner(runnerId);
+    runner.status = status;
+    runner.lastHeartbeatAt = now.toISOString();
     return runner;
   }
 
@@ -104,8 +168,21 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
 
   claimNextJob(input: ClaimJobInput): ClaimJobResult | undefined {
     const runner = this.requireRunner(input.runnerId);
+    const effectiveRunner: Runner = {
+      ...runner,
+      status: runnerStatusAt(runner, input.now, input.runnerOfflineAfterMs)
+    };
+
+    if (effectiveRunner.status === "offline" || effectiveRunner.status === "disabled") {
+      return undefined;
+    }
+
+    if (this.activeRunnerJobCount(effectiveRunner.id, input.now) >= Math.max(1, effectiveRunner.concurrency)) {
+      return undefined;
+    }
+
     const job = this.workflowJobs
-      .filter((candidate) => canRunnerClaimJob(runner, candidate, input.now))
+      .filter((candidate) => canRunnerClaimJob(effectiveRunner, candidate, input.now))
       .sort((left, right) => right.priority - left.priority || left.createdAt.localeCompare(right.createdAt))[0];
 
     if (!job) {
@@ -113,12 +190,70 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
     }
 
     job.status = "claimed";
-    job.claimedByRunnerId = runner.id;
+    job.claimedByRunnerId = effectiveRunner.id;
     job.claimedAt = input.now.toISOString();
     job.leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs).toISOString();
     job.updatedAt = input.now.toISOString();
 
-    return { job, runner };
+    return { job, runner: effectiveRunner };
+  }
+
+  diagnoseClaim(input: ClaimJobInput): RunnerClaimDiagnostics {
+    const runner = this.requireRunner(input.runnerId);
+    const effectiveRunner: Runner = {
+      ...runner,
+      status: runnerStatusAt(runner, input.now, input.runnerOfflineAfterMs)
+    };
+
+    if (effectiveRunner.status === "offline") {
+      return claimDiagnostics(effectiveRunner, "runner_offline", "Runner heartbeat is stale or missing.");
+    }
+
+    if (effectiveRunner.status === "disabled") {
+      return claimDiagnostics(effectiveRunner, "runner_disabled", "Runner is disabled.");
+    }
+
+    const activeJobCount = this.activeRunnerJobCount(effectiveRunner.id, input.now);
+    const concurrency = Math.max(1, effectiveRunner.concurrency);
+
+    if (activeJobCount >= concurrency) {
+      return claimDiagnostics(effectiveRunner, "runner_capacity_full", "Runner is already at concurrency capacity.", {
+        activeJobCount,
+        concurrency
+      });
+    }
+
+    const candidates = this.claimCandidates(input.now);
+    const nearestJob = candidates[0];
+
+    if (!nearestJob) {
+      return claimDiagnostics(effectiveRunner, "no_available_job", "No pending or retrying jobs are available.", {
+        activeJobCount,
+        concurrency,
+        candidateJobCount: 0
+      });
+    }
+
+    const matchingJob = candidates.find((candidate) => canRunnerClaimJob(effectiveRunner, candidate, input.now));
+
+    if (matchingJob) {
+      return claimDiagnostics(effectiveRunner, "claim_available", "A matching job is available for this runner.", {
+        activeJobCount,
+        concurrency,
+        candidateJobCount: candidates.length,
+        nearestJobId: matchingJob.id
+      });
+    }
+
+    const nearestBlocker = runnerJobClaimBlocker(effectiveRunner, nearestJob, input.now);
+
+    return claimDiagnostics(effectiveRunner, "no_matching_job", "Pending jobs exist, but none match this runner.", {
+      activeJobCount,
+      concurrency,
+      candidateJobCount: candidates.length,
+      nearestJobId: nearestJob.id,
+      nearestBlocker
+    });
   }
 
   startClaimedJob(jobId: string, runnerId: string, now: Date): WorkflowJob {
@@ -299,6 +434,16 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       .slice(0, input.limit ?? 50);
   }
 
+  private activeRunnerJobCount(runnerId: string, now: Date): number {
+    return this.workflowJobs.filter((job) => job.claimedByRunnerId === runnerId && isActiveRunnerJob(job, now)).length;
+  }
+
+  private claimCandidates(now: Date): WorkflowJob[] {
+    return this.workflowJobs
+      .filter((candidate) => isClaimCandidate(candidate, now))
+      .sort((left, right) => right.priority - left.priority || left.createdAt.localeCompare(right.createdAt));
+  }
+
   private requireRunner(runnerId: string): Runner {
     const runner = this.runners.find((candidate) => candidate.id === runnerId);
 
@@ -318,6 +463,16 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
 
     return job;
   }
+
+  private requireTask(taskId: string): WorkflowTask {
+    const task = this.workflowTasks.find((candidate) => candidate.id === taskId);
+
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+
+    return task;
+  }
 }
 
 function toIso(date: Date | undefined): string {
@@ -326,6 +481,37 @@ function toIso(date: Date | undefined): string {
 
 function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function isActiveRunnerJob(job: WorkflowJob, now: Date): boolean {
+  if (job.status !== "claimed" && job.status !== "running" && job.status !== "cancel_requested") {
+    return false;
+  }
+
+  return !job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) > now.getTime();
+}
+
+function isClaimCandidate(job: WorkflowJob, now: Date): boolean {
+  if (job.status !== "pending" && job.status !== "retrying") {
+    return false;
+  }
+
+  return !job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= now.getTime();
+}
+
+function claimDiagnostics(
+  runner: Runner,
+  reason: RunnerClaimDiagnostics["reason"],
+  message: string,
+  details: Omit<RunnerClaimDiagnostics, "runnerId" | "reason" | "message" | "runnerStatus"> = {}
+): RunnerClaimDiagnostics {
+  return {
+    runnerId: runner.id,
+    reason,
+    message,
+    runnerStatus: runner.status,
+    ...details
+  };
 }
 
 function isEventAfterCursor(event: WorkflowEvent, cursor: { createdAt: string; id: string }): boolean {

@@ -1,5 +1,12 @@
 import type { ArtifactLocation, ArtifactType } from "../document-core/domain";
-import type { ClaimJobResult, Runner, WorkflowEvent, WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
+import type {
+  ClaimJobResult,
+  Runner,
+  RunnerClaimDiagnostics,
+  WorkflowEvent,
+  WorkflowJob,
+  WorkflowJobResult
+} from "../workflow-core/domain";
 import type { RegisterRunnerInput } from "../workflow-core/scheduler";
 
 export interface RunnerArtifactUpload {
@@ -16,15 +23,23 @@ export interface RunnerArtifactUpload {
 
 export interface RunnerApiClientOptions {
   baseUrl: string;
+  token?: string;
   fetch?: typeof fetch;
+}
+
+export interface RunnerClaimResponse {
+  claim: ClaimJobResult | null;
+  diagnostics?: RunnerClaimDiagnostics;
 }
 
 export class WorkflowApiRunnerClient {
   private readonly baseUrl: string;
+  private readonly token?: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: RunnerApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -46,14 +61,18 @@ export class WorkflowApiRunnerClient {
   }
 
   async claim(runnerId: string, now?: Date): Promise<ClaimJobResult | undefined> {
-    const response = await this.postJson<{ claim: ClaimJobResult | null }>(
+    const response = await this.claimWithDiagnostics(runnerId, now);
+
+    return response.claim ?? undefined;
+  }
+
+  async claimWithDiagnostics(runnerId: string, now?: Date): Promise<RunnerClaimResponse> {
+    return this.postJson<RunnerClaimResponse>(
       `/runners/${encodeURIComponent(runnerId)}/claim`,
       {
         now: now?.toISOString()
       }
     );
-
-    return response.claim ?? undefined;
   }
 
   async startJob(jobId: string, runnerId: string, now?: Date): Promise<void> {
@@ -186,7 +205,7 @@ export class WorkflowApiRunnerClient {
   private async postJson<T = Record<string, unknown>>(path: string, body: Record<string, unknown>): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(body)
     });
 
@@ -198,12 +217,23 @@ export class WorkflowApiRunnerClient {
   }
 
   private async getJson<T = Record<string, unknown>>(path: string): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      headers: this.headers()
+    });
 
     if (!response.ok) {
       throw new Error(`Runner API ${path} failed with ${response.status}: ${await response.text()}`);
     }
 
     return response.json() as Promise<T>;
+  }
+
+  private headers(headers: Record<string, string> = {}): Record<string, string> {
+    return this.token
+      ? {
+          ...headers,
+          authorization: `Bearer ${this.token}`
+        }
+      : headers;
   }
 }

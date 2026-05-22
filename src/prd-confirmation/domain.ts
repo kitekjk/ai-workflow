@@ -19,6 +19,7 @@ export type JobType =
   | "document.revise"
   | "document.fan_out"
   | "implementation.open_pr"
+  | "implementation.update_pr"
   | "implementation.collect_pr_status";
 
 export interface ExternalIssue {

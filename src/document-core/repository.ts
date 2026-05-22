@@ -4,6 +4,7 @@ export type Awaitable<T> = T | Promise<T>;
 
 export interface CreateDocumentInput {
   workflowRunId: string;
+  workflowTaskId?: string;
   parentDocumentId?: string;
   type: DocumentType;
   sourceKey: string;

@@ -3,6 +3,7 @@ import type { ExecutionPolicy, WorkflowJob, WorkflowJobStatus } from "./domain";
 export interface CreateWorkflowJobRecordInput {
   id: string;
   runId: string;
+  taskId?: string;
   jobType: string;
   status?: WorkflowJobStatus;
   input?: Record<string, unknown>;
@@ -29,6 +30,7 @@ export function createWorkflowJobRecord(input: CreateWorkflowJobRecordInput): Wo
   return {
     id: input.id,
     runId: input.runId,
+    taskId: input.taskId,
     jobType: input.jobType,
     status: input.status ?? "pending",
     input: input.input ?? {},
@@ -52,7 +54,11 @@ export function createWorkflowJobRecord(input: CreateWorkflowJobRecordInput): Wo
 }
 
 export function requiredCapabilitiesForWorkflowJobType(jobType: string): string[] {
-  if (jobType === "implementation.open_pr" || jobType === "implementation.collect_pr_status") {
+  if (
+    jobType === "implementation.open_pr" ||
+    jobType === "implementation.update_pr" ||
+    jobType === "implementation.collect_pr_status"
+  ) {
     return [jobType];
   }
 

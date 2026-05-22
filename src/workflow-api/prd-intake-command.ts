@@ -12,6 +12,7 @@ export interface RecordPrdIntakeInput {
   jobId: string;
   prdJiraKey: string;
   title?: string;
+  requestedBy?: string;
   now?: Date;
 }
 
@@ -44,13 +45,16 @@ export class MysqlPrdIntakeCommand implements PrdIntakeCommand {
   async recordIntake(input: RecordPrdIntakeInput): Promise<RecordPrdIntakeResult> {
     const now = toIso(input.now);
     const documentId = documentIdForWorkItem(input.workItemId);
+    const taskId = taskIdForWorkItem(input.workItemId);
     const title = input.title ?? input.prdJiraKey;
     const metadata = {
       runId: input.runId,
+      taskId,
       documentId,
       jobId: input.jobId,
       prdJiraKey: input.prdJiraKey,
-      title
+      title,
+      requestedBy: input.requestedBy
     };
     const mutation: WorkflowMutation = {
       workflowRuns: [
@@ -65,10 +69,28 @@ export class MysqlPrdIntakeCommand implements PrdIntakeCommand {
           updatedAt: now
         }
       ],
+      workflowTasks: [
+        {
+          id: taskId,
+          runId: input.runId,
+          taskType: "prd",
+          sourceKey: input.prdJiraKey,
+          title,
+          status: "draft",
+          currentDocumentId: documentId,
+          metadata: {
+            workItemId: input.workItemId,
+            requestedBy: input.requestedBy
+          },
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
       documents: [
         {
           id: documentId,
           workflowRunId: input.runId,
+          workflowTaskId: taskId,
           type: "prd",
           sourceKey: input.prdJiraKey,
           title,
@@ -81,10 +103,12 @@ export class MysqlPrdIntakeCommand implements PrdIntakeCommand {
         createWorkflowJobRecord({
           id: input.jobId,
           runId: input.runId,
+          taskId,
           jobType: "prd.generate_draft",
           input: {},
           projectId: "prd-confirmation",
           repositoryId: "prd-docs",
+          assignedUserId: input.requestedBy,
           createdAt: now,
           updatedAt: now
         })
@@ -113,6 +137,10 @@ export class MysqlPrdIntakeCommand implements PrdIntakeCommand {
 
 function documentIdForWorkItem(workItemId: string): string {
   return `doc_${workItemId}`;
+}
+
+function taskIdForWorkItem(workItemId: string): string {
+  return `task_${workItemId}`;
 }
 
 function toIso(date: Date | undefined): string {

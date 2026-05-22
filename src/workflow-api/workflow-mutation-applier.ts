@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
-import type { WorkflowEvent, WorkflowJob, WorkflowJobResult, WorkflowRun } from "../workflow-core/domain";
+import { toMysqlDateTime, toNullableMysqlDateTime } from "../mysql/datetime";
+import type { WorkflowEvent, WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
 import type { MysqlDatabase, MysqlQueryExecutor } from "../workflow-core/mysql-repository";
 
 export interface WorkflowMutation {
   workflowRuns?: WorkflowRun[];
+  workflowTasks?: WorkflowTask[];
   documentStates?: Document[];
   documents?: Document[];
   workflowJobs?: WorkflowJob[];
@@ -80,6 +82,10 @@ export class MysqlWorkflowMutationApplier implements WorkflowMutationApplier {
         await upsertWorkflowRun(connection, run);
       }
 
+      for (const task of mutation.workflowTasks ?? []) {
+        await upsertWorkflowTask(connection, task);
+      }
+
       for (const document of mutation.documentStates ?? []) {
         await upsertDocumentState(connection, document);
       }
@@ -152,8 +158,39 @@ async function upsertWorkflowRun(executor: MysqlQueryExecutor, run: WorkflowRun)
       run.sourceType,
       run.sourceKey,
       run.outputLanguage,
-      run.createdAt,
-      run.updatedAt
+      toMysqlDateTime(run.createdAt),
+      toMysqlDateTime(run.updatedAt)
+    ]
+  );
+}
+
+async function upsertWorkflowTask(executor: MysqlQueryExecutor, task: WorkflowTask): Promise<void> {
+  await executor.execute(
+    `INSERT INTO workflow_task (
+      id, run_id, parent_task_id, task_type, source_key, title, status,
+      current_document_id, metadata_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      parent_task_id = COALESCE(VALUES(parent_task_id), parent_task_id),
+      task_type = VALUES(task_type),
+      source_key = VALUES(source_key),
+      title = VALUES(title),
+      status = VALUES(status),
+      current_document_id = VALUES(current_document_id),
+      metadata_json = VALUES(metadata_json),
+      updated_at = VALUES(updated_at)`,
+    [
+      task.id,
+      task.runId,
+      task.parentTaskId ?? null,
+      task.taskType,
+      task.sourceKey,
+      task.title,
+      task.status,
+      task.currentDocumentId ?? null,
+      JSON.stringify(task.metadata),
+      toMysqlDateTime(task.createdAt),
+      toMysqlDateTime(task.updatedAt)
     ]
   );
 }
@@ -161,10 +198,11 @@ async function upsertWorkflowRun(executor: MysqlQueryExecutor, run: WorkflowRun)
 async function upsertDocument(executor: MysqlQueryExecutor, document: Document): Promise<void> {
   await executor.execute(
     `INSERT INTO document (
-      id, workflow_run_id, parent_document_id, type, source_key, title, status,
+      id, workflow_run_id, workflow_task_id, parent_document_id, type, source_key, title, status,
       current_version_id, current_markdown_artifact_id, current_wiki_artifact_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
+      workflow_task_id = VALUES(workflow_task_id),
       parent_document_id = VALUES(parent_document_id),
       type = VALUES(type),
       source_key = VALUES(source_key),
@@ -177,6 +215,7 @@ async function upsertDocument(executor: MysqlQueryExecutor, document: Document):
     [
       document.id,
       document.workflowRunId,
+      document.workflowTaskId ?? null,
       document.parentDocumentId ?? null,
       document.type,
       document.sourceKey,
@@ -185,8 +224,8 @@ async function upsertDocument(executor: MysqlQueryExecutor, document: Document):
       document.currentVersionId ?? null,
       document.currentMarkdownArtifactId ?? null,
       document.currentWikiArtifactId ?? null,
-      document.createdAt,
-      document.updatedAt
+      toMysqlDateTime(document.createdAt),
+      toMysqlDateTime(document.updatedAt)
     ]
   );
 }
@@ -194,10 +233,11 @@ async function upsertDocument(executor: MysqlQueryExecutor, document: Document):
 async function upsertDocumentState(executor: MysqlQueryExecutor, document: Document): Promise<void> {
   await executor.execute(
     `INSERT INTO document (
-      id, workflow_run_id, parent_document_id, type, source_key, title, status,
+      id, workflow_run_id, workflow_task_id, parent_document_id, type, source_key, title, status,
       current_version_id, current_markdown_artifact_id, current_wiki_artifact_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
     ON DUPLICATE KEY UPDATE
+      workflow_task_id = COALESCE(VALUES(workflow_task_id), workflow_task_id),
       parent_document_id = VALUES(parent_document_id),
       type = VALUES(type),
       source_key = VALUES(source_key),
@@ -207,13 +247,14 @@ async function upsertDocumentState(executor: MysqlQueryExecutor, document: Docum
     [
       document.id,
       document.workflowRunId,
+      document.workflowTaskId ?? null,
       document.parentDocumentId ?? null,
       document.type,
       document.sourceKey,
       document.title,
       document.status,
-      document.createdAt,
-      document.updatedAt
+      toMysqlDateTime(document.createdAt),
+      toMysqlDateTime(document.updatedAt)
     ]
   );
 }
@@ -221,12 +262,13 @@ async function upsertDocumentState(executor: MysqlQueryExecutor, document: Docum
 async function upsertWorkflowJob(executor: MysqlQueryExecutor, job: WorkflowJob): Promise<void> {
   await executor.execute(
     `INSERT INTO workflow_job (
-      id, run_id, job_type, status, input_json, priority, project_id, repository_id,
+      id, run_id, task_id, job_type, status, input_json, priority, project_id, repository_id,
       assigned_user_id, assigned_team_id, required_role, required_capabilities_json,
       preferred_engine, required_engine, execution_policy, assigned_runner_id,
       claimed_by_runner_id, claimed_at, lease_expires_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
+      task_id = VALUES(task_id),
       job_type = VALUES(job_type),
       status = VALUES(status),
       input_json = VALUES(input_json),
@@ -248,6 +290,7 @@ async function upsertWorkflowJob(executor: MysqlQueryExecutor, job: WorkflowJob)
     [
       job.id,
       job.runId,
+      job.taskId ?? null,
       job.jobType,
       job.status,
       JSON.stringify(job.input),
@@ -263,10 +306,10 @@ async function upsertWorkflowJob(executor: MysqlQueryExecutor, job: WorkflowJob)
       job.executionPolicy,
       job.assignedRunnerId ?? null,
       job.claimedByRunnerId ?? null,
-      job.claimedAt ?? null,
-      job.leaseExpiresAt ?? null,
-      job.createdAt,
-      job.updatedAt
+      toNullableMysqlDateTime(job.claimedAt),
+      toNullableMysqlDateTime(job.leaseExpiresAt),
+      toMysqlDateTime(job.createdAt),
+      toMysqlDateTime(job.updatedAt)
     ]
   );
 }
@@ -290,7 +333,7 @@ async function upsertWorkflowJobResult(executor: MysqlQueryExecutor, result: Wor
       JSON.stringify(result.output),
       result.errorCode ?? null,
       result.errorMessage ?? null,
-      result.createdAt
+      toMysqlDateTime(result.createdAt)
     ]
   );
 }
@@ -317,7 +360,7 @@ async function upsertDocumentVersion(executor: MysqlQueryExecutor, version: Docu
       version.revisionSummary ?? null,
       version.revisionJobId ?? null,
       version.contentHash ?? null,
-      version.createdAt
+      toMysqlDateTime(version.createdAt)
     ]
   );
 }
@@ -351,7 +394,7 @@ async function upsertArtifact(executor: MysqlQueryExecutor, artifact: Artifact):
       artifact.externalVersion ?? null,
       artifact.contentHash ?? null,
       JSON.stringify(artifact.metadata),
-      artifact.createdAt
+      toMysqlDateTime(artifact.createdAt)
     ]
   );
 }
@@ -373,7 +416,7 @@ async function updateDocumentCurrentPointers(
       document.currentVersionId ?? null,
       document.currentMarkdownArtifactId ?? null,
       document.currentWikiArtifactId ?? null,
-      document.updatedAt,
+      toMysqlDateTime(document.updatedAt),
       document.id
     ]
   );
@@ -411,7 +454,7 @@ async function upsertQualityResult(executor: MysqlQueryExecutor, result: Documen
       JSON.stringify(result.riskItems),
       result.qualityFailureAction ?? null,
       result.autoRevisionScheduled,
-      result.createdAt
+      toMysqlDateTime(result.createdAt)
     ]
   );
 }
@@ -439,7 +482,7 @@ async function upsertFeedbackItem(executor: MysqlQueryExecutor, feedback: Workfl
       feedback.externalUrl ?? null,
       JSON.stringify(feedback.metadata ?? {}),
       feedback.revisionJobId ?? null,
-      feedback.createdAt
+      toMysqlDateTime(feedback.createdAt)
     ]
   );
 }
@@ -460,7 +503,7 @@ async function insertWorkflowEvent(
       event.type,
       event.message,
       JSON.stringify(event.metadata),
-      event.createdAt
+      toMysqlDateTime(event.createdAt)
     ]
   );
 }
@@ -483,7 +526,7 @@ async function insertDocumentWorkflowEvent(
       event.type,
       event.message,
       JSON.stringify(event.metadata),
-      event.createdAt,
+      toMysqlDateTime(event.createdAt),
       event.documentId
     ]
   );

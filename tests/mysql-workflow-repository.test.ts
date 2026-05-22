@@ -4,7 +4,8 @@ import {
   MysqlWorkflowRepository,
   rowToRunner,
   rowToWorkflowEvent,
-  rowToWorkflowJob
+  rowToWorkflowJob,
+  rowToWorkflowTask
 } from "../src/workflow-core/mysql-repository";
 
 describe("MysqlWorkflowRepository", () => {
@@ -43,11 +44,43 @@ describe("MysqlWorkflowRepository", () => {
     expect(database.statements[1]?.params).toContain(JSON.stringify(["document.generate"]));
   });
 
+  it("inserts workflow tasks and links jobs to the task", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database, { idGenerator: fixedIds("task_1", "job_1") });
+    const now = new Date("2026-05-20T00:00:00.000Z");
+
+    const task = await repository.createWorkflowTask({
+      runId: "run_1",
+      taskType: "prd",
+      sourceKey: "PRD-100",
+      title: "FAQ automation PRD",
+      currentDocumentId: "doc_1",
+      now
+    });
+    const job = await repository.createWorkflowJob({
+      runId: "run_1",
+      taskId: task.id,
+      jobType: "prd.generate_draft",
+      now
+    });
+
+    expect(task).toMatchObject({
+      id: "task_1",
+      runId: "run_1",
+      currentDocumentId: "doc_1"
+    });
+    expect(job.taskId).toBe("task_1");
+    expect(database.statements[0]?.sql).toContain("INSERT INTO workflow_task");
+    expect(database.statements[1]?.sql).toContain("task_id");
+    expect(database.statements[1]?.params).toContain("task_1");
+  });
+
   it("claims an eligible job inside a transaction using runner scope and capabilities", async () => {
     const database = new FakeMysqlDatabase();
     const repository = new MysqlWorkflowRepository(database);
     const now = new Date("2026-05-20T00:00:00.000Z");
     database.queueRows([runnerRow()]);
+    database.queueRows([{ active_job_count: 0 }]);
     database.queueRows([
       workflowJobRow({ id: "job_other", assigned_user_id: "other-user" }),
       workflowJobRow({ id: "job_eligible", assigned_user_id: "planner-a" })
@@ -69,11 +102,168 @@ describe("MysqlWorkflowRepository", () => {
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
       expect.stringContaining("SELECT * FROM runner"),
+      expect.stringContaining("COUNT(*) AS active_job_count"),
       expect.stringContaining("SELECT * FROM workflow_job"),
       expect.stringContaining("UPDATE workflow_job")
     ]);
     expect(database.statements[0]?.sql).toContain("FOR UPDATE");
-    expect(database.statements[1]?.sql).toContain("FOR UPDATE");
+    expect(database.statements[2]?.sql).toContain("FOR UPDATE");
+  });
+
+  it("lists runners ordered by recent heartbeat for dashboard visibility", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    database.queueRows([
+      runnerRow({ id: "runner-new", last_heartbeat_at: "2026-05-20T00:00:05.000Z" }),
+      runnerRow({ id: "runner-old", last_heartbeat_at: "2026-05-20T00:00:00.000Z" })
+    ]);
+
+    const runners = await repository.listRunners();
+
+    expect(runners.map((runner) => runner.id)).toEqual(["runner-new", "runner-old"]);
+    expect(database.statements[0]?.sql).toContain("ORDER BY last_heartbeat_at DESC, id ASC");
+  });
+
+  it("keeps disabled runners paused across registration and resumes them explicitly", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    database.queueResult({ affectedRows: 1 });
+    database.queueRows([runnerRow({ status: "disabled" })]);
+    database.queueResult({ affectedRows: 1 });
+    database.queueRows([runnerRow({ status: "online", last_heartbeat_at: "2026-05-20 00:00:05.000" })]);
+
+    const registered = await repository.upsertRunner({
+      id: "runner-planner-a",
+      ownerUserId: "planner-a",
+      mode: "local",
+      status: "online",
+      teamIds: ["planning"],
+      allowedProjectIds: ["pair"],
+      allowedRepositoryIds: ["prd-docs"],
+      capabilities: ["document.generate"],
+      engines: ["claude"],
+      defaultEngine: "claude",
+      concurrency: 1,
+      lastHeartbeatAt: now.toISOString()
+    });
+    const resumed = await repository.setRunnerStatus(
+      "runner-planner-a",
+      "online",
+      new Date("2026-05-20T00:00:05.000Z")
+    );
+
+    expect(registered.status).toBe("disabled");
+    expect(resumed.status).toBe("online");
+    expect(database.statements[0]?.sql).toContain("CASE WHEN status = 'disabled' THEN 'disabled'");
+    expect(database.statements[2]?.sql).toContain("UPDATE runner SET status = ?");
+  });
+
+  it("does not select another job when the runner is at concurrency capacity", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    database.queueRows([runnerRow({ concurrency: 1 })]);
+    database.queueRows([{ active_job_count: 1 }]);
+
+    const claim = await repository.claimNextJob({
+      runnerId: "runner-planner-a",
+      now,
+      leaseMs: 60_000
+    });
+
+    expect(claim).toBeUndefined();
+    expect(database.events).toEqual(["begin", "commit", "release"]);
+    expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("SELECT * FROM runner"),
+      expect.stringContaining("COUNT(*) AS active_job_count")
+    ]);
+  });
+
+  it("does not select work for a runner with a stale heartbeat", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    database.queueRows([
+      runnerRow({
+        last_heartbeat_at: "2026-05-20T00:00:00.000Z"
+      })
+    ]);
+
+    const claim = await repository.claimNextJob({
+      runnerId: "runner-planner-a",
+      now: new Date("2026-05-20T00:01:01.000Z"),
+      leaseMs: 60_000,
+      runnerOfflineAfterMs: 60_000
+    });
+
+    expect(claim).toBeUndefined();
+    expect(database.events).toEqual(["begin", "commit", "release"]);
+    expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("SELECT * FROM runner")
+    ]);
+  });
+
+  it("diagnoses pending jobs that do not match the runner scope", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    database.queueRows([runnerRow()]);
+    database.queueRows([{ active_job_count: 0 }]);
+    database.queueRows([workflowJobRow({ id: "job_other", assigned_user_id: "other-user" })]);
+
+    const diagnostics = await repository.diagnoseClaim({
+      runnerId: "runner-planner-a",
+      now,
+      leaseMs: 60_000
+    });
+
+    expect(diagnostics).toMatchObject({
+      runnerId: "runner-planner-a",
+      reason: "no_matching_job",
+      runnerStatus: "online",
+      activeJobCount: 0,
+      concurrency: 1,
+      candidateJobCount: 1,
+      nearestJobId: "job_other",
+      nearestBlocker: "owner_mismatch"
+    });
+    expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("SELECT * FROM runner"),
+      expect.stringContaining("COUNT(*) AS active_job_count"),
+      expect.stringContaining("SELECT * FROM workflow_job")
+    ]);
+    expect(database.statements[2]?.sql).not.toContain("FOR UPDATE");
+  });
+
+  it("diagnoses when a matching job is available for a runner", async () => {
+    const database = new FakeMysqlDatabase();
+    const repository = new MysqlWorkflowRepository(database);
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    database.queueRows([runnerRow()]);
+    database.queueRows([{ active_job_count: 0 }]);
+    database.queueRows([workflowJobRow({ id: "job_available" })]);
+
+    const diagnostics = await repository.diagnoseClaim({
+      runnerId: "runner-planner-a",
+      now,
+      leaseMs: 60_000
+    });
+
+    expect(diagnostics).toMatchObject({
+      runnerId: "runner-planner-a",
+      reason: "claim_available",
+      runnerStatus: "online",
+      activeJobCount: 0,
+      concurrency: 1,
+      candidateJobCount: 1,
+      nearestJobId: "job_available"
+    });
+    expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("SELECT * FROM runner"),
+      expect.stringContaining("COUNT(*) AS active_job_count"),
+      expect.stringContaining("SELECT * FROM workflow_job")
+    ]);
+    expect(database.statements[2]?.sql).not.toContain("FOR UPDATE");
   });
 
   it("records retryable failures as result attempts and releases the claim", async () => {
@@ -131,7 +321,7 @@ describe("MysqlWorkflowRepository", () => {
     expect(database.statements[0]?.sql).toContain("FOR UPDATE");
     expect(database.statements[1]).toMatchObject({
       sql: expect.stringContaining("SET status = ?"),
-      params: ["cancel_requested", now.toISOString(), "job_1"]
+      params: ["cancel_requested", "2026-05-20 00:00:00.000", "job_1"]
     });
 
     const ackDatabase = new FakeMysqlDatabase();
@@ -192,7 +382,7 @@ describe("MysqlWorkflowRepository", () => {
     ]);
     expect(database.statements[0]).toMatchObject({
       sql: expect.stringContaining("WHERE job_id = ? AND type = ? AND (created_at > ? OR (created_at = ? AND id > ?))"),
-      params: ["job_1", "runner.log", "2026-05-20T00:00:00.000Z", "2026-05-20T00:00:00.000Z", "event_0", 1]
+      params: ["job_1", "runner.log", "2026-05-20 00:00:00.000", "2026-05-20 00:00:00.000", "event_0", 1]
     });
   });
 
@@ -205,9 +395,16 @@ describe("MysqlWorkflowRepository", () => {
     });
     expect(rowToWorkflowJob(workflowJobRow())).toMatchObject({
       id: "job_1",
+      taskId: undefined,
       status: "pending",
       input: { sourceKey: "PRD-100" },
       requiredCapabilities: ["document.generate"]
+    });
+    expect(rowToWorkflowTask(workflowTaskRow())).toMatchObject({
+      id: "task_1",
+      runId: "run_1",
+      taskType: "prd",
+      currentDocumentId: "doc_wi_1"
     });
     expect(rowToWorkflowEvent(workflowEventRow())).toMatchObject({
       id: "event_1",
@@ -280,6 +477,7 @@ function workflowJobRow(overrides: Record<string, unknown> = {}): Record<string,
   return {
     id: "job_1",
     run_id: "run_1",
+    task_id: null,
     job_type: "document.generate",
     status: "pending",
     input_json: JSON.stringify({ sourceKey: "PRD-100" }),
@@ -297,6 +495,23 @@ function workflowJobRow(overrides: Record<string, unknown> = {}): Record<string,
     claimed_by_runner_id: null,
     claimed_at: null,
     lease_expires_at: null,
+    created_at: "2026-05-20T00:00:00.000Z",
+    updated_at: "2026-05-20T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function workflowTaskRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "task_1",
+    run_id: "run_1",
+    parent_task_id: null,
+    task_type: "prd",
+    source_key: "PRD-100",
+    title: "FAQ automation PRD",
+    status: "draft",
+    current_document_id: "doc_wi_1",
+    metadata_json: JSON.stringify({ documentId: "doc_wi_1" }),
     created_at: "2026-05-20T00:00:00.000Z",
     updated_at: "2026-05-20T00:00:00.000Z",
     ...overrides

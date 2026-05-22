@@ -212,6 +212,44 @@ export class StubPrdSkills {
       };
     }
 
+    if (job.jobType === "implementation.update_pr") {
+      const pullRequestNumber = Number(job.input.pullNumber ?? 42);
+      const pullRequestUrl =
+        typeof job.input.pullRequestUrl === "string"
+          ? job.input.pullRequestUrl
+          : `https://github.example.com/acme/workflow-app/pull/${pullRequestNumber}`;
+
+      return {
+        output: {
+          status: "implementation_updated",
+          provider: "github",
+          repository: "acme/workflow-app",
+          documentVersionId: job.input.documentVersionId,
+          pullRequestNumber,
+          pullRequestUrl,
+          latestCommitSha: "stub-pr-updated-sha",
+          summary: "Applied code-only implementation rework"
+        },
+        artifacts: [
+          {
+            jobId: job.id,
+            type: "pull_request",
+            location: "external",
+            url: pullRequestUrl,
+            externalId: String(pullRequestNumber),
+            externalVersion: "stub-pr-updated-sha",
+            metadata: {
+              provider: "github",
+              repository: "acme/workflow-app",
+              reworkSource: job.input.reworkSource,
+              reviewStatus: job.input.reviewStatus,
+              ciStatus: job.input.ciStatus
+            }
+          }
+        ]
+      };
+    }
+
     if (job.jobType === "implementation.collect_pr_status") {
       const pullRequestNumber = Number(job.input.pullNumber ?? 42);
       const pullRequestUrl =

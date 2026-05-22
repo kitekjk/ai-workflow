@@ -21,6 +21,7 @@ describe("MysqlWorkflowResultCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("INSERT INTO workflow_task"),
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO workflow_job"),
       expect.stringContaining("INSERT INTO workflow_job"),
@@ -31,19 +32,22 @@ describe("MysqlWorkflowResultCommand", () => {
       expect.stringContaining("INSERT INTO quality_gate_result"),
       expect.stringContaining("INSERT INTO workflow_event")
     ]);
-    expect(database.statements[1].params).toEqual(
+    expect(database.statements[0].params).toEqual(
+      expect.arrayContaining(["task_wi_1", "run_1", "prd", "PRD-100", "FAQ automation PRD", "quality_review", "doc_wi_1"])
+    );
+    expect(database.statements[2].params).toEqual(
       expect.arrayContaining(["job_1", "run_1", "prd.generate_draft", "succeeded"])
     );
-    expect(database.statements[3].params).toEqual(
+    expect(database.statements[4].params).toEqual(
       expect.arrayContaining(["result_1", "job_1", 1, "succeeded", JSON.stringify({ status: "succeeded" })])
     );
-    expect(database.statements[4].params).toEqual(
+    expect(database.statements[5].params).toEqual(
       expect.arrayContaining(["docv_1", "doc_wi_1", 1, "job_1"])
     );
-    expect(database.statements[7].params).toEqual(
+    expect(database.statements[8].params).toEqual(
       expect.arrayContaining(["qgr_1", "doc_wi_1", "docv_1", "job_2", "passed"])
     );
-    expect(database.statements[8].params).toEqual(
+    expect(database.statements[9].params).toEqual(
       expect.arrayContaining([
         "event_1",
         "run_1",
@@ -52,7 +56,7 @@ describe("MysqlWorkflowResultCommand", () => {
         "Workflow result projection recorded for job job_1"
       ])
     );
-    expect(JSON.parse(String(database.statements[8].params[5]))).toEqual({
+    expect(JSON.parse(String(database.statements[9].params[5]))).toEqual({
       jobId: "job_1",
       jobIds: ["job_1", "job_2"],
       jobResultIds: ["result_1"],

@@ -13,6 +13,7 @@ export interface RecordFeedbackCommandInput {
 export interface RecordRevisionJobCommandInput {
   runId: string;
   job: AgentJob;
+  taskId?: string;
   feedbackItems: FeedbackItem[];
   now?: Date;
 }
@@ -59,6 +60,7 @@ export class MysqlFeedbackRevisionCommand implements FeedbackRevisionCommand {
         {
           id: input.job.id,
           runId: input.runId,
+          taskId: input.taskId,
           jobType: input.job.jobType,
           status: input.job.status,
           input: input.job.input,

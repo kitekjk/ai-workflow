@@ -1,5 +1,6 @@
 import type { Document } from "../document-core/domain";
 import type { AgentJob, JobType } from "../prd-confirmation/domain";
+import type { WorkflowTask } from "../workflow-core/domain";
 import type {
   WorkflowEngineExternalIssueStatus,
   WorkflowEngineTransitionType,
@@ -15,12 +16,16 @@ import {
 
 export interface RecordDocumentStateCommandInput {
   document: Document;
+  actor?: string;
+  reason?: string;
   now?: Date;
 }
 
 export interface RecordWorkflowJobCommandInput {
   runId: string;
   job: AgentJob;
+  taskId?: string;
+  workflowTask?: WorkflowTask;
   now?: Date;
 }
 
@@ -77,6 +82,7 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
 
   async recordDocumentState(input: RecordDocumentStateCommandInput): Promise<void> {
     await this.mutationApplier.apply({
+      workflowTasks: [workflowTaskForDocumentState(documentStateForInput(input))],
       documentStates: [documentStateForInput(input)],
       events: [documentStateRecordedEvent(input)]
     });
@@ -84,6 +90,7 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
 
   async recordWorkflowJob(input: RecordWorkflowJobCommandInput): Promise<void> {
     await this.mutationApplier.apply({
+      workflowTasks: input.workflowTask ? [input.workflowTask] : [],
       workflowJobs: [workflowJobForInput(input)],
       events: [workflowJobRecordedEvent(input)]
     });
@@ -92,6 +99,14 @@ export class MysqlWorkflowTransitionCommand implements WorkflowTransitionCommand
   async recordEngineTransition(input: RecordEngineTransitionCommandInput): Promise<void> {
     const engineEvent = engineTransitionEvent(input);
     await this.mutationApplier.apply({
+      workflowTasks: input.documents.map((document) =>
+        workflowTaskForDocumentState(
+          documentStateForInput({
+            document,
+            now: input.now
+          })
+        )
+      ),
       documentStates: input.documents.map((document) =>
         documentStateForInput({
           document,
@@ -125,13 +140,38 @@ function workflowJobForInput(input: RecordWorkflowJobCommandInput): NonNullable<
   return createWorkflowJobRecord({
     id: input.job.id,
     runId: input.runId,
+    taskId: input.taskId ?? input.workflowTask?.id,
     jobType: input.job.jobType,
     status: input.job.status,
     input: input.job.input,
     projectId: "prd-confirmation",
     repositoryId: "prd-docs",
+    assignedUserId: assignedUserIdForWorkflowJob(input.job),
     now: input.now
   });
+}
+
+function workflowTaskForDocumentState(document: Document): WorkflowTask {
+  return {
+    id: document.workflowTaskId ?? taskIdForDocument(document.id),
+    runId: document.workflowRunId,
+    parentTaskId:
+      !document.workflowTaskId && document.parentDocumentId ? taskIdForDocument(document.parentDocumentId) : undefined,
+    taskType: document.type,
+    sourceKey: document.sourceKey,
+    title: document.title,
+    status: document.status,
+    currentDocumentId: document.id,
+    metadata: {
+      documentId: document.id
+    },
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt
+  };
+}
+
+function taskIdForDocument(documentId: string): string {
+  return documentId.startsWith("doc_") ? `task_${documentId.slice("doc_".length)}` : `task_${documentId}`;
 }
 
 function engineTransitionEvent(
@@ -175,7 +215,9 @@ function documentStateRecordedEvent(input: RecordDocumentStateCommandInput): Non
       documentId: input.document.id,
       documentType: input.document.type,
       sourceKey: input.document.sourceKey,
-      status: input.document.status
+      status: input.document.status,
+      actor: input.actor ?? null,
+      reason: input.reason ?? null
     },
     createdAt: toIso(input.now ?? new Date(input.document.updatedAt))
   };
@@ -191,7 +233,8 @@ function workflowJobRecordedEvent(input: RecordWorkflowJobCommandInput): NonNull
       jobId: input.job.id,
       jobType: input.job.jobType,
       status: input.job.status,
-      sourceKey: input.job.primaryJiraKey
+      sourceKey: input.job.primaryJiraKey,
+      taskId: input.taskId ?? input.workflowTask?.id
     },
     createdAt: toIso(input.now)
   };
@@ -199,4 +242,10 @@ function workflowJobRecordedEvent(input: RecordWorkflowJobCommandInput): NonNull
 
 function toIso(date: Date | undefined): string {
   return (date ?? new Date()).toISOString();
+}
+
+function assignedUserIdForWorkflowJob(job: AgentJob): string | undefined {
+  const requestedBy = job.input.requestedBy;
+
+  return typeof requestedBy === "string" && requestedBy.length > 0 ? requestedBy : undefined;
 }

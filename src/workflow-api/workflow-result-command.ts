@@ -1,5 +1,5 @@
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
-import type { WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowTask } from "../workflow-core/domain";
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
 import {
   MysqlWorkflowMutationApplier,
@@ -41,6 +41,7 @@ export class MysqlWorkflowResultCommand implements WorkflowResultCommand {
     const resultProjectionEvent = workflowResultProjectionEvent(input);
     const mutation: WorkflowMutation = {
       documentStates: input.documents,
+      workflowTasks: input.documents.map(workflowTaskForDocumentProjection),
       workflowJobs: input.jobs,
       jobResults: input.jobResults,
       documentVersions: input.documentVersions,
@@ -52,6 +53,29 @@ export class MysqlWorkflowResultCommand implements WorkflowResultCommand {
 
     await this.mutationApplier.apply(mutation);
   }
+}
+
+function workflowTaskForDocumentProjection(document: Document): WorkflowTask {
+  return {
+    id: document.workflowTaskId ?? taskIdForDocument(document.id),
+    runId: document.workflowRunId,
+    parentTaskId:
+      !document.workflowTaskId && document.parentDocumentId ? taskIdForDocument(document.parentDocumentId) : undefined,
+    taskType: document.type,
+    sourceKey: document.sourceKey,
+    title: document.title,
+    status: document.status,
+    currentDocumentId: document.id,
+    metadata: {
+      documentId: document.id
+    },
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt
+  };
+}
+
+function taskIdForDocument(documentId: string): string {
+  return documentId.startsWith("doc_") ? `task_${documentId.slice("doc_".length)}` : `task_${documentId}`;
 }
 
 function documentCurrentPointer(document: Document): NonNullable<WorkflowMutation["documentCurrentPointers"]>[number] {

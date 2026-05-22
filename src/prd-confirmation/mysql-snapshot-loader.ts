@@ -516,6 +516,7 @@ function knownJobType(jobType: string): JobType | undefined {
     jobType === "document.revise" ||
     jobType === "document.fan_out" ||
     jobType === "implementation.open_pr" ||
+    jobType === "implementation.update_pr" ||
     jobType === "implementation.collect_pr_status"
     ? jobType
     : undefined;

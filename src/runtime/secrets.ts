@@ -2,6 +2,9 @@ export const CREDENTIAL_ENV_ALLOWLIST = [
   "JIRA_API_TOKEN",
   "CONFLUENCE_API_TOKEN",
   "GITHUB_TOKEN",
+  "WORKFLOW_APP_API_TOKEN",
+  "WORKFLOW_RUNNER_TOKENS",
+  "LOCAL_RUNNER_TOKEN",
   "WORKFLOW_MYSQL_PASSWORD",
   "WORKFLOW_MYSQL_ROOT_PASSWORD"
 ] as const;
@@ -40,10 +43,48 @@ function collectSecretValues(options: RedactSecretsOptions): string[] {
   if (options.env) {
     for (const key of CREDENTIAL_ENV_ALLOWLIST) {
       addSecretValue(values, options.env[key]);
+
+      if (key === "WORKFLOW_RUNNER_TOKENS") {
+        addRunnerTokenValues(values, options.env[key]);
+      }
     }
   }
 
   return [...values].sort((left, right) => right.length - left.length);
+}
+
+function addRunnerTokenValues(values: Set<string>, value: string | undefined): void {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return;
+  }
+
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        for (const token of Object.values(parsed)) {
+          if (typeof token === "string") {
+            addSecretValue(values, token);
+          }
+        }
+      }
+    } catch {
+      return;
+    }
+
+    return;
+  }
+
+  for (const pair of trimmed.split(",")) {
+    const separatorIndex = pair.indexOf(":");
+
+    if (separatorIndex > 0) {
+      addSecretValue(values, pair.slice(separatorIndex + 1));
+    }
+  }
 }
 
 function addSecretValue(values: Set<string>, value: string | undefined): void {

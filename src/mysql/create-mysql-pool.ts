@@ -16,6 +16,7 @@ export function createWorkflowMysqlPoolFromEnv(env: MysqlPoolEnv): MysqlDatabase
     database: env.WORKFLOW_MYSQL_DATABASE ?? "ai_workflow",
     user: env.WORKFLOW_MYSQL_USER ?? "ai_workflow",
     password: env.WORKFLOW_MYSQL_PASSWORD ?? "ai_workflow",
+    timezone: "Z",
     waitForConnections: true,
     connectionLimit: 10
   });

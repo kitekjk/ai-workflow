@@ -1175,6 +1175,8 @@ describe("Workflow API", () => {
             status: "approved",
             updatedAt: "2026-05-20T00:00:00.000Z"
           },
+          actor: "planner@example.com",
+          reason: "Looks good",
           now: new Date("2026-05-20T00:00:00.000Z")
         }
       ]);
@@ -1244,15 +1246,23 @@ describe("Workflow API", () => {
 
     try {
       const response = await postJson(`${localServer.url}/prd/intake`, {
-        prdJiraKey: "PRD-DB"
+        prdJiraKey: "PRD-DB",
+        requestedBy: "planner@example.com"
       });
 
       expect(response.status).toBe(202);
-      expect(await response.json()).toEqual({ status: "accepted" });
+      const payload = await response.json();
+      expect(payload).toMatchObject({
+        status: "accepted",
+        documentId: expect.stringMatching(/^doc_wi_/),
+        jobId: expect.stringMatching(/^job_/),
+        runId: expect.stringMatching(/^run_/)
+      });
       expect(commandInputs).toHaveLength(1);
       expect(commandInputs[0]).toMatchObject({
         prdJiraKey: "PRD-DB",
         title: "Read model PRD",
+        requestedBy: "planner@example.com",
         now: new Date("2026-05-20T00:00:00.000Z")
       });
       expect(commandInputs[0].runId).toMatch(/^run_/);
@@ -1628,13 +1638,14 @@ describe("Workflow API", () => {
         status: "draft"
       }
     ]);
-    expect(tree.nodes.map((node: { jobType: string }) => node.jobType)).toEqual([
+    const jobNodes = tree.nodes.filter((node: { type: string }) => node.type === "workflow_job");
+    expect(jobNodes.map((node: { jobType: string }) => node.jobType)).toEqual([
       "prd.generate_draft",
       "prd.evaluate_quality",
       "prd.route_downstream",
       "document.generate"
     ]);
-    expect(tree.nodes.at(-1)).toMatchObject({
+    expect(jobNodes.at(-1)).toMatchObject({
       jobType: "document.generate",
       primaryDocumentId: "doc_wi_2"
     });
@@ -1756,7 +1767,8 @@ describe("Workflow API", () => {
         status: "draft"
       }
     ]);
-    expect(tree.nodes.map((node: { jobType: string }) => node.jobType)).toEqual([
+    const jobNodes = tree.nodes.filter((node: { type: string }) => node.type === "workflow_job");
+    expect(jobNodes.map((node: { jobType: string }) => node.jobType)).toEqual([
       "prd.generate_draft",
       "prd.evaluate_quality",
       "prd.route_downstream",
@@ -1989,7 +2001,18 @@ describe("Workflow API", () => {
       run: {
         id: "run_1"
       },
+      tasks: [
+        {
+          id: "task_wi_1",
+          currentDocumentId: "doc_wi_1"
+        }
+      ],
       nodes: [
+        {
+          id: "task_wi_1",
+          type: "workflow_task",
+          currentDocumentId: "doc_wi_1"
+        },
         {
           id: "job_1",
           type: "workflow_job",

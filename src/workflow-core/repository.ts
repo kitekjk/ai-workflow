@@ -2,10 +2,12 @@ import type {
   ClaimJobInput,
   ClaimJobResult,
   Runner,
+  RunnerClaimDiagnostics,
   WorkflowEvent,
   WorkflowJob,
   WorkflowJobResult,
-  WorkflowRun
+  WorkflowRun,
+  WorkflowTask
 } from "./domain";
 
 export type Awaitable<T> = T | Promise<T>;
@@ -20,6 +22,7 @@ export interface CreateWorkflowRunInput {
 
 export interface CreateWorkflowJobInput {
   runId: string;
+  taskId?: string;
   jobType: string;
   input?: Record<string, unknown>;
   priority?: number;
@@ -33,6 +36,26 @@ export interface CreateWorkflowJobInput {
   requiredEngine?: string;
   executionPolicy?: WorkflowJob["executionPolicy"];
   assignedRunnerId?: string;
+  now?: Date;
+}
+
+export interface CreateWorkflowTaskInput {
+  runId: string;
+  parentTaskId?: string;
+  taskType: WorkflowTask["taskType"];
+  sourceKey: string;
+  title: string;
+  status?: WorkflowTask["status"];
+  currentDocumentId?: string;
+  metadata?: Record<string, unknown>;
+  now?: Date;
+}
+
+export interface UpdateWorkflowTaskInput {
+  taskId: string;
+  status?: WorkflowTask["status"];
+  currentDocumentId?: string;
+  metadata?: Record<string, unknown>;
   now?: Date;
 }
 
@@ -101,11 +124,18 @@ export interface WorkflowEventCursor {
 
 export interface WorkflowRepository {
   createWorkflowRun(input: CreateWorkflowRunInput): Awaitable<WorkflowRun>;
+  createWorkflowTask(input: CreateWorkflowTaskInput): Awaitable<WorkflowTask>;
+  getWorkflowTask(taskId: string): Awaitable<WorkflowTask | undefined>;
+  listWorkflowTasks(runId: string): Awaitable<WorkflowTask[]>;
+  updateWorkflowTask(input: UpdateWorkflowTaskInput): Awaitable<WorkflowTask>;
   createWorkflowJob(input: CreateWorkflowJobInput): Awaitable<WorkflowJob>;
   getWorkflowJob(jobId: string): Awaitable<WorkflowJob | undefined>;
   upsertRunner(runner: Runner): Awaitable<Runner>;
+  listRunners(): Awaitable<Runner[]>;
+  setRunnerStatus(runnerId: string, status: Runner["status"], now: Date): Awaitable<Runner>;
   heartbeatRunner(runnerId: string, now: Date): Awaitable<Runner>;
   claimNextJob(input: ClaimJobInput): Awaitable<ClaimJobResult | undefined>;
+  diagnoseClaim(input: ClaimJobInput): Awaitable<RunnerClaimDiagnostics>;
   startClaimedJob(jobId: string, runnerId: string, now: Date): Awaitable<WorkflowJob>;
   completeJob(input: CompleteWorkflowJobInput): Awaitable<WorkflowJobResult>;
   failJob(input: FailWorkflowJobInput): Awaitable<WorkflowJobResult>;

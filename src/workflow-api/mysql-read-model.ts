@@ -1,8 +1,9 @@
 import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
 import { rowToArtifact, rowToDocument, rowToDocumentVersion } from "../document-core/mysql-repository";
+import { fromMysqlDateTime } from "../mysql/datetime";
 import { prdConfirmationWorkflowPolicy, type FeedbackItem, type FeedbackSource } from "../prd-confirmation/domain";
-import type { WorkflowJob, WorkflowRun } from "../workflow-core/domain";
-import { rowToWorkflowJob, type MysqlDatabase } from "../workflow-core/mysql-repository";
+import type { WorkflowJob, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
+import { rowToWorkflowJob, rowToWorkflowTask, type MysqlDatabase } from "../workflow-core/mysql-repository";
 
 export interface WorkflowApiReadModel {
   summarizeState(sourceKey: string): Promise<Record<string, unknown> | undefined>;
@@ -51,6 +52,8 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
       : [undefined, [], undefined] as const;
 
     return {
+      runId: run.id,
+      documentId: document?.id,
       prdJiraKey: sourceKey,
       prdStatus: document?.status ?? run.status,
       policy: prdConfirmationWorkflowPolicy,
@@ -78,7 +81,8 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
       return undefined;
     }
 
-    const [jobs, documents] = await Promise.all([
+    const [tasks, jobs, documents] = await Promise.all([
+      this.listWorkflowTasks(runId),
       this.listWorkflowJobs(runId),
       this.listDocumentsForRun(runId)
     ]);
@@ -86,6 +90,7 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     return {
       run,
       policy: prdConfirmationWorkflowPolicy,
+      tasks,
       jobs,
       documents
     };
@@ -100,17 +105,29 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
 
     const jobs = summary.jobs as WorkflowJob[];
     const documents = summary.documents as Document[];
+    const tasks = summary.tasks as WorkflowTask[] | undefined;
 
     return {
       run: summary.run,
       policy: prdConfirmationWorkflowPolicy,
-      nodes: jobs.map((job) => ({
-        id: job.id,
-        type: "workflow_job",
-        jobType: job.jobType,
-        status: job.status,
-        primaryDocumentId: primaryDocumentIdForJob(job, documents)
-      })),
+      tasks: tasks ?? [],
+      nodes: [
+        ...(tasks ?? []).map((task) => ({
+          id: task.id,
+          type: "workflow_task",
+          taskType: task.taskType,
+          status: task.status,
+          currentDocumentId: task.currentDocumentId
+        })),
+        ...jobs.map((job) => ({
+          id: job.id,
+          type: "workflow_job",
+          jobType: job.jobType,
+          status: job.status,
+          taskId: job.taskId,
+          primaryDocumentId: primaryDocumentIdForJob(job, documents)
+        }))
+      ],
       documents
     };
   }
@@ -195,6 +212,18 @@ export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
     );
 
     return rows.map(rowToWorkflowJob);
+  }
+
+  private async listWorkflowTasks(runId: string): Promise<WorkflowTask[]> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_task
+       WHERE run_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [runId]
+    );
+
+    return rows.map(rowToWorkflowTask);
   }
 
   private async getLatestWorkflowJobResultForRun(runId: string): Promise<{ output: Record<string, unknown> } | undefined> {
@@ -461,7 +490,11 @@ function optionalNumber(value: unknown): number | undefined {
 
 function isoValue(value: unknown): string {
   if (value instanceof Date) {
-    return value.toISOString();
+    return fromMysqlDateTime(value);
+  }
+
+  if (typeof value === "string") {
+    return fromMysqlDateTime(value);
   }
 
   return stringValue(value);

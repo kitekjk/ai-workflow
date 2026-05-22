@@ -1,4 +1,4 @@
-import { createEmptyStore } from "../prd-confirmation/domain";
+import { createEmptyStore, type ExternalIssue } from "../prd-confirmation/domain";
 import { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
 import { PrdConfirmationWorkflow } from "../prd-confirmation/workflow";
 import { AdapterBackedPrdSkills } from "../prd-confirmation/adapter-backed-skills";
@@ -74,6 +74,35 @@ export function createJiraIssueReaderFromEnv(env: NodeJS.ProcessEnv): JiraIssueR
     writebackFieldIds: jiraWritebackFieldIds(env),
     transitionIds: jiraTransitionIds(env)
   });
+}
+
+export function createStubJiraIssueReader(): JiraIssueReader {
+  const issues = new Map<string, ExternalIssue>(
+    stubExternalIssues().map((issue) => [issue.key, issue])
+  );
+
+  return {
+    async loadPrdWithSources(prdJiraKey) {
+      const prd = issues.get(prdJiraKey) ?? syntheticStubPrd(prdJiraKey);
+
+      if (!prd || prd.issueType !== "prd") {
+        throw new Error(`PRD Jira ticket is not readable: ${prdJiraKey}`);
+      }
+
+      return {
+        prd: cloneExternalIssue(prd),
+        sources: (prd.linkedSourceKeys ?? []).map((sourceKey) => {
+          const source = issues.get(sourceKey);
+
+          if (!source) {
+            throw new Error(`Linked source request is not readable: ${sourceKey}`);
+          }
+
+          return cloneExternalIssue(source);
+        })
+      };
+    }
+  };
 }
 
 function createPrdSkills(env: NodeJS.ProcessEnv, wikiPublisher?: WikiPublisher): StubPrdSkills | PrdSkillExecutor {
@@ -229,4 +258,51 @@ function requireTrimmedEnv(env: NodeJS.ProcessEnv, key: string): string {
   }
 
   return value;
+}
+
+function stubExternalIssues(): ExternalIssue[] {
+  return [
+    {
+      key: "OPS-1",
+      issueType: "operational_request",
+      status: "open",
+      summary: "Reduce repeated FAQ handling",
+      description: "Operations wants fewer repeated FAQ responses."
+    },
+    {
+      key: "OPS-2",
+      issueType: "operational_request",
+      status: "open",
+      summary: "Improve answer consistency",
+      description: "Operators need consistent answers for common customer questions."
+    },
+    {
+      key: "PRD-100",
+      issueType: "prd",
+      status: "prd_requested",
+      summary: "FAQ automation PRD",
+      linkedSourceKeys: ["OPS-1", "OPS-2"]
+    }
+  ];
+}
+
+function cloneExternalIssue(issue: ExternalIssue): ExternalIssue {
+  return {
+    ...issue,
+    linkedSourceKeys: issue.linkedSourceKeys ? [...issue.linkedSourceKeys] : undefined
+  };
+}
+
+function syntheticStubPrd(key: string): ExternalIssue | undefined {
+  if (!/^PRD-SMOKE-[A-Za-z0-9-]+$/.test(key)) {
+    return undefined;
+  }
+
+  return {
+    key,
+    issueType: "prd",
+    status: "prd_requested",
+    summary: `${key} smoke PRD`,
+    linkedSourceKeys: ["OPS-1"]
+  };
 }

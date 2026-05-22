@@ -21,6 +21,7 @@ describe("MysqlWorkflowApiReadModel", () => {
         {
           id: "job_1",
           run_id: "run_1",
+          task_id: "task_1",
           job_type: "prd.generate_draft",
           status: "succeeded",
           input_json: JSON.stringify({ sourceDocumentId: "doc_wi_1" }),
@@ -42,6 +43,21 @@ describe("MysqlWorkflowApiReadModel", () => {
           updated_at: "2026-05-20T00:01:00.000Z"
         }
       ],
+      workflowTasks: [
+        {
+          id: "task_1",
+          run_id: "run_1",
+          parent_task_id: null,
+          task_type: "prd",
+          source_key: "PRD-100",
+          title: "FAQ automation PRD",
+          status: "approval_pending",
+          current_document_id: "doc_wi_1",
+          metadata_json: JSON.stringify({ documentId: "doc_wi_1" }),
+          created_at: "2026-05-20T00:00:00.000Z",
+          updated_at: "2026-05-20T00:01:00.000Z"
+        }
+      ],
       workflowJobResults: [
         {
           id: "result_1",
@@ -54,6 +70,7 @@ describe("MysqlWorkflowApiReadModel", () => {
         {
           id: "doc_wi_1",
           workflow_run_id: "run_1",
+          workflow_task_id: "task_1",
           parent_document_id: null,
           type: "prd",
           source_key: "PRD-100",
@@ -164,11 +181,16 @@ describe("MysqlWorkflowApiReadModel", () => {
     });
     expect(run).toMatchObject({
       run: { id: "run_1", sourceKey: "PRD-100" },
+      tasks: [{ id: "task_1", currentDocumentId: "doc_wi_1" }],
       jobs: [{ id: "job_1", jobType: "prd.generate_draft" }],
       documents: [{ id: "doc_wi_1", currentVersionId: "docv_1" }]
     });
     expect(tree).toMatchObject({
-      nodes: [{ id: "job_1", primaryDocumentId: "doc_wi_1" }]
+      tasks: [{ id: "task_1" }],
+      nodes: [
+        { id: "task_1", type: "workflow_task", currentDocumentId: "doc_wi_1" },
+        { id: "job_1", taskId: "task_1", primaryDocumentId: "doc_wi_1" }
+      ]
     });
     expect(current).toMatchObject({
       document: { id: "doc_wi_1" },
@@ -189,6 +211,7 @@ describe("MysqlWorkflowApiReadModel", () => {
 
 interface FakeRows {
   workflowRuns?: Row[];
+  workflowTasks?: Row[];
   workflowJobs?: Row[];
   workflowJobResults?: Row[];
   documents?: Row[];
@@ -223,6 +246,10 @@ class FakeMysqlReadDatabase implements MysqlDatabase, MysqlConnection {
 
     if (normalizedSql.includes("FROM workflow_job")) {
       return [this.rows.workflowJobs?.filter((row) => row.run_id === params[0]) as T, undefined];
+    }
+
+    if (normalizedSql.includes("FROM workflow_task")) {
+      return [this.rows.workflowTasks?.filter((row) => row.run_id === params[0]) as T, undefined];
     }
 
     if (normalizedSql.includes("FROM document_version WHERE id")) {

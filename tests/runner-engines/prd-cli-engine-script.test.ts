@@ -133,6 +133,139 @@ process.stdin.on("end", () => {
     expect(readFileSync(cwdFile, "utf8")).toBe(portableRealPath(dir));
   });
 
+  it("builds a code update prompt for implementation PR rework jobs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "implementation-update-runner-"));
+    const promptFile = join(dir, "prompt.txt");
+    const fakeCodex = join(dir, "codex");
+    writeFileSync(
+      fakeCodex,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+let prompt = "";
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(promptFile)}, prompt);
+  const outputIndex = args.indexOf("--output-last-message");
+  fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
+    status: "succeeded",
+    pullRequestNumber: 42,
+    pullRequestUrl: "https://github.example/acme/app/pull/42",
+    latestCommitSha: "updated-sha",
+    summary: "Updated failing unit test"
+  }));
+});
+`
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "scripts/document-runner-engine.mjs",
+        "--engine",
+        "codex",
+        "--bin",
+        fakeCodex,
+        "--timeout-ms",
+        "5000",
+        "--sandbox",
+        "workspace-write",
+        "--workdir",
+        dir
+      ],
+      {
+        cwd: process.cwd(),
+        input: JSON.stringify({
+          jobType: "implementation.update_pr",
+          documentType: "spec",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example/acme/app/pull/42",
+          branchName: "feature/spec-100",
+          repositoryCloneUrl: "https://github.example/acme/app.git",
+          feedback: "Failing checks: unit",
+          outputLanguage: "ko"
+        })
+      }
+    ).toString();
+
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(JSON.parse(stdout)).toMatchObject({
+      status: "succeeded",
+      pullRequestNumber: 42,
+      latestCommitSha: "updated-sha"
+    });
+    expect(prompt).toContain("updating an existing implementation pull request");
+    expect(prompt).toContain("current working directory");
+    expect(prompt).toContain("Commit the change");
+    expect(prompt).toContain("implementation.update_pr");
+    expect(prompt).toContain("pullRequestNumber");
+    expect(prompt).not.toContain('"markdown":"# ..."');
+  });
+
+  it("builds an initial code implementation prompt for implementation PR jobs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "implementation-open-pr-runner-"));
+    const promptFile = join(dir, "prompt.txt");
+    const fakeCodex = join(dir, "codex");
+    writeFileSync(
+      fakeCodex,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+let prompt = "";
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(promptFile)}, prompt);
+  const outputIndex = args.indexOf("--output-last-message");
+  fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
+    status: "implemented",
+    latestCommitSha: "initial-sha",
+    summary: "Implemented initial PR"
+  }));
+});
+`
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "scripts/document-runner-engine.mjs",
+        "--engine",
+        "codex",
+        "--bin",
+        fakeCodex,
+        "--timeout-ms",
+        "5000",
+        "--sandbox",
+        "workspace-write",
+        "--workdir",
+        dir
+      ],
+      {
+        cwd: process.cwd(),
+        input: JSON.stringify({
+          jobType: "implementation.open_pr",
+          documentType: "spec",
+          branchName: "feature/spec-100",
+          repositoryCloneUrl: "https://github.example/acme/app.git",
+          outputLanguage: "ko"
+        })
+      }
+    ).toString();
+
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(JSON.parse(stdout)).toMatchObject({
+      status: "implemented",
+      latestCommitSha: "initial-sha"
+    });
+    expect(prompt).toContain("implementing an approved Spec");
+    expect(prompt).toContain("preparing its first pull request");
+    expect(prompt).toContain("Commit the change");
+    expect(prompt).toContain("implementation.open_pr");
+    expect(prompt).not.toContain('"markdown":"# ..."');
+  });
+
   it("asks the model to return Korean draft and quality output when outputLanguage is ko", () => {
     const dir = mkdtempSync(join(tmpdir(), "prd-cli-engine-language-"));
     const promptFile = join(dir, "prompt.txt");

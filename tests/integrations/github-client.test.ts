@@ -90,6 +90,9 @@ describe("GitHubRestClient", () => {
       state: "open",
       draft: false,
       merged: false,
+      branchName: "feature/spec-100",
+      baseBranch: "main",
+      repositoryCloneUrl: "https://github.com/acme/workflow-app.git",
       latestCommitSha: "head-sha",
       reviewStatus: "approved",
       ciStatus: "success",
@@ -239,7 +242,15 @@ function routeFakeGitHub(
       draft: false,
       merged: false,
       head: {
-        sha: "head-sha"
+        sha: "head-sha",
+        ref: "feature/spec-100",
+        repo: {
+          clone_url: "https://github.com/acme/workflow-app.git",
+          full_name: "acme/workflow-app"
+        }
+      },
+      base: {
+        ref: "main"
       }
     });
     return;

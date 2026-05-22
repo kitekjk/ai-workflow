@@ -7,6 +7,9 @@ describe("runtime secret handling", () => {
       "JIRA_API_TOKEN",
       "CONFLUENCE_API_TOKEN",
       "GITHUB_TOKEN",
+      "WORKFLOW_APP_API_TOKEN",
+      "WORKFLOW_RUNNER_TOKENS",
+      "LOCAL_RUNNER_TOKEN",
       "WORKFLOW_MYSQL_PASSWORD",
       "WORKFLOW_MYSQL_ROOT_PASSWORD"
     ]);
@@ -14,9 +17,10 @@ describe("runtime secret handling", () => {
       configuredCredentialEnvKeys({
         JIRA_API_TOKEN: "jira-token",
         GITHUB_TOKEN: "ghp_secret",
+        WORKFLOW_APP_API_TOKEN: "app-secret",
         UNRELATED_TOKEN: "not-used-by-runtime"
       })
-    ).toEqual(["JIRA_API_TOKEN", "GITHUB_TOKEN"]);
+    ).toEqual(["JIRA_API_TOKEN", "GITHUB_TOKEN", "WORKFLOW_APP_API_TOKEN"]);
   });
 
   it("redacts secret-looking keys, known env values, authorization headers, and token query params", () => {
@@ -34,7 +38,8 @@ describe("runtime secret handling", () => {
         {
           env: {
             JIRA_API_TOKEN: "jira-token",
-            GITHUB_TOKEN: "ghp_secret"
+            GITHUB_TOKEN: "ghp_secret",
+            WORKFLOW_RUNNER_TOKENS: "runner-a:runner-secret"
           }
         }
       )
@@ -47,5 +52,14 @@ describe("runtime secret handling", () => {
         safe: "visible"
       }
     });
+    expect(
+      redactSecrets("runner failed with runner-secret", {
+        env: {
+          WORKFLOW_RUNNER_TOKENS: JSON.stringify({
+            "runner-a": "runner-secret"
+          })
+        }
+      })
+    ).toBe("runner failed with [REDACTED]");
   });
 });

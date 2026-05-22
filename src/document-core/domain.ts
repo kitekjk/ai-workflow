@@ -6,6 +6,7 @@ export type ArtifactLocation = "git" | "wiki" | "database" | "local_workspace" |
 export interface Document {
   id: string;
   workflowRunId: string;
+  workflowTaskId?: string;
   parentDocumentId?: string;
   type: DocumentType;
   sourceKey: string;

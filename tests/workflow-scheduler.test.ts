@@ -52,6 +52,90 @@ describe("WorkflowScheduler", () => {
     });
   });
 
+  it("marks stale runners offline and does not claim work for them", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, {
+      leaseMs: 30_000,
+      runnerOfflineAfterMs: 60_000
+    });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.generate",
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.generate"],
+      requiredEngine: "claude",
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner-planner-a",
+      ownerUserId: "planner-a",
+      mode: "local",
+      capabilities: ["document.generate"],
+      engines: ["claude"],
+      now
+    });
+
+    const staleAt = new Date("2026-05-20T00:01:01.000Z");
+    const runners = await scheduler.listRunners(staleAt);
+    const claim = await scheduler.claim("runner-planner-a", staleAt);
+
+    expect(runners).toMatchObject([
+      {
+        id: "runner-planner-a",
+        status: "offline",
+        lastHeartbeatAt: "2026-05-20T00:00:00.000Z"
+      }
+    ]);
+    expect(claim).toBeUndefined();
+    expect(repository.workflowJobs[0].status).toBe("pending");
+    expect(repository.workflowJobs[0].claimedByRunnerId).toBeUndefined();
+  });
+
+  it("returns diagnostics when no pending job matches the runner", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.generate",
+      assignedUserId: "planner-b",
+      requiredCapabilities: ["document.generate"],
+      requiredEngine: "claude",
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner-planner-a",
+      ownerUserId: "planner-a",
+      mode: "local",
+      capabilities: ["document.generate"],
+      engines: ["claude"],
+      now
+    });
+
+    const result = await scheduler.claimWithDiagnostics("runner-planner-a", now);
+
+    expect(result.claim).toBeUndefined();
+    expect(result.diagnostics).toMatchObject({
+      runnerId: "runner-planner-a",
+      reason: "no_matching_job",
+      runnerStatus: "online",
+      candidateJobCount: 1,
+      nearestJobId: "job_1",
+      nearestBlocker: "owner_mismatch"
+    });
+  });
+
   it("records runner result attempts and marks retryable failures for future claim", async () => {
     const repository = new InMemoryWorkflowRepository();
     const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });

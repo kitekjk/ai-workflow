@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { fromMysqlDateTime, toMysqlDateTime } from "../mysql/datetime";
 import type { Artifact, Document, DocumentVersion } from "./domain";
 import type {
   CreateDocumentInput,
@@ -30,6 +31,7 @@ export class MysqlDocumentRepository implements DocumentRepository {
     const document: Document = {
       id: this.idGenerator("doc"),
       workflowRunId: input.workflowRunId,
+      workflowTaskId: input.workflowTaskId,
       parentDocumentId: input.parentDocumentId,
       type: input.type,
       sourceKey: input.sourceKey,
@@ -41,13 +43,14 @@ export class MysqlDocumentRepository implements DocumentRepository {
 
     await this.database.execute(
       `INSERT INTO document (
-        id, workflow_run_id, parent_document_id, type, source_key, title, status,
+        id, workflow_run_id, workflow_task_id, parent_document_id, type, source_key, title, status,
         current_version_id, current_markdown_artifact_id, current_wiki_artifact_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         document.id,
         document.workflowRunId,
+        document.workflowTaskId ?? null,
         document.parentDocumentId ?? null,
         document.type,
         document.sourceKey,
@@ -56,8 +59,8 @@ export class MysqlDocumentRepository implements DocumentRepository {
         document.currentVersionId ?? null,
         document.currentMarkdownArtifactId ?? null,
         document.currentWikiArtifactId ?? null,
-        document.createdAt,
-        document.updatedAt
+        toMysqlDateTime(document.createdAt),
+        toMysqlDateTime(document.updatedAt)
       ]
     );
 
@@ -100,12 +103,12 @@ export class MysqlDocumentRepository implements DocumentRepository {
           version.revisionSummary ?? null,
           version.revisionJobId ?? null,
           version.contentHash ?? null,
-          version.createdAt
+          toMysqlDateTime(version.createdAt)
         ]
       );
       await connection.execute(
         `UPDATE document SET current_version_id = ?, updated_at = ? WHERE id = ?`,
-        [version.id, version.createdAt, version.documentId]
+        [version.id, toMysqlDateTime(version.createdAt), version.documentId]
       );
 
       return version;
@@ -146,21 +149,21 @@ export class MysqlDocumentRepository implements DocumentRepository {
           artifact.externalVersion ?? null,
           artifact.contentHash ?? null,
           JSON.stringify(artifact.metadata),
-          artifact.createdAt
+          toMysqlDateTime(artifact.createdAt)
         ]
       );
 
       if (artifact.documentId && artifact.type === "document_markdown") {
         await connection.execute(
           `UPDATE document SET current_markdown_artifact_id = ?, updated_at = ? WHERE id = ?`,
-          [artifact.id, artifact.createdAt, artifact.documentId]
+          [artifact.id, toMysqlDateTime(artifact.createdAt), artifact.documentId]
         );
       }
 
       if (artifact.documentId && artifact.type === "wiki_page") {
         await connection.execute(
           `UPDATE document SET current_wiki_artifact_id = ?, updated_at = ? WHERE id = ?`,
-          [artifact.id, artifact.createdAt, artifact.documentId]
+          [artifact.id, toMysqlDateTime(artifact.createdAt), artifact.documentId]
         );
       }
 
@@ -268,6 +271,7 @@ export function rowToDocument(row: MysqlRow): Document {
   return {
     id: stringValue(row.id),
     workflowRunId: stringValue(row.workflow_run_id),
+    workflowTaskId: optionalString(row.workflow_task_id),
     parentDocumentId: optionalString(row.parent_document_id),
     type: stringValue(row.type) as Document["type"],
     sourceKey: stringValue(row.source_key),
@@ -343,7 +347,11 @@ function numberValue(value: unknown): number {
 
 function isoValue(value: unknown): string {
   if (value instanceof Date) {
-    return value.toISOString();
+    return fromMysqlDateTime(value);
+  }
+
+  if (typeof value === "string") {
+    return fromMysqlDateTime(value);
   }
 
   return stringValue(value);

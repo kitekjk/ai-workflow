@@ -9,6 +9,8 @@ The repository already contains:
 
 - Workflow API entrypoints for the current PRD/document workflow slice.
 - Local runner registration, heartbeat, claim, execution, and result APIs.
+- Runner registry visibility through `GET /runners` for dashboard and operator
+  checks.
 - MySQL schema migrations and repository implementations.
 - Jira, GitHub, and Confluence integration clients.
 - Secret redaction for runner logs, job results, error messages, artifact URIs,
@@ -43,6 +45,13 @@ Important readiness note:
 - `WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID` and
   `WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS` identify repository transition
   workers and control the MySQL claim lease for pending runner results.
+- `WORKFLOW_RUNNER_OFFLINE_AFTER_MS` controls when a runner is shown and
+  treated as offline after its last heartbeat. It defaults to twice
+  `WORKFLOW_JOB_LEASE_MS`.
+- `WORKFLOW_SCHEDULER_RECOVERY_MS` controls the in-process scheduler loop that
+  recovers expired claimed/running job leases. It defaults to `1000` ms when a
+  MySQL scheduler is configured; set it to `0` or `disabled` only if another
+  scheduler process owns lease recovery.
 - On API startup in MySQL mode, the compatibility fixture is hydrated from the
   MySQL read-model snapshot before HTTP routes are served.
 - In MySQL mode, the PRD state view plus generic workflow/document/approval
@@ -81,10 +90,11 @@ Important readiness note:
   only persist the result and the loop owns workflow state transitions to avoid
   duplicate processing. If the loop is disabled, the API keeps request-time
   transition processing as a fallback. The same transition core can run as
-  `npm run start:repository-transition-worker`; the next production gap is a
-  production stress test for multiple transition workers sharing the MySQL
-  `workflow_transition_claim` lease table. Successfully applied transitions
-  mark their claim row as `processed`.
+  `npm run start:repository-transition-worker`. Multiple workers share the
+  MySQL `workflow_transition_claim` lease table; the reader retries after a
+  lost claim race so one polling wave can still claim later visible results,
+  and the automated tests cover an 8-worker contention scenario. Successfully
+  applied transitions mark their claim row as `processed`.
 
 ## Target Topology
 
@@ -110,9 +120,10 @@ flowchart LR
 ```
 
 The central Workflow API owns workflow state, job claims, lease recovery,
-retries, cancellation, and audit events. Local runners only execute jobs after
-the central scheduler grants a claim that matches runner identity, owner scope,
-project/repository allowlists, capabilities, and engine constraints.
+retries, cancellation, runner concurrency, and audit events. Local runners only
+execute jobs after the central scheduler grants a claim that matches runner
+identity, owner scope, project/repository allowlists, capabilities, and engine
+constraints.
 
 n8n is not part of the target runtime. The Docker n8n services and exported
 workflows remain in the repository only as historical migration reference.
@@ -165,6 +176,55 @@ For a one-shot runner smoke test, set:
 LOCAL_RUNNER_ONCE=true
 ```
 
+For a local end-to-end drain check, set a job limit instead:
+
+```bash
+LOCAL_RUNNER_MAX_JOBS=5
+```
+
+The runner will register, heartbeat, claim and execute eligible jobs one after
+another, then exit when it reaches idle or the configured limit.
+
+## Identity and Optional Auth
+
+The MVP treats user email as the primary human identity. Workflow App requests
+should send `requestedBy`, `actor`, or `author` with the current user's email,
+and local runners should set `LOCAL_RUNNER_OWNER_EMAIL` to the owner email.
+The runner API also accepts `ownerEmail` as an alias for the stored
+`ownerUserId` field. That is enough for assignment, audit trails, dashboard
+attribution, and local runner scope checks. New PRD intake jobs are assigned to
+the requester email, so a local runner only claims them when its owner email
+matches. A local runner without an owner email is not eligible to claim jobs,
+and the local runner CLI fails fast if `LOCAL_RUNNER_OWNER_EMAIL` is missing in
+local mode. The dashboard exposes this as an Actor email field and uses it for
+intake, feedback, revision, and approval actions. The dashboard also reads the
+workflow run event ledger and includes actor/requester metadata in the Status
+Events view when those events are available.
+
+Bearer auth is optional for localhost/email-only development and enabled only
+by configuration. When `WORKFLOW_APP_API_TOKEN` is set, Workflow
+App/control-plane calls such as intake, state reads, approval actions,
+cancellation, and manual tick endpoints must send
+`Authorization: Bearer <app-token>`.
+
+Runner APIs can be bound to runner identity with `WORKFLOW_RUNNER_TOKENS`.
+Use comma-separated `runnerId:token` pairs or a JSON object. Runner
+registration, heartbeat, claim, and runner job callbacks must send the token
+for the same runner id they register, address in the URL, or submit in the
+request body.
+
+```bash
+WORKFLOW_APP_API_TOKEN=
+WORKFLOW_RUNNER_TOKENS=
+LOCAL_RUNNER_ID=runner-yourname-laptop
+LOCAL_RUNNER_OWNER_EMAIL=yourname@example.com
+LOCAL_RUNNER_TOKEN=
+```
+
+If runner tokens are configured, unknown runner ids are rejected before they can
+register. If only the app token is configured, runner APIs accept the app token
+as a development fallback.
+
 ## Local Runner Scope
 
 Each local runner should be registered with the narrowest useful scope.
@@ -173,29 +233,98 @@ Recommended defaults:
 
 ```bash
 LOCAL_RUNNER_ID=runner-yourname-laptop
-LOCAL_RUNNER_OWNER_USER_ID=yourname@example.com
+LOCAL_RUNNER_TOKEN=
+LOCAL_RUNNER_OWNER_EMAIL=yourname@example.com
 LOCAL_RUNNER_MODE=local
 LOCAL_RUNNER_CAPABILITIES=document.generate,document.evaluate
 LOCAL_RUNNER_ALLOWED_PROJECT_IDS=
 LOCAL_RUNNER_ALLOWED_REPOSITORY_IDS=
 LOCAL_RUNNER_TEAM_IDS=
 LOCAL_RUNNER_CONCURRENCY=1
+LOCAL_RUNNER_WORKSPACE_ROOT=.runner-workspaces
 RUNNER_ENGINE=codex
 ```
 
 Only PCs allowed to operate implementation PRs should add:
 
 ```bash
-LOCAL_RUNNER_CAPABILITIES=document.generate,document.evaluate,implementation.open_pr,implementation.collect_pr_status
+LOCAL_RUNNER_CAPABILITIES=document.generate,document.evaluate,implementation.open_pr,implementation.update_pr,implementation.collect_pr_status
 GITHUB_TOKEN=
 GITHUB_OWNER=org
 GITHUB_REPO=service-repo
 GITHUB_DEFAULT_BASE_BRANCH=main
+GITHUB_CLONE_URL=https://github.com/org/service-repo.git
 ```
 
 `RUNNER_ENGINE` can be `codex` or `claude` depending on the local machine and
 the user's preferred CLI setup. Job templates can still constrain which engine
 is allowed for a specific job.
+
+Run the local runner doctor before starting the runner on a new PC:
+
+```bash
+npm run doctor:local-runner
+```
+
+The doctor command does not claim work. It checks the Workflow API URL, runner
+id, owner email, capability and engine scope, required Claude/Codex CLI command,
+GitHub settings for implementation capabilities, and workspace writability.
+Fix every `failed` check before running `npm run start:local-runner`; `warning`
+means the runner can start but is missing an operational nicety such as an
+isolated workspace root.
+
+Each claimed job gets its own directory under `LOCAL_RUNNER_WORKSPACE_ROOT`.
+When a job template sets `runner.workdir`, the runner creates that subdirectory
+inside the isolated job workspace before launching Codex/Claude. Paths that
+escape the job workspace are rejected.
+
+For `implementation.update_pr`, Git must be available on `PATH`. When GitHub
+PR status includes a `repositoryCloneUrl` and `branchName`, the local runner
+clones that PR branch into the job template workdir before launching the CLI
+agent. If either field is missing, the job is failed and retried through the
+normal scheduler policy instead of running against an empty directory.
+
+The CLI bridge gives `implementation.update_pr` a code-rework prompt, not a
+document-generation prompt. The agent is expected to apply the smallest code
+fix on the checked-out branch, run relevant tests when practical, commit and
+return JSON containing the PR number, PR URL, summary, and latest commit SHA
+when known. After the CLI returns, the local runner pushes the checked-out PR
+branch to `origin` before the workflow schedules the next PR status collection.
+
+When `GITHUB_CLONE_URL` and `LOCAL_RUNNER_WORKSPACE_ROOT` are configured, the
+initial `implementation.open_pr` job also runs as a code implementation job:
+the local runner clones the implementation repo, checks out the workflow branch,
+runs the CLI agent in `implementation/`, pushes the branch to `origin`, then
+opens the GitHub PR. Without a clone URL or isolated workspace it falls back to
+the lightweight GitHub PR creation path.
+
+Keep `LOCAL_RUNNER_CONCURRENCY=1` unless the local machine can safely run
+multiple code-agent processes in parallel. The scheduler checks active
+claimed/running/cancel-requested jobs before issuing another claim to the same
+runner.
+
+If a local runner prints `status=idle`, inspect `claimReason`, `claimMessage`,
+and `nearestBlocker` in the JSON log. These values come from the scheduler
+claim diagnostics and distinguish stale heartbeat, disabled runner,
+concurrency capacity, no available jobs, and pending jobs that do not match the
+runner's owner/scope/capability/engine.
+
+The same diagnostics are exposed on `GET /runners` for dashboard/operator
+views, including `claim_available` when a runner has eligible work waiting.
+Capacity-full online runners are shown as `busy` in the runner list.
+
+Operator pause/resume controls:
+
+```bash
+POST /runners/{runnerId}/pause
+POST /runners/{runnerId}/resume
+```
+
+Pause stores the runner as `disabled`; claim diagnostics then return
+`runner_disabled`, and heartbeat or repeated registration keeps the runner
+disabled. Only the explicit resume action moves the runner back to `online`.
+When `WORKFLOW_APP_API_TOKEN` is configured, these pause/resume actions use the
+app/control-plane token rather than the per-runner callback token.
 
 ## MySQL Startup
 
@@ -210,6 +339,8 @@ Required environment variables:
 ```bash
 WORKFLOW_RUNTIME_STORE=mysql
 WORKFLOW_JOB_LEASE_MS=30000
+WORKFLOW_RUNNER_OFFLINE_AFTER_MS=60000
+WORKFLOW_SCHEDULER_RECOVERY_MS=1000
 WORKFLOW_REPOSITORY_TRANSITION_MS=1000
 WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID=repository-transition-worker
 WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS=30000
@@ -338,6 +469,51 @@ The fixture-backed API normally advances through its internal tick loop. Use
 `POST /tick` only for development/test harnesses or when
 `WORKFLOW_INTERNAL_TICK_MS=0`.
 
+MySQL no-fixture smoke can use stub Jira data for local checks:
+
+```bash
+npm run smoke:mysql:no-fixture
+```
+
+The smoke command applies migrations unless `SMOKE_SKIP_MIGRATIONS=true`, then
+starts an in-process API with `WORKFLOW_RUNTIME_STORE=mysql`,
+`WORKFLOW_COMPATIBILITY_FIXTURE=disabled`, and repository transitions processed
+inline. It intakes a unique `PRD-SMOKE-*` stub PRD, registers a scoped local
+runner, drains PRD generation/evaluation, approves the PRD, drains downstream
+routing plus HLD generation/evaluation, approves the HLD, drains LLD fan-out
+and generation/evaluation, approves the LLDs, drains Spec fan-out and
+generation/evaluation, approves the Specs, then drains implementation PR
+creation and PR status collection. The final smoke verifies the PRD, HLD, LLD,
+and Spec documents are approved and that pull request artifacts were recorded
+for the generated Specs.
+
+Useful overrides:
+
+```bash
+SMOKE_ACTOR_EMAIL=yourname@example.com
+SMOKE_RUNNER_ID=runner-smoke-local
+SMOKE_PRD_JIRA_KEY=PRD-SMOKE-MANUAL-1
+SMOKE_SKIP_MIGRATIONS=false
+```
+
+Manual equivalent when a no-fixture API is already running:
+
+```bash
+curl -X POST http://127.0.0.1:3000/prd/intake \
+  -H 'content-type: application/json' \
+  -d '{"prdJiraKey":"PRD-100","requestedBy":"yourname@example.com"}'
+```
+
+With `LOCAL_RUNNER_OWNER_EMAIL=yourname@example.com`, a separate
+`LOCAL_RUNNER_MAX_JOBS=5 npm run start:local-runner` process should register,
+heartbeat, claim only that assigned work, and keep processing follow-up jobs
+until it becomes idle or reaches the limit.
+
+When the repository transition loop is enabled and you want a manual bounded
+step, call `POST /repository-transitions/process-next` to process one completed
+runner result into workflow/document state. The dashboard development helper
+uses the same trigger between local-runner claims.
+
 Fixture-only test controls such as `POST /test-controls/quality` are disabled
 by default on the API entrypoint and should only be enabled in automated tests
 or explicit local harnesses.
@@ -354,6 +530,8 @@ GitHub implementation checks, when configured:
 - A spec approval schedules `implementation.open_pr`.
 - The local runner creates a `pull_request` artifact.
 - The workflow schedules `implementation.collect_pr_status`.
+- CI-only failures schedule `implementation.update_pr` on the same Code task
+  and then collect PR status again.
 - PR review/check status is visible in the current state and artifacts.
 
 ## Confluence Feedback Import
@@ -442,9 +620,11 @@ Before treating the system as production-backed, complete these gates:
   use cases do not reintroduce duplicate MySQL upsert SQL.
 - Decide whether scheduler claim/recovery remains in-process with the API or
   moves to a separate worker process.
-- Add a stronger concurrent claim contract for multiple repository transition
-  workers.
-- Add authentication and authorization for Workflow App and runner APIs.
+- Validate repository transition worker contention against a real MySQL
+  deployment, beyond the automated fake-DB stress coverage.
+- Decide later whether email-only identity plus optional bearer tokens needs
+  to evolve into user/session RBAC, runner token rotation, or audited
+  credential lifecycle management.
 - Decide whether environment variables remain the credential source or whether
   a secret manager becomes mandatory.
 - Define backup, restore, and retention policy for MySQL.

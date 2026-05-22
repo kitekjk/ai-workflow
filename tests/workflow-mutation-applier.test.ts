@@ -87,7 +87,7 @@ describe("MysqlWorkflowMutationApplier", () => {
         "workflow.prd_intake",
         "PRD intake recorded: PRD-100",
         JSON.stringify({ prdJiraKey: "PRD-100" }),
-        "2026-05-20T00:00:00.000Z"
+        "2026-05-20 00:00:00.000"
       ])
     );
   });
@@ -186,7 +186,7 @@ describe("MysqlWorkflowMutationApplier", () => {
         "workflow.feedback_recorded",
         "Feedback recorded: fb_1",
         JSON.stringify({ feedbackId: "fb_1" }),
-        "2026-05-20T00:00:00.000Z",
+        "2026-05-20 00:00:00.000",
         "doc_wi_1"
       ])
     );

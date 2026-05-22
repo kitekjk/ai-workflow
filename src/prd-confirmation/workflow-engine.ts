@@ -43,8 +43,11 @@ export type WorkflowEngineTransitionType =
   | "document_quality_needs_revision"
   | "document_revision_applied"
   | "implementation_pr_opened"
+  | "implementation_pr_updated"
   | "implementation_pr_reviewed"
-  | "implementation_pr_in_review";
+  | "implementation_pr_in_review"
+  | "implementation_rework_requested"
+  | "implementation_revision_requested";
 
 export async function runEngineStep(store: PrdConfirmationStore): Promise<WorkflowEngineStepResult> {
   const result = store.agentJobResults.find((candidate) => !candidate.processed);
@@ -158,6 +161,30 @@ export async function runEngineStep(store: PrdConfirmationStore): Promise<Workfl
           documentVersionId: stringOrUndefined(result.output.documentVersionId) ?? stringOrUndefined(jobInputForResult(store, result).documentVersionId),
           pullNumber,
           pullRequestUrl: stringOrUndefined(result.output.pullRequestUrl)
+        })
+      );
+    }
+  }
+
+  if (result.jobType === "implementation.update_pr") {
+    workItem.state = "implementation_pr_open";
+    const pullNumber =
+      positiveIntegerOrUndefined(result.output.pullRequestNumber) ??
+      positiveIntegerOrUndefined(jobInputForResult(store, result).pullNumber);
+    transitionType = "implementation_pr_updated";
+
+    if (pullNumber) {
+      store.agentJobs.push(
+        createJob(store, workItem, "implementation.collect_pr_status", {
+          documentType: workItem.artifactType,
+          documentId: documentIdForWorkItem(workItem),
+          documentVersionId:
+            stringOrUndefined(result.output.documentVersionId) ??
+            stringOrUndefined(jobInputForResult(store, result).documentVersionId),
+          pullNumber,
+          pullRequestUrl:
+            stringOrUndefined(result.output.pullRequestUrl) ??
+            stringOrUndefined(jobInputForResult(store, result).pullRequestUrl)
         })
       );
     }

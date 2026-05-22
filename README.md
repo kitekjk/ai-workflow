@@ -79,11 +79,82 @@ Run the local Workflow API:
 npm run start:api
 ```
 
+The MVP identifies human actions by email fields such as `requestedBy`,
+`actor`, `author`, and `LOCAL_RUNNER_OWNER_EMAIL`; that is enough for
+assignment, audit, and dashboard attribution. New PRD intake jobs are assigned
+to the requester email so a matching local runner can claim only that owner's
+work. The older `LOCAL_RUNNER_OWNER_USER_ID` name remains as a compatibility
+alias. The dashboard Actor field sends that email on intake, feedback,
+revision, and approval API actions, and the dashboard log mixes in persisted
+workflow events so actor metadata appears in the execution ledger. The
+dashboard also reads `GET /runners` to show connected managed/local runners
+and their claim diagnostics, and the scheduler enforces each runner's
+configured concurrency before issuing another claim. Bearer auth is optional
+and only turns on when tokens are configured. Use it later if the API is
+exposed beyond localhost:
+
+```bash
+WORKFLOW_APP_API_TOKEN=app-secret
+WORKFLOW_RUNNER_TOKENS=runner-yourname-laptop:runner-secret
+LOCAL_RUNNER_TOKEN=runner-secret
+```
+
 Use the MySQL-backed scheduler/document runtime for runner APIs:
 
 ```bash
 WORKFLOW_RUNTIME_STORE=mysql npm run start:api
 ```
+
+In MySQL mode, `WORKFLOW_RUNNER_OFFLINE_AFTER_MS` controls when a runner is
+shown and treated as offline after its last heartbeat. It defaults to twice
+`WORKFLOW_JOB_LEASE_MS`. `WORKFLOW_SCHEDULER_RECOVERY_MS` controls the
+in-process scheduler loop that recovers expired claimed/running job leases back
+to `retrying`. It defaults to `1000`; set it to `0` or `disabled` only when a
+separate scheduler process owns lease recovery.
+
+`GET /runners` and no-job `POST /runners/{runnerId}/claim` responses include
+diagnostics such as `claim_available`, `runner_offline`,
+`runner_capacity_full`, `no_available_job`, or `no_matching_job`. Runner list
+responses promote capacity-full online runners to `busy` for dashboard/operator
+visibility. The local runner prints those fields as `claimReason`,
+`claimMessage`, and `nearestBlocker` in its idle JSON log.
+Operators can pause and resume registered runners with
+`POST /runners/{runnerId}/pause` and `POST /runners/{runnerId}/resume`. A paused
+runner is stored as `disabled`; heartbeat and repeated registration keep it
+disabled until an explicit resume, so a running local process cannot
+accidentally reclaim work after an operator pause.
+
+Run the repeatable MySQL no-fixture smoke when MySQL is available:
+
+```bash
+npm run smoke:mysql:no-fixture
+```
+
+The smoke command applies migrations by default, starts an in-process
+no-fixture Workflow API, intakes a unique `PRD-SMOKE-*` stub PRD, registers a
+scoped local runner using `SMOKE_ACTOR_EMAIL`, drains the generated draft and
+quality jobs through the local runner execution path, approves the PRD through
+the approval-gate API, drains downstream routing, HLD generation/evaluation,
+HLD approval fan-out, LLD generation/evaluation, LLD approval fan-out, Spec
+generation/evaluation, Spec approval, implementation PR creation, and PR status
+collection. The final smoke verifies the PRD/HLD/LLD/Spec documents are
+approved and that pull request artifacts were recorded for the generated Specs.
+
+For local end-to-end runner checks against a running API, set
+`LOCAL_RUNNER_MAX_JOBS` instead of `LOCAL_RUNNER_ONCE=true`. The runner will
+claim and execute up to that many eligible jobs, then exit when it becomes idle
+or reaches the limit.
+
+Before starting a local runner on a new machine, run:
+
+```bash
+npm run doctor:local-runner
+```
+
+The doctor command validates `WORKFLOW_API_BASE_URL`, local runner identity,
+owner email, capability/engine scope, required Claude/Codex CLI command,
+GitHub implementation settings, and workspace writability without registering
+or claiming work. It exits non-zero when a required setup item is missing.
 
 In MySQL mode, PRD compatibility workflow actions are also mirrored into the
 workflow/document read-model tables after state-changing API calls. API startup
@@ -92,10 +163,12 @@ before routes are served. Generic workflow and document GET views read directly
 from the MySQL read model when `WORKFLOW_RUNTIME_STORE=mysql`. Set
 `WORKFLOW_COMPATIBILITY_FIXTURE=disabled` with MySQL mode to run the
 read-model-backed GET views and runner APIs without the legacy PRD fixture;
-remaining PRD transition endpoints return `501` until the repository-backed
-transition engine replaces them. PRD intake is
-also written through a MySQL command path for the initial run, document, and
-draft job. Workflow/App, Jira, and Wiki feedback plus explicit revision
+local stub mode can still intake the seeded `PRD-100` issue through a stub Jira
+reader for smoke checks, while real mode reads Jira through the configured Jira
+client. Remaining PRD transition endpoints return `501` until the
+repository-backed transition engine replaces them. PRD intake is also written
+through a MySQL command path for the initial run, document, and draft job.
+Workflow/App, Jira, and Wiki feedback plus explicit revision
 requests are also written through a MySQL command path for `feedback_item` and
 revision `workflow_job` rows. Approval state changes and downstream
 routing/fan-out/implementation job scheduling have a MySQL command path for the
@@ -115,7 +188,11 @@ controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS` so completed runner results
 can advance workflow state without a manual `/tick`. When that loop is enabled,
 runner result requests only persist the result; the loop owns the workflow
 state transition to avoid duplicate processing. If the loop is disabled, the
-API keeps the request-time transition path as a fallback.
+API keeps the request-time transition path as a fallback. Operators and the
+dashboard can also trigger one repository transition explicitly with
+`POST /repository-transitions/process-next`; this is useful for local
+development when a bounded runner drain wants the next follow-up job to become
+claimable immediately.
 
 To run that transition loop outside the API process, set
 `WORKFLOW_REPOSITORY_TRANSITION_MS=0` on the API and run:
@@ -127,7 +204,8 @@ npm run start:repository-transition-worker
 
 Multiple transition workers coordinate through the MySQL
 `workflow_transition_claim` lease table. Successful transitions close the claim
-as `processed`.
+as `processed`; workers that lose a race for the oldest result retry within the
+same polling wave so later visible results can still be claimed.
 
 Example API calls:
 

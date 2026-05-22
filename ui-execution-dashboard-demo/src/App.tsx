@@ -2,6 +2,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleDot,
+  Clipboard,
+  Cpu,
   ExternalLink,
   FileText,
   GitBranch,
@@ -12,7 +14,9 @@ import {
   RotateCcw,
   ShieldCheck,
   StepForward,
+  Terminal,
   Timer,
+  UserRound,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -30,13 +34,23 @@ import {
 } from './data/mockWorkflow'
 import {
   approveApiGate,
+  defaultRunId,
+  defaultActorEmail,
   fetchApiDashboard,
+  fetchApiRunnerOnboarding,
+  pauseApiRunner,
   recordApiFeedback,
   requestApiRevision,
+  resumeApiRunner,
+  runApiFullSlice,
+  runApiLocalRunnerDrain,
   seedApiRun,
   setApiQualityPasses,
   tickApiRun,
+  type ApiActionResult,
   type DashboardProjectSummary,
+  type RunnerOnboardingSummary,
+  type RunnerStatusSummary,
 } from './data/workflowApi'
 
 const stateLabels: Record<WorkState, string> = {
@@ -49,12 +63,89 @@ const stateLabels: Record<WorkState, string> = {
 }
 
 const visibleStates: WorkState[] = ['running', 'failed', 'waiting_approval', 'completed']
+const actorEmailStorageKey = 'workflow-dashboard-actor-email'
+const initialRunnerStatuses: RunnerStatusSummary[] = [
+  {
+    id: 'runner-planner-laptop',
+    owner: 'planner@example.com',
+    mode: 'local',
+    status: 'busy',
+    capacity: '1/1 slots',
+    claim: 'runner capacity full',
+    capabilities: 'document.generate, document.evaluate',
+    engines: 'codex',
+    heartbeat: '09:00:00',
+  },
+  {
+    id: 'managed-router-a',
+    owner: 'Workflow API',
+    mode: 'managed',
+    status: 'online',
+    capacity: '0/1 slots',
+    claim: 'no available job',
+    capabilities: 'workflow.route, workflow.fanout',
+    engines: 'claude',
+    heartbeat: '09:00:04',
+  },
+]
+const initialRunnerOnboarding: RunnerOnboardingSummary = {
+  runnerId: 'runner-dashboard-example-com-pc',
+  ownerEmail: defaultActorEmail,
+  apiBaseUrl: '/api',
+  mode: 'local',
+  defaultEngine: 'codex',
+  capabilities: [
+    'document.generate',
+    'document.evaluate',
+    'document.revise',
+    'workflow.route',
+    'workflow.fanout',
+    'implementation.open_pr',
+    'implementation.update_pr',
+    'implementation.collect_pr_status',
+  ],
+  engines: ['codex', 'claude'],
+  environment: {
+    WORKFLOW_API_BASE_URL: '/api',
+    LOCAL_RUNNER_ID: 'runner-dashboard-example-com-pc',
+    LOCAL_RUNNER_OWNER_EMAIL: defaultActorEmail,
+    LOCAL_RUNNER_MODE: 'local',
+    LOCAL_RUNNER_CAPABILITIES: 'document.generate,document.evaluate,document.revise,workflow.route,workflow.fanout,implementation.open_pr,implementation.update_pr,implementation.collect_pr_status',
+    LOCAL_RUNNER_ENGINES: 'codex,claude',
+    RUNNER_ENGINE: 'codex',
+    LOCAL_RUNNER_WORKSPACE_ROOT: '.runner-workspaces',
+    LOCAL_RUNNER_MAX_JOBS: '6',
+    GITHUB_CLONE_URL: 'https://github.com/org/service-repo.git',
+  },
+  powershellSetup: [
+    '$env:WORKFLOW_API_BASE_URL="/api"',
+    `$env:LOCAL_RUNNER_OWNER_EMAIL="${defaultActorEmail}"`,
+    '$env:LOCAL_RUNNER_WORKSPACE_ROOT=".runner-workspaces"',
+    '$env:LOCAL_RUNNER_MAX_JOBS="6"',
+  ],
+  commands: [
+    { label: 'Install', command: 'npm install' },
+    { label: 'Doctor', command: 'npm run doctor:local-runner' },
+    { label: 'Drain', command: 'npm run start:local-runner' },
+  ],
+  requirements: ['Codex or Claude CLI available on this PC.'],
+}
+
+function initialActorEmail() {
+  try {
+    return window.localStorage.getItem(actorEmailStorageKey) || defaultActorEmail
+  } catch {
+    return defaultActorEmail
+  }
+}
 
 function App() {
   const [items, setItems] = useState<WorkItem[]>(() => structuredClone(initialWorkItems))
   const [events, setEvents] = useState<ExecutionEvent[]>(() => structuredClone(initialEvents))
   const [workflows, setWorkflows] = useState<WorkflowRunSummary[]>(() => structuredClone(mockWorkflowCatalog))
   const [summary, setSummary] = useState<DashboardProjectSummary>(() => ({ ...mockProjectSummary }))
+  const [runners, setRunners] = useState<RunnerStatusSummary[]>(() => structuredClone(initialRunnerStatuses))
+  const [runnerOnboarding, setRunnerOnboarding] = useState<RunnerOnboardingSummary>(() => structuredClone(initialRunnerOnboarding))
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(mockWorkflowCatalog[0].id)
   const [selectedId, setSelectedId] = useState(initialWorkItems[4].id)
   const [paused, setPaused] = useState(false)
@@ -62,6 +153,8 @@ function App() {
   const [apiMode, setApiMode] = useState(false)
   const [apiBusy, setApiBusy] = useState(false)
   const [apiStatus, setApiStatus] = useState('Mock snapshot loaded')
+  const [apiRunId, setApiRunId] = useState(defaultRunId)
+  const [actorEmail, setActorEmail] = useState(initialActorEmail)
 
   const selectedWorkflow =
     workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? workflows[0] ?? mockWorkflowCatalog[0]
@@ -72,8 +165,27 @@ function App() {
   const counts = useMemo(() => summarize(visibleItems), [visibleItems])
   const progress = visibleItems.length > 0 ? Math.round((counts.completed / visibleItems.length) * 100) : 0
   const selectedEvents = visibleEvents.filter((event) => event.itemId === selected.id)
-  const selectedDocumentId = selected.documentId ?? (selected.itemKind === 'document' ? selected.id : undefined)
+  const selectedDocumentId = selected.documentId ?? (selected.itemKind !== 'job' ? selected.id : undefined)
   const selectedApprovalGateId = selected.approvalGateId ?? (selectedDocumentId ? `gate_${selectedDocumentId}` : undefined)
+  const runnerDetail = useMemo(() => summarizeRunners(runners), [runners])
+  const visibleTasks = useMemo(() => visibleItems.filter((item) => item.itemKind !== 'job'), [visibleItems])
+  const deliveryDetail = useMemo(() => summarizeDelivery(visibleTasks), [visibleTasks])
+  const selectedJobCount = selected.jobHistory?.length ?? 0
+  const currentActorEmail = actorEmail.trim() || defaultActorEmail
+
+  function updateActorEmail(value: string) {
+    setActorEmail(value)
+    setRunnerOnboarding((current) => ({
+      ...current,
+      ownerEmail: value || defaultActorEmail,
+    }))
+
+    try {
+      window.localStorage.setItem(actorEmailStorageKey, value)
+    } catch {
+      // Ignore storage errors; the input state is still enough for this session.
+    }
+  }
 
   function appendEvent(item: WorkItem, event: string, level: ExecutionEvent['level'], message: string) {
     setEvents((current) => [
@@ -94,6 +206,7 @@ function App() {
     setEvents(structuredClone(initialEvents))
     setWorkflows(structuredClone(mockWorkflowCatalog))
     setSummary({ ...mockProjectSummary })
+    setRunners(structuredClone(initialRunnerStatuses))
     setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId('be-spec-002')
     setPaused(false)
@@ -181,31 +294,38 @@ function App() {
     setEvents(structuredClone(initialEvents))
     setWorkflows(structuredClone(mockWorkflowCatalog))
     setSummary({ ...mockProjectSummary })
+    setRunners(structuredClone(initialRunnerStatuses))
     setSelectedWorkflowId(mockWorkflowCatalog[0].id)
     setSelectedId(initialWorkItems[4].id)
     setPaused(false)
     setDemoStarted(false)
     setApiMode(false)
+    setApiRunId(defaultRunId)
     setApiStatus('Mock snapshot loaded')
   }
 
-  async function runApiAction(label: string, action: () => Promise<void>) {
+  async function runApiAction(label: string, action: () => Promise<ApiActionResult | void>) {
     setApiBusy(true)
     setApiStatus(`${label}...`)
 
     try {
-      await action()
-      const data = await fetchApiDashboard()
+      const actionResult = await action()
+      const nextRunId = actionResult?.runId ?? apiRunId
+      const data = await fetchApiDashboard(nextRunId)
+      const onboarding = await fetchApiRunnerOnboarding(currentActorEmail)
       setItems(data.items)
       setEvents(data.events)
       setWorkflows(data.workflows)
       setSummary(data.summary)
+      setRunners(data.runners)
+      setRunnerOnboarding(onboarding)
+      setApiRunId(data.summary.runId)
       setSelectedWorkflowId(data.workflows[0]?.id ?? '')
       setSelectedId((current) => data.items.find((item) => item.id === current)?.id ?? data.items[0]?.id ?? '')
       setApiMode(true)
       setDemoStarted(false)
       setPaused(false)
-      setApiStatus(`${label} complete`)
+      setApiStatus(actionResult?.message ?? `${label} complete`)
     } catch (error) {
       setApiStatus(error instanceof Error ? error.message : 'API request failed')
     } finally {
@@ -214,34 +334,79 @@ function App() {
   }
 
   function loadApiRun() {
-    void runApiAction('Refresh API', async () => {})
+    void runApiAction('Refresh API', async () => ({ runId: apiRunId }))
   }
 
   function seedFromApi() {
-    void runApiAction('Seed API', seedApiRun)
+    void runApiAction('Seed API', () => seedApiRun(currentActorEmail))
   }
 
   function tickFromApi() {
-    void runApiAction('Tick API', tickApiRun)
+    void runApiAction('Tick API', async () => {
+      await tickApiRun()
+      return { runId: apiRunId }
+    })
   }
 
   function feedbackToApi() {
     if (!selectedDocumentId) return
-    void runApiAction('Feedback', () => recordApiFeedback(selectedDocumentId))
+    void runApiAction('Feedback', async () => {
+      await recordApiFeedback(selectedDocumentId, currentActorEmail)
+      return { runId: apiRunId }
+    })
   }
 
   function reviseFromApi() {
     if (!selectedDocumentId) return
-    void runApiAction('Revision', () => requestApiRevision(selectedDocumentId))
+    void runApiAction('Revision', async () => {
+      await requestApiRevision(selectedDocumentId, currentActorEmail)
+      return { runId: apiRunId }
+    })
   }
 
   function approveFromApi() {
     if (!selectedApprovalGateId) return
-    void runApiAction('Approve', () => approveApiGate(selectedApprovalGateId))
+    void runApiAction('Approve', async () => {
+      await approveApiGate(selectedApprovalGateId, currentActorEmail)
+      return { runId: apiRunId }
+    })
   }
 
   function passQualityFromApi() {
-    void runApiAction('Quality Pass', () => setApiQualityPasses(true))
+    void runApiAction('Quality Pass', async () => {
+      await setApiQualityPasses(true)
+      return { runId: apiRunId }
+    })
+  }
+
+  function runLocalRunnerFromApi() {
+    void runApiAction('Local Runner Drain', async () => {
+      await runApiLocalRunnerDrain(currentActorEmail)
+      return { runId: apiRunId }
+    })
+  }
+
+  function runFullSliceFromApi() {
+    void runApiAction('Full API Slice', () => runApiFullSlice(currentActorEmail))
+  }
+
+  function pauseRunnerFromApi(runnerId: string) {
+    void runApiAction('Pause Runner', async () => {
+      await pauseApiRunner(runnerId)
+      return { runId: apiRunId }
+    })
+  }
+
+  function resumeRunnerFromApi(runnerId: string) {
+    void runApiAction('Resume Runner', async () => {
+      await resumeApiRunner(runnerId)
+      return { runId: apiRunId }
+    })
+  }
+
+  function copyOnboardingText(value: string) {
+    void navigator.clipboard?.writeText(value)
+    setApiStatus('Copied runner setup')
   }
 
   return (
@@ -294,15 +459,32 @@ function App() {
         <button type="button" onClick={resetDemo}>
           <RotateCcw size={16} /> Reset Demo
         </button>
+        <label className="actor-field">
+          <UserRound size={15} />
+          <span>Actor</span>
+          <input
+            type="email"
+            value={actorEmail}
+            onChange={(event) => updateActorEmail(event.target.value)}
+            aria-label="Actor email"
+            spellCheck={false}
+          />
+        </label>
         <span className="control-divider" />
         <button type="button" onClick={seedFromApi} disabled={apiBusy}>
           <Play size={16} /> Seed API
+        </button>
+        <button type="button" onClick={runFullSliceFromApi} disabled={apiBusy}>
+          <GitPullRequest size={16} /> Full API Slice
         </button>
         <button type="button" onClick={loadApiRun} disabled={apiBusy}>
           <RefreshCcw size={16} /> Refresh API
         </button>
         <button type="button" onClick={tickFromApi} disabled={apiBusy}>
           <StepForward size={16} /> Tick API
+        </button>
+        <button type="button" onClick={runLocalRunnerFromApi} disabled={apiBusy || !apiMode}>
+          <Cpu size={16} /> Run Local Runner
         </button>
         <button type="button" onClick={passQualityFromApi} disabled={apiBusy || !apiMode}>
           <ShieldCheck size={16} /> Quality Pass
@@ -319,6 +501,98 @@ function App() {
         <span className="control-status">
           {apiBusy ? 'API request running' : apiMode ? apiStatus : paused ? 'Paused' : demoStarted ? 'Demo run active' : apiStatus}
         </span>
+      </section>
+
+      <section className="panel runner-panel" aria-label="Runner status">
+        <PanelTitle icon={<Cpu size={18} />} title="Runner Status" detail={runnerDetail} />
+        <div className="runner-list">
+          {runners.length > 0 ? (
+            runners.map((runner) => (
+              <div className={`runner-row ${runner.status}`} key={runner.id}>
+                <span className="runner-status-cell">
+                  <span className="runner-dot" />
+                  <strong>{runner.id}</strong>
+                </span>
+                <span>{runner.owner}</span>
+                <code>{runner.mode}</code>
+                <span>{runner.status}</span>
+                <span>{runner.capacity}</span>
+                <span title={runner.claim}>{runner.claim}</span>
+                <span>{runner.engines}</span>
+                <span>{runner.capabilities}</span>
+                <time>{runner.heartbeat}</time>
+                <span className="runner-actions">
+                  <button
+                    type="button"
+                    onClick={() => pauseRunnerFromApi(runner.id)}
+                    disabled={apiBusy || !apiMode || runner.status === 'disabled'}
+                    title="Pause runner claims"
+                    aria-label={`Pause ${runner.id}`}
+                  >
+                    <Pause size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resumeRunnerFromApi(runner.id)}
+                    disabled={apiBusy || !apiMode || runner.status !== 'disabled'}
+                    title="Resume runner claims"
+                    aria-label={`Resume ${runner.id}`}
+                  >
+                    <Play size={14} />
+                  </button>
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="runner-empty">No runners registered.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="panel runner-onboarding-panel" aria-label="Local runner onboarding">
+        <PanelTitle icon={<Terminal size={18} />} title="Local Runner Onboarding" detail={runnerOnboarding.runnerId} />
+        <div className="onboarding-grid">
+          <div className="onboarding-env">
+            {Object.entries(runnerOnboarding.environment).slice(0, 8).map(([key, value]) => (
+              <button
+                type="button"
+                className="env-row"
+                key={key}
+                onClick={() => copyOnboardingText(`$env:${key}=${JSON.stringify(value)}`)}
+                title={`Copy ${key}`}
+              >
+                <span>{key}</span>
+                <code>{value}</code>
+                <Clipboard size={14} />
+              </button>
+            ))}
+          </div>
+          <div className="onboarding-commands">
+            <button
+              type="button"
+              className="setup-command"
+              onClick={() => copyOnboardingText(runnerOnboarding.powershellSetup.join('\n'))}
+              title="Copy PowerShell setup"
+            >
+              <span>PowerShell</span>
+              <code>{runnerOnboarding.powershellSetup.slice(0, 3).join('  ')}</code>
+              <Clipboard size={14} />
+            </button>
+            {runnerOnboarding.commands.map((command) => (
+              <button
+                type="button"
+                className="command-row"
+                key={`${command.label}-${command.command}`}
+                onClick={() => copyOnboardingText(command.command)}
+                title={`Copy ${command.label}`}
+              >
+                <span>{command.label}</span>
+                <code>{command.command}</code>
+                <Clipboard size={14} />
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="workflow-browser" aria-label="Workflow list and connected execution map">
@@ -360,20 +634,33 @@ function App() {
         </section>
       </section>
 
+      <section className="panel delivery-map-panel" aria-label="Task delivery map">
+        <PanelTitle
+          icon={<GitBranch size={18} />}
+          title="Task Delivery Map"
+          detail={deliveryDetail}
+        />
+        <DocumentDeliveryMap
+          documents={visibleTasks}
+          selectedId={selected.id}
+          onSelect={setSelectedId}
+        />
+      </section>
+
       <section className="content-grid">
         <section className="panel tree-panel" aria-label="Workflow execution tree">
           <PanelTitle
             icon={<GitBranch size={18} />}
             title="Workflow Execution Tree"
-            detail="PRD -> HLD -> LLD fan-out -> Spec fan-in"
+            detail="PRD -> HLD -> LLD -> Spec -> Code tasks"
           />
           <div className="tree-table" role="table">
             <div className="tree-header" role="row">
               <span>Work item</span>
               <span>State</span>
-              <span>Agent job</span>
+              <span>Latest job</span>
               <span>Score</span>
-              <span>Retry</span>
+              <span>Jobs</span>
               <span>PR</span>
               <span>Time</span>
             </div>
@@ -398,7 +685,7 @@ function App() {
                   <StatusBadge state={item.state} />
                   <code>{item.agentJobId}</code>
                   <span className="score">{formatScore(item.qualityScore)}</span>
-                  <span>{item.retryCount}</span>
+                  <span>{item.jobHistory?.length ?? item.retryCount + 1}</span>
                   <span className="link-pill">
                     <GitPullRequest size={14} /> {item.githubPr}
                   </span>
@@ -437,16 +724,59 @@ function App() {
               </div>
             </div>
             <div className="agent-card">
-              <span className="section-label">Agent job info</span>
+              <span className="section-label">Task job summary</span>
               <div className="agent-grid">
-                <span>Job ID</span>
+                <span>Latest job</span>
                 <code>{selected.agentJobId}</code>
                 <span>Skill</span>
                 <code>{selected.skill}</code>
-                <span>Attempts</span>
-                <strong>{selected.retryCount + 1}</strong>
+                <span>Jobs</span>
+                <strong>{selectedJobCount || selected.retryCount + 1}</strong>
               </div>
             </div>
+            {selected.jobHistory?.length ? (
+              <div className="job-history-card">
+                <span className="section-label">Job history</span>
+                {selected.jobHistory.map((job) => (
+                  <div className="job-history-row" key={job.id}>
+                    <span className={`branch-dot ${job.state}`} />
+                    <div>
+                      <strong>{job.jobType}</strong>
+                      <small>{job.summary}</small>
+                    </div>
+                    <code>{job.id}</code>
+                    <span>{job.status}</span>
+                    <time>
+                      {job.startedAt} / {job.finishedAt ?? '--'}
+                    </time>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {selected.pullRequests?.length ? (
+              <div className="implementation-card">
+                <span className="section-label">Implementation PR</span>
+                {selected.pullRequests.map((pullRequest) => (
+                  <a href={pullRequest.url} target="_blank" rel="noreferrer" key={pullRequest.id}>
+                    <GitPullRequest size={16} />
+                    <strong>{pullRequest.label}</strong>
+                    <span>{pullRequest.reviewStatus ?? 'review pending'}</span>
+                    <span>{pullRequest.ciStatus ?? 'ci pending'}</span>
+                  </a>
+                ))}
+              </div>
+            ) : null}
+            {selected.artifactLinks?.length ? (
+              <div className="artifact-history-card">
+                <span className="section-label">Artifact history</span>
+                {selected.artifactLinks.slice(-5).map((artifact) => (
+                  <a href={artifact.uri} target="_blank" rel="noreferrer" key={artifact.id}>
+                    <span>{artifact.type}</span>
+                    <code>{artifact.location}</code>
+                  </a>
+                ))}
+              </div>
+            ) : null}
             {selected.error ? (
               <div className="error-box">
                 <AlertTriangle size={16} />
@@ -513,8 +843,8 @@ function WorkflowCanvas({
   selectedWorkItemId: string
   onSelectWorkItem: (id: string) => void
 }) {
-  const stageWidth = Math.max(835, ...workflow.nodes.map((node) => node.x + 132))
-  const stageHeight = Math.max(340, ...workflow.nodes.map((node) => node.y + 122))
+  const stageWidth = Math.max(835, ...workflow.nodes.map((node) => node.x + 146))
+  const stageHeight = Math.max(340, ...workflow.nodes.map((node) => node.y + 154))
 
   return (
     <div className="flow-canvas">
@@ -531,8 +861,8 @@ function WorkflowCanvas({
           aria-hidden="true"
         >
           <defs>
-            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M0,0 L8,4 L0,8 Z" />
+            <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" />
             </marker>
           </defs>
           {workflow.edges.map((edgeItem) => {
@@ -566,6 +896,74 @@ function WorkflowCanvas({
             <strong>{node.label}</strong>
             <small>{node.subtitle}</small>
             <StatusBadge state={node.state} />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DocumentDeliveryMap({
+  documents,
+  selectedId,
+  onSelect,
+}: {
+  documents: WorkItem[]
+  selectedId: string
+  onSelect: (id: string) => void
+}) {
+  const orderedDocuments = useMemo(() => orderDocumentItems(documents), [documents])
+
+  if (!orderedDocuments.length) {
+    return <p className="delivery-empty">No task artifacts are available for this workflow yet.</p>
+  }
+
+  return (
+    <div className="delivery-map">
+      <div className="delivery-header">
+        <span>Task</span>
+        <span>Status</span>
+        <span>Quality</span>
+        <span>Jobs</span>
+        <span>Implementation</span>
+      </div>
+      <div className="delivery-body">
+        {orderedDocuments.map((document) => (
+          <button
+            type="button"
+            key={document.id}
+            className={`delivery-row ${document.id === selectedId ? 'selected' : ''}`}
+            onClick={() => onSelect(document.id)}
+          >
+            <span className="delivery-document" style={{ paddingLeft: `${document.depth * 22 + 10}px` }}>
+              <span className={`branch-dot ${document.state}`} />
+              <span>
+                <strong>{document.artifactType}</strong>
+                <small>{document.title}</small>
+              </span>
+            </span>
+            <StatusBadge state={document.state} />
+            <span className="delivery-quality">
+              <strong>{formatScore(document.qualityScore)}</strong>
+              <small>{document.qualityRiskCount ?? 0} risks</small>
+            </span>
+            <span className="delivery-artifacts">
+              <strong>{document.jobHistory?.length ?? document.versionCount ?? 0} jobs</strong>
+              <small>{document.artifactCount ?? 0} artifacts</small>
+            </span>
+            <span className="delivery-prs">
+              {document.pullRequests?.length ? (
+                document.pullRequests.map((pullRequest) => (
+                  <span className="pr-chip" key={pullRequest.id}>
+                    <GitPullRequest size={13} />
+                    {pullRequest.label}
+                    <small>{pullRequest.ciStatus ?? 'ci pending'}</small>
+                  </span>
+                ))
+              ) : (
+                <span className="pr-chip muted">No PR</span>
+              )}
+            </span>
           </button>
         ))}
       </div>
@@ -607,6 +1005,78 @@ function PanelTitle({ icon, title, detail }: { icon: ReactNode; title: string; d
   )
 }
 
+function summarizeDelivery(documents: WorkItem[]): string {
+  if (!documents.length) {
+    return '0 tasks'
+  }
+
+  const pullRequestCount = documents.reduce((total, document) => total + (document.pullRequests?.length ?? 0), 0)
+  const completedCount = documents.filter((document) => document.state === 'completed').length
+
+  return `${completedCount}/${documents.length} done / ${pullRequestCount} PR artifacts`
+}
+
+function orderDocumentItems(documents: WorkItem[]): WorkItem[] {
+  const byId = new Map(documents.map((document) => [document.id, document]))
+  const childrenByParent = new Map<string, WorkItem[]>()
+  const roots: WorkItem[] = []
+
+  for (const document of documents) {
+    if (document.parentId && byId.has(document.parentId)) {
+      const children = childrenByParent.get(document.parentId) ?? []
+      children.push(document)
+      childrenByParent.set(document.parentId, children)
+    } else {
+      roots.push(document)
+    }
+  }
+
+  const sortByTypeAndTitle = (left: WorkItem, right: WorkItem) =>
+    documentTypeRank(left) - documentTypeRank(right) || left.title.localeCompare(right.title)
+  const ordered: WorkItem[] = []
+  const visit = (document: WorkItem) => {
+    ordered.push(document)
+    ;(childrenByParent.get(document.id) ?? []).sort(sortByTypeAndTitle).forEach(visit)
+  }
+
+  roots.sort(sortByTypeAndTitle).forEach(visit)
+  return ordered
+}
+
+function documentTypeRank(document: WorkItem): number {
+  const artifactType = document.artifactType.toLowerCase()
+
+  if (document.taskKind === 'code') return 5
+  if (artifactType === 'prd') return 0
+  if (artifactType === 'hld') return 1
+  if (artifactType.includes('lld')) return 2
+  if (artifactType.includes('spec')) return 3
+  if (artifactType === 'adr') return 4
+
+  return 6
+}
+
+function summarizeRunners(runners: RunnerStatusSummary[]): string {
+  if (runners.length === 0) {
+    return '0 connected'
+  }
+
+  const counts = runners.reduce<Record<string, number>>((accumulator, runner) => {
+    accumulator[runner.status] = (accumulator[runner.status] ?? 0) + 1
+    return accumulator
+  }, {})
+  const orderedStatuses = ['busy', 'offline', 'disabled', 'online']
+  const knownParts = orderedStatuses
+    .filter((status) => counts[status])
+    .map((status) => `${counts[status]} ${status}`)
+  const otherParts = Object.keys(counts)
+    .filter((status) => !orderedStatuses.includes(status))
+    .sort()
+    .map((status) => `${counts[status]} ${status}`)
+
+  return `${runners.length} connected / ${[...knownParts, ...otherParts].join(' / ')}`
+}
+
 function StatusBadge({ state }: { state: WorkState }) {
   return (
     <span className={`status-badge ${state}`}>
@@ -637,12 +1107,17 @@ function LinkButton({ href, label }: { href: string; label: string }) {
 
 function edgePath(from: FlowNode, to: FlowNode) {
   const nodeWidth = 104
-  const nodeHeight = 58
-  const startX = from.x + nodeWidth
+  const nodeHeight = 86
+  const rawStartX = from.x + nodeWidth
+  const rawEndX = to.x
+  const horizontalGap = rawEndX - rawStartX
+  const startClearance = horizontalGap > 20 ? 6 : 0
+  const endClearance = horizontalGap > 20 ? 10 : Math.max(2, horizontalGap / 4)
+  const startX = rawStartX + startClearance
   const startY = from.y + nodeHeight / 2
-  const endX = to.x
+  const endX = rawEndX - endClearance
   const endY = to.y + nodeHeight / 2
-  const curve = Math.max(55, Math.min(120, (endX - startX) * 0.55))
+  const curve = Math.max(24, Math.min(96, Math.abs(endX - startX) * 0.55))
 
   return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`
 }

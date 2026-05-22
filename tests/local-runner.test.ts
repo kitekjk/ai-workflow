@@ -1,4 +1,5 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,7 +9,7 @@ import {
   JobTemplateCliLocalRunnerEngine,
   normalizeLocalRunnerCliResult
 } from "../src/local-runner/cli-engine-adapter";
-import { runLocalRunnerOnce, type LocalRunnerEngine } from "../src/local-runner/local-runner";
+import { runLocalRunnerDrain, runLocalRunnerOnce, type LocalRunnerEngine } from "../src/local-runner/local-runner";
 import { RunnerResultValidationError } from "../src/local-runner/result-schema";
 import { WorkflowApiRunnerClient } from "../src/local-runner/runner-client";
 import { createPrdConfirmationFixture } from "../src/prd-confirmation/fixture";
@@ -158,6 +159,71 @@ describe("local runner loop", () => {
           sectionCount: 3
         }
       }
+    ]);
+  });
+
+  it("drains multiple claimable jobs until the runner becomes idle", async () => {
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.generate",
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.generate"],
+      requiredEngine: "claude",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.evaluate",
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.evaluate"],
+      requiredEngine: "claude",
+      now
+    });
+    const handledJobIds: string[] = [];
+    const engine: LocalRunnerEngine = {
+      async run({ job }) {
+        handledJobIds.push(job.id);
+        return {
+          output: {
+            status: "succeeded",
+            jobType: job.jobType
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerDrain({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-planner-a",
+        ownerUserId: "planner-a",
+        mode: "local",
+        capabilities: ["document.generate", "document.evaluate"],
+        engines: ["claude"],
+        defaultEngine: "claude"
+      },
+      maxJobs: 5,
+      now: () => now
+    });
+
+    expect(result).toMatchObject({
+      stoppedReason: "idle",
+      processedJobs: 2,
+      attempts: 3
+    });
+    expect(result.results.map((entry) => entry.status)).toEqual(["completed", "completed", "idle"]);
+    expect(handledJobIds).toEqual(["job_1", "job_2"]);
+    expect(workflowRepository.workflowJobs.map((job) => job.status)).toEqual(["succeeded", "succeeded"]);
+    expect(workflowRepository.workflowJobs.map((job) => job.claimedByRunnerId)).toEqual([
+      "runner-planner-a",
+      "runner-planner-a"
     ]);
   });
 
@@ -351,6 +417,204 @@ describe("local runner loop", () => {
         }
       }
     ]);
+  });
+
+  it("prepares the runner job template workdir before running implementation updates", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-runner-"));
+    workspaceRoots.push(workspaceRoot);
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "repository_workflow",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.update_pr",
+      input: {
+        runnerJobTemplate: {
+          runner: {
+            workdir: "implementation",
+            sandbox: "workspace-write"
+          }
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.update_pr"],
+      requiredEngine: "codex",
+      now
+    });
+    const engine: LocalRunnerEngine = {
+      async run({ workspaceDir }) {
+        expect(workspaceDir).toBeTruthy();
+        const implementationDir = await stat(join(workspaceDir ?? "", "implementation"));
+        expect(implementationDir.isDirectory()).toBe(true);
+
+        return {
+          output: {
+            status: "succeeded",
+            pullRequestNumber: 12,
+            pullRequestUrl: "https://github.example/acme/app/pull/12",
+            summary: "Updated the implementation branch"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.update_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      workspace: {
+        rootDir: workspaceRoot
+      },
+      now
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("clones the implementation PR branch into the runner job template workdir", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-runner-"));
+    workspaceRoots.push(workspaceRoot);
+    const implementationRepo = await createImplementationRepositoryFixture();
+    workspaceRoots.push(implementationRepo.repoPath);
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "repository_workflow",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.update_pr",
+      input: {
+        repositoryCloneUrl: implementationRepo.repoPath,
+        branchName: implementationRepo.branchName,
+        runnerJobTemplate: {
+          runner: {
+            workdir: "implementation",
+            sandbox: "workspace-write"
+          }
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.update_pr"],
+      requiredEngine: "codex",
+      now
+    });
+    const engine: LocalRunnerEngine = {
+      async run({ workspaceDir }) {
+        const implementationDir = join(workspaceDir ?? "", "implementation");
+        expect((await readFile(join(implementationDir, "feature.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+          "ready for rework\n"
+        );
+        expect(
+          execFileSync("git", ["-C", implementationDir, "branch", "--show-current"]).toString().trim()
+        ).toBe(implementationRepo.branchName);
+
+        return {
+          output: {
+            status: "succeeded",
+            pullRequestNumber: 12,
+            pullRequestUrl: "https://github.example/acme/app/pull/12",
+            latestCommitSha: implementationRepo.headSha,
+            summary: "Updated the implementation branch"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.update_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      workspace: {
+        rootDir: workspaceRoot
+      },
+      now
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("records a runner failure when implementation git workspace preparation fails", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-runner-"));
+    workspaceRoots.push(workspaceRoot);
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "repository_workflow",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.update_pr",
+      input: {
+        repositoryCloneUrl: "https://github.example/acme/app.git",
+        runnerJobTemplate: {
+          runner: {
+            workdir: "implementation",
+            sandbox: "workspace-write"
+          }
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.update_pr"],
+      requiredEngine: "codex",
+      now
+    });
+    let engineRan = false;
+    const engine: LocalRunnerEngine = {
+      async run() {
+        engineRan = true;
+        return {
+          output: {
+            status: "succeeded"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.update_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      workspace: {
+        rootDir: workspaceRoot
+      },
+      now
+    });
+
+    expect(engineRan).toBe(false);
+    expect(result).toMatchObject({
+      status: "failed",
+      result: {
+        errorCode: "runner_engine_error",
+        errorMessage: "implementation.update_pr requires repositoryCloneUrl and branchName to prepare a git workspace"
+      }
+    });
   });
 
   it("accepts generated absolute file paths from a canonical workspace directory", async () => {
@@ -801,6 +1065,31 @@ fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
     expect(await readFile(cwdFile, "utf8")).toBe((await realpath(workspaceRoot)).replace(/\\/g, "/"));
   });
 });
+
+async function createImplementationRepositoryFixture(): Promise<{
+  repoPath: string;
+  branchName: string;
+  headSha: string;
+}> {
+  const repoPath = await mkdtemp(join(tmpdir(), "ai-workflow-implementation-repo-"));
+  const branchName = "feature/spec-100";
+  execFileSync("git", ["init", "-b", "main"], { cwd: repoPath });
+  execFileSync("git", ["config", "user.email", "workflow@example.com"], { cwd: repoPath });
+  execFileSync("git", ["config", "user.name", "AI Workflow"], { cwd: repoPath });
+  await writeFile(join(repoPath, "README.md"), "# Implementation Repo\n");
+  execFileSync("git", ["add", "README.md"], { cwd: repoPath });
+  execFileSync("git", ["commit", "-m", "initial commit"], { cwd: repoPath });
+  execFileSync("git", ["checkout", "-b", branchName], { cwd: repoPath });
+  await writeFile(join(repoPath, "feature.txt"), "ready for rework\n");
+  execFileSync("git", ["add", "feature.txt"], { cwd: repoPath });
+  execFileSync("git", ["commit", "-m", "add implementation fixture"], { cwd: repoPath });
+
+  return {
+    repoPath,
+    branchName,
+    headSha: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath }).toString().trim()
+  };
+}
 
 async function createCanonicalWorkspaceFixture(): Promise<{ rootDir: string; cleanupRoots: string[] }> {
   const actualWorkspaceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-runner-real-"));

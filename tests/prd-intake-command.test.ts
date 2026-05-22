@@ -13,6 +13,7 @@ describe("MysqlPrdIntakeCommand", () => {
       jobId: "job_1",
       prdJiraKey: "PRD-100",
       title: "FAQ automation PRD",
+      requestedBy: "planner@example.com",
       now: new Date("2026-05-20T00:00:00.000Z")
     });
 
@@ -24,18 +25,31 @@ describe("MysqlPrdIntakeCommand", () => {
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
       expect.stringContaining("INSERT INTO workflow_run"),
+      expect.stringContaining("INSERT INTO workflow_task"),
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO workflow_job"),
       expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toContain("PRD-100");
     expect(database.statements[1].params).toEqual(
-      expect.arrayContaining(["doc_wi_1", "run_1", "prd", "PRD-100", "FAQ automation PRD", "draft"])
+      expect.arrayContaining(["task_wi_1", "run_1", "prd", "PRD-100", "FAQ automation PRD", "draft", "doc_wi_1"])
     );
     expect(database.statements[2].params).toEqual(
-      expect.arrayContaining(["job_1", "run_1", "prd.generate_draft", "pending", "planner", "local_allowed"])
+      expect.arrayContaining(["doc_wi_1", "run_1", "prd", "PRD-100", "FAQ automation PRD", "draft"])
     );
     expect(database.statements[3].params).toEqual(
+      expect.arrayContaining([
+        "job_1",
+        "run_1",
+        "task_wi_1",
+        "prd.generate_draft",
+        "pending",
+        "planner@example.com",
+        "planner",
+        "local_allowed"
+      ])
+    );
+    expect(database.statements[4].params).toEqual(
       expect.arrayContaining([
         "event_1",
         "run_1",
@@ -44,12 +58,14 @@ describe("MysqlPrdIntakeCommand", () => {
         "PRD intake recorded: PRD-100"
       ])
     );
-    expect(JSON.parse(String(database.statements[3].params[5]))).toEqual({
+    expect(JSON.parse(String(database.statements[4].params[5]))).toEqual({
       runId: "run_1",
+      taskId: "task_wi_1",
       documentId: "doc_wi_1",
       jobId: "job_1",
       prdJiraKey: "PRD-100",
-      title: "FAQ automation PRD"
+      title: "FAQ automation PRD",
+      requestedBy: "planner@example.com"
     });
   });
 

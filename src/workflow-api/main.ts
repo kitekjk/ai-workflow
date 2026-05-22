@@ -19,7 +19,9 @@ const server = await createWorkflowApiServer({
   workflowTransitionCommand: runtime.workflowTransitionCommand,
   repositoryTransitionResultReader: runtime.repositoryTransitionResultReader,
   repositoryTransitionIntervalMs: runtime.repositoryTransitionIntervalMs,
-  internalTickIntervalMs: runtime.internalTickIntervalMs
+  schedulerRecoveryIntervalMs: runtime.schedulerRecoveryIntervalMs,
+  internalTickIntervalMs: runtime.internalTickIntervalMs,
+  auth: runtime.auth
 }).listen(port);
 
 console.log(`Workflow API listening at ${server.url}`);
@@ -33,6 +35,11 @@ console.log(
 console.log(
   `Repository transition loop: ${
     runtime.repositoryTransitionIntervalMs === undefined ? "disabled" : `${runtime.repositoryTransitionIntervalMs}ms`
+  }`
+);
+console.log(
+  `Scheduler lease recovery: ${
+    runtime.schedulerRecoveryIntervalMs === undefined ? "disabled" : `${runtime.schedulerRecoveryIntervalMs}ms`
   }`
 );
 if (restoreResult?.restored) {

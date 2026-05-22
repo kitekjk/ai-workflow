@@ -5,6 +5,7 @@ import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repos
 import { WorkflowScheduler } from "../src/workflow-core/scheduler";
 import type { WorkflowMutation } from "../src/workflow-api/workflow-mutation-applier";
 import type { WorkflowApiReadModel } from "../src/workflow-api/mysql-read-model";
+import type { RepositoryTransitionPendingResultReader } from "../src/workflow-api/repository-transition-processor";
 import { createWorkflowApiServer } from "../src/workflow-api/server";
 
 describe("repository transition API integration", () => {
@@ -314,6 +315,64 @@ describe("repository transition API integration", () => {
 
       expect(response.status).toBe(200);
       expect(transitions).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("processes one pending repository transition through the API trigger", async () => {
+    const document = currentDocument();
+    const transitions: Array<{ transitionType?: string; mutation: WorkflowMutation }> = [];
+    let markedProcessed: string | undefined;
+    const repositoryTransitionResultReader: RepositoryTransitionPendingResultReader & {
+      markJobResultProcessed(input: { jobResultId: string; now: Date }): Promise<void>;
+    } = {
+      async nextPendingJobResult() {
+        return {
+          job: workflowJob({
+            input: {
+              sourceDocumentId: document.id
+            }
+          }),
+          jobResult: workflowJobResult({
+            id: "result_manual",
+            output: {
+              status: "passed"
+            }
+          })
+        };
+      },
+      async markJobResultProcessed(input) {
+        markedProcessed = input.jobResultId;
+      }
+    };
+    const server = await createWorkflowApiServer({
+      readModel: readModelFor("run_1", "job_1", document),
+      workflowTransitionCommand: {
+        async recordDocumentState() {
+          throw new Error("legacy document-state command should not be called");
+        },
+        async recordWorkflowJob() {
+          throw new Error("legacy job command should not be called");
+        },
+        async recordRepositoryTransition(input) {
+          transitions.push(input);
+        }
+      },
+      repositoryTransitionResultReader,
+      now: () => new Date("2026-05-21T00:01:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${server.url}/repository-transitions/process-next`, {});
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        processed: true,
+        transitionType: "prd_quality_passed"
+      });
+      expect(transitions).toHaveLength(1);
+      expect(markedProcessed).toBe("result_manual");
     } finally {
       await server.close();
     }

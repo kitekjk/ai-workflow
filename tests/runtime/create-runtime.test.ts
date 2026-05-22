@@ -5,11 +5,14 @@ import { StubPrdSkills } from "../../src/prd-confirmation/runner-skills";
 import {
   createWorkflowApiRuntimeFromEnv,
   parseLeaseMs,
+  parseRunnerOfflineAfterMs,
+  parseWorkflowApiAuthConfig,
   parseWorkflowRuntimeStore
 } from "../../src/runtime/create-workflow-api-runtime";
 import {
   confluenceParentPageIdsByDocumentType,
   createRuntimeFromEnv,
+  createStubJiraIssueReader,
   githubRuntimeConfig,
   jiraTransitionIds,
   jiraWritebackFieldIds
@@ -156,6 +159,66 @@ describe("createRuntimeFromEnv", () => {
     ).toThrow("GITHUB_REPO is required when GitHub integration is configured");
   });
 
+  it("provides seeded stub Jira PRD data for local smoke runs", async () => {
+    await expect(createStubJiraIssueReader().loadPrdWithSources("PRD-100")).resolves.toEqual({
+      prd: {
+        key: "PRD-100",
+        issueType: "prd",
+        status: "prd_requested",
+        summary: "FAQ automation PRD",
+        linkedSourceKeys: ["OPS-1", "OPS-2"]
+      },
+      sources: [
+        expect.objectContaining({
+          key: "OPS-1",
+          issueType: "operational_request"
+        }),
+        expect.objectContaining({
+          key: "OPS-2",
+          issueType: "operational_request"
+        })
+      ]
+    });
+  });
+
+  it("provides synthetic stub Jira PRDs for repeatable smoke runs", async () => {
+    await expect(createStubJiraIssueReader().loadPrdWithSources("PRD-SMOKE-20260521")).resolves.toEqual({
+      prd: {
+        key: "PRD-SMOKE-20260521",
+        issueType: "prd",
+        status: "prd_requested",
+        summary: "PRD-SMOKE-20260521 smoke PRD",
+        linkedSourceKeys: ["OPS-1"]
+      },
+      sources: [
+        expect.objectContaining({
+          key: "OPS-1",
+          issueType: "operational_request"
+        })
+      ]
+    });
+  });
+
+  it("wires the stub Jira reader for MySQL no-fixture smoke runs", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "disabled"
+    });
+
+    try {
+      expect(runtime.jiraIssueReader).toBeDefined();
+      await expect(runtime.jiraIssueReader?.loadPrdWithSources("PRD-100")).resolves.toMatchObject({
+        prd: {
+          key: "PRD-100",
+          status: "prd_requested"
+        }
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("keeps API runtime persistence in memory unless MySQL is explicitly requested", async () => {
     const runtime = createWorkflowApiRuntimeFromEnv({
       INTEGRATION_MODE: "stub"
@@ -166,6 +229,7 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.scheduler).toBeUndefined();
       expect(runtime.documentRepository).toBeUndefined();
       expect(runtime.internalTickIntervalMs).toBe(1_000);
+      expect(runtime.schedulerRecoveryIntervalMs).toBeUndefined();
     } finally {
       await runtime.close();
     }
@@ -191,6 +255,7 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.workflowResultCommand).toBeDefined();
       expect(runtime.workflowTransitionCommand).toBeDefined();
       expect(runtime.internalTickIntervalMs).toBe(1_000);
+      expect(runtime.schedulerRecoveryIntervalMs).toBe(1_000);
     } finally {
       await runtime.close();
     }
@@ -225,7 +290,7 @@ describe("createRuntimeFromEnv", () => {
     try {
       expect(runtime.runtimeStore).toBe("mysql");
       expect(runtime.fixture).toBeUndefined();
-      expect(runtime.jiraIssueReader).toBeUndefined();
+      expect(runtime.jiraIssueReader).toBeDefined();
       expect(runtime.wikiFeedbackCollector).toBeUndefined();
       expect(runtime.snapshotMirror).toBeUndefined();
       expect(runtime.snapshotLoader).toBeUndefined();
@@ -239,6 +304,7 @@ describe("createRuntimeFromEnv", () => {
       expect(runtime.workflowTransitionCommand).toBeDefined();
       expect(runtime.repositoryTransitionResultReader).toBeDefined();
       expect(runtime.repositoryTransitionIntervalMs).toBe(1_000);
+      expect(runtime.schedulerRecoveryIntervalMs).toBe(1_000);
       expect(runtime.internalTickIntervalMs).toBeUndefined();
     } finally {
       await runtime.close();
@@ -262,6 +328,27 @@ describe("createRuntimeFromEnv", () => {
     try {
       expect(disabledRuntime.repositoryTransitionIntervalMs).toBeUndefined();
       expect(tunedRuntime.repositoryTransitionIntervalMs).toBe(250);
+    } finally {
+      await disabledRuntime.close();
+      await tunedRuntime.close();
+    }
+  });
+
+  it("allows scheduler lease recovery interval to be disabled or tuned", async () => {
+    const disabledRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_SCHEDULER_RECOVERY_MS: "0"
+    });
+    const tunedRuntime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_SCHEDULER_RECOVERY_MS: "250"
+    });
+
+    try {
+      expect(disabledRuntime.schedulerRecoveryIntervalMs).toBeUndefined();
+      expect(tunedRuntime.schedulerRecoveryIntervalMs).toBe(250);
     } finally {
       await disabledRuntime.close();
       await tunedRuntime.close();
@@ -317,6 +404,39 @@ describe("createRuntimeFromEnv", () => {
     expect(parseLeaseMs(undefined)).toBe(30_000);
     expect(parseLeaseMs("15000")).toBe(15_000);
     expect(() => parseLeaseMs("0")).toThrow(/WORKFLOW_JOB_LEASE_MS/);
+
+    expect(parseRunnerOfflineAfterMs(undefined, 15_000)).toBe(30_000);
+    expect(parseRunnerOfflineAfterMs("45000")).toBe(45_000);
+    expect(() => parseRunnerOfflineAfterMs("0")).toThrow(/WORKFLOW_RUNNER_OFFLINE_AFTER_MS/);
+  });
+
+  it("parses optional workflow API app and runner auth tokens", () => {
+    expect(parseWorkflowApiAuthConfig({})).toBeUndefined();
+    expect(parseWorkflowApiAuthConfig({
+      WORKFLOW_APP_API_TOKEN: "app-secret",
+      WORKFLOW_RUNNER_TOKENS: "runner-a:token-a,runner-b:token-b"
+    })).toEqual({
+      appToken: "app-secret",
+      runnerTokens: {
+        "runner-a": "token-a",
+        "runner-b": "token-b"
+      }
+    });
+    expect(parseWorkflowApiAuthConfig({
+      WORKFLOW_RUNNER_TOKENS: JSON.stringify({
+        "runner-a": "token-a"
+      })
+    })).toEqual({
+      appToken: undefined,
+      runnerTokens: {
+        "runner-a": "token-a"
+      }
+    });
+    expect(() =>
+      parseWorkflowApiAuthConfig({
+        WORKFLOW_RUNNER_TOKENS: "runner-a"
+      })
+    ).toThrow(/WORKFLOW_RUNNER_TOKENS/);
   });
 });
 

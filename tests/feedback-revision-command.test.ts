@@ -36,7 +36,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
         null,
         "workflow.feedback_recorded",
         "Feedback recorded: fb_1",
-        "2026-05-20T00:00:00.000Z",
+        "2026-05-20 00:00:00.000",
         "doc_wi_1"
       ])
     );
@@ -93,7 +93,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
         "developer",
         JSON.stringify(["document.revise"]),
         "local_allowed",
-        "2026-05-20T00:00:00.000Z"
+        "2026-05-20 00:00:00.000"
       ])
     );
     expect(database.statements[1].params).toContain("job_2");
@@ -103,7 +103,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
         "job_2",
         "workflow.feedback_recorded",
         "Feedback recorded: fb_1",
-        "2026-05-20T00:00:00.000Z",
+        "2026-05-20 00:00:00.000",
         "doc_wi_1"
       ])
     );

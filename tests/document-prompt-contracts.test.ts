@@ -58,4 +58,37 @@ describe("document prompt contracts", () => {
       }
     });
   });
+
+  it("builds a code update contract without document markdown requirements", () => {
+    expect(createJobPromptContractPayload({
+      jobType: "implementation.open_pr",
+      documentType: "spec"
+    })).toMatchObject({
+      documentType: "spec",
+      jobType: "implementation.open_pr",
+      outputSchema: {
+        required: ["status", "summary"],
+        properties: {
+          status: { enum: ["implemented", "succeeded"] }
+        }
+      }
+    });
+
+    const contract = createJobPromptContractPayload({
+      jobType: "implementation.update_pr",
+      documentType: "spec"
+    });
+
+    expect(contract).toMatchObject({
+      documentType: "spec",
+      jobType: "implementation.update_pr",
+      outputSchema: {
+        required: ["status", "pullRequestNumber", "pullRequestUrl", "summary"],
+        properties: {
+          status: { enum: ["succeeded"] },
+          pullRequestNumber: { minimum: 1 }
+        }
+      }
+    });
+  });
 });

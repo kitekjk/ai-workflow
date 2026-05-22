@@ -10,7 +10,9 @@
     "start:api": "tsx src/workflow-api/main.ts",
     "start:repository-transition-worker": "tsx src/workflow-api/repository-transition-worker-main.ts",
     "start:local-runner": "tsx src/local-runner/main.ts",
-    "db:migrate:mysql": "tsx src/mysql/apply-migrations.ts"
+    "doctor:local-runner": "tsx src/local-runner/preflight-main.ts",
+    "db:migrate:mysql": "tsx src/mysql/apply-migrations.ts",
+    "smoke:mysql:no-fixture": "tsx src/smoke/mysql-no-fixture-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",

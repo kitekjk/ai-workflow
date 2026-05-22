@@ -1,24 +1,29 @@
 import { randomUUID } from "node:crypto";
+import { fromMysqlDateTime, toMysqlDateTime, toNullableMysqlDateTime } from "../mysql/datetime";
 import type {
   ClaimJobInput,
   ClaimJobResult,
   Runner,
+  RunnerClaimDiagnostics,
   WorkflowEvent,
   WorkflowJob,
   WorkflowJobResult,
-  WorkflowRun
+  WorkflowRun,
+  WorkflowTask
 } from "./domain";
-import { canRunnerClaimJob } from "./domain";
+import { canRunnerClaimJob, runnerJobClaimBlocker, runnerStatusAt } from "./domain";
 import type {
   AppendWorkflowEventInput,
   AcknowledgeWorkflowJobCancellationInput,
   CompleteWorkflowJobInput,
   CreateWorkflowJobInput,
   CreateWorkflowRunInput,
+  CreateWorkflowTaskInput,
   FailWorkflowJobInput,
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
   RequestWorkflowJobCancellationInput,
+  UpdateWorkflowTaskInput,
   WorkflowRepository
 } from "./repository";
 
@@ -78,12 +83,92 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         run.sourceType,
         run.sourceKey,
         run.outputLanguage,
-        run.createdAt,
-        run.updatedAt
+        toMysqlDateTime(run.createdAt),
+        toMysqlDateTime(run.updatedAt)
       ]
     );
 
     return run;
+  }
+
+  async createWorkflowTask(input: CreateWorkflowTaskInput): Promise<WorkflowTask> {
+    const now = toIso(input.now);
+    const task: WorkflowTask = {
+      id: this.idGenerator("task"),
+      runId: input.runId,
+      parentTaskId: input.parentTaskId,
+      taskType: input.taskType,
+      sourceKey: input.sourceKey,
+      title: input.title,
+      status: input.status ?? "draft",
+      currentDocumentId: input.currentDocumentId,
+      metadata: input.metadata ?? {},
+      createdAt: now,
+      updatedAt: now
+    };
+
+    await this.database.execute(
+      `INSERT INTO workflow_task (
+        id, run_id, parent_task_id, task_type, source_key, title, status,
+        current_document_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      taskToParams(task)
+    );
+
+    return task;
+  }
+
+  async getWorkflowTask(taskId: string): Promise<WorkflowTask | undefined> {
+    const [rows] = await this.database.execute<MysqlRow[]>(`SELECT * FROM workflow_task WHERE id = ?`, [taskId]);
+    const row = rows[0];
+
+    return row ? rowToWorkflowTask(row) : undefined;
+  }
+
+  async listWorkflowTasks(runId: string): Promise<WorkflowTask[]> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_task
+       WHERE run_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [runId]
+    );
+
+    return rows.map(rowToWorkflowTask);
+  }
+
+  async updateWorkflowTask(input: UpdateWorkflowTaskInput): Promise<WorkflowTask> {
+    const existing = await this.getWorkflowTask(input.taskId);
+
+    if (!existing) {
+      throw new Error(`Task not found: ${input.taskId}`);
+    }
+
+    const updated: WorkflowTask = {
+      ...existing,
+      status: input.status ?? existing.status,
+      currentDocumentId: input.currentDocumentId ?? existing.currentDocumentId,
+      metadata: input.metadata ?? existing.metadata,
+      updatedAt: toIso(input.now)
+    };
+
+    await this.database.execute(
+      `UPDATE workflow_task
+       SET status = ?,
+           current_document_id = ?,
+           metadata_json = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        updated.status,
+        updated.currentDocumentId ?? null,
+        JSON.stringify(updated.metadata),
+        toMysqlDateTime(updated.updatedAt),
+        updated.id
+      ]
+    );
+
+    return updated;
   }
 
   async createWorkflowJob(input: CreateWorkflowJobInput): Promise<WorkflowJob> {
@@ -91,6 +176,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
     const job: WorkflowJob = {
       id: this.idGenerator("job"),
       runId: input.runId,
+      taskId: input.taskId,
       jobType: input.jobType,
       status: "pending",
       input: input.input ?? {},
@@ -111,11 +197,11 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
 
     await this.database.execute(
       `INSERT INTO workflow_job (
-        id, run_id, job_type, status, input_json, priority, project_id, repository_id,
+        id, run_id, task_id, job_type, status, input_json, priority, project_id, repository_id,
         assigned_user_id, assigned_team_id, required_role, required_capabilities_json,
         preferred_engine, required_engine, execution_policy, assigned_runner_id,
         claimed_by_runner_id, claimed_at, lease_expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       jobToParams(job)
     );
 
@@ -141,7 +227,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
       ON DUPLICATE KEY UPDATE
         owner_user_id = VALUES(owner_user_id),
         mode = VALUES(mode),
-        status = VALUES(status),
+        status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE VALUES(status) END,
         team_ids_json = VALUES(team_ids_json),
         allowed_project_ids_json = VALUES(allowed_project_ids_json),
         allowed_repository_ids_json = VALUES(allowed_repository_ids_json),
@@ -163,13 +249,36 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         JSON.stringify(runner.engines),
         runner.defaultEngine ?? null,
         runner.concurrency,
-        runner.lastHeartbeatAt ?? null,
-        now,
-        now
+        toNullableMysqlDateTime(runner.lastHeartbeatAt),
+        toMysqlDateTime(now),
+        toMysqlDateTime(now)
       ]
     );
 
-    return runner;
+    return this.requireRunner(this.database, runner.id);
+  }
+
+  async listRunners(): Promise<Runner[]> {
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM runner
+       ORDER BY last_heartbeat_at DESC, id ASC`
+    );
+
+    return rows.map(rowToRunner);
+  }
+
+  async setRunnerStatus(runnerId: string, status: Runner["status"], now: Date): Promise<Runner> {
+    await this.database.execute(
+      `UPDATE runner
+       SET status = ?,
+           last_heartbeat_at = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [status, toMysqlDateTime(now), toMysqlDateTime(now), runnerId]
+    );
+
+    return this.requireRunner(this.database, runnerId);
   }
 
   async heartbeatRunner(runnerId: string, now: Date): Promise<Runner> {
@@ -179,7 +288,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
            last_heartbeat_at = ?,
            updated_at = ?
        WHERE id = ?`,
-      [now.toISOString(), now.toISOString(), runnerId]
+      [toMysqlDateTime(now), toMysqlDateTime(now), runnerId]
     );
 
     return this.requireRunner(this.database, runnerId);
@@ -188,15 +297,30 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
   async claimNextJob(input: ClaimJobInput): Promise<ClaimJobResult | undefined> {
     return this.withTransaction(async (connection) => {
       const runner = await this.requireRunner(connection, input.runnerId, true);
+      const effectiveRunner: Runner = {
+        ...runner,
+        status: runnerStatusAt(runner, input.now, input.runnerOfflineAfterMs)
+      };
+
+      if (effectiveRunner.status === "offline" || effectiveRunner.status === "disabled") {
+        return undefined;
+      }
+
+      const activeJobCount = await this.countActiveRunnerJobs(connection, effectiveRunner.id, input.now);
+
+      if (activeJobCount >= Math.max(1, effectiveRunner.concurrency)) {
+        return undefined;
+      }
+
       const jobs = await this.selectClaimCandidates(connection, input.now);
-      const job = jobs.find((candidate) => canRunnerClaimJob(runner, candidate, input.now));
+      const job = jobs.find((candidate) => canRunnerClaimJob(effectiveRunner, candidate, input.now));
 
       if (!job) {
         return undefined;
       }
 
       job.status = "claimed";
-      job.claimedByRunnerId = runner.id;
+      job.claimedByRunnerId = effectiveRunner.id;
       job.claimedAt = input.now.toISOString();
       job.leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs).toISOString();
       job.updatedAt = input.now.toISOString();
@@ -205,10 +329,73 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         `UPDATE workflow_job
          SET status = ?, claimed_by_runner_id = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ?
          WHERE id = ?`,
-        [job.status, job.claimedByRunnerId, job.claimedAt, job.leaseExpiresAt, job.updatedAt, job.id]
+        [
+          job.status,
+          job.claimedByRunnerId,
+          toMysqlDateTime(job.claimedAt),
+          toMysqlDateTime(job.leaseExpiresAt),
+          toMysqlDateTime(job.updatedAt),
+          job.id
+        ]
       );
 
-      return { job, runner };
+      return { job, runner: effectiveRunner };
+    });
+  }
+
+  async diagnoseClaim(input: ClaimJobInput): Promise<RunnerClaimDiagnostics> {
+    const runner = await this.requireRunner(this.database, input.runnerId);
+    const effectiveRunner: Runner = {
+      ...runner,
+      status: runnerStatusAt(runner, input.now, input.runnerOfflineAfterMs)
+    };
+
+    if (effectiveRunner.status === "offline") {
+      return claimDiagnostics(effectiveRunner, "runner_offline", "Runner heartbeat is stale or missing.");
+    }
+
+    if (effectiveRunner.status === "disabled") {
+      return claimDiagnostics(effectiveRunner, "runner_disabled", "Runner is disabled.");
+    }
+
+    const activeJobCount = await this.countActiveRunnerJobs(this.database, effectiveRunner.id, input.now);
+    const concurrency = Math.max(1, effectiveRunner.concurrency);
+
+    if (activeJobCount >= concurrency) {
+      return claimDiagnostics(effectiveRunner, "runner_capacity_full", "Runner is already at concurrency capacity.", {
+        activeJobCount,
+        concurrency
+      });
+    }
+
+    const candidates = await this.selectClaimCandidates(this.database, input.now, false);
+    const nearestJob = candidates[0];
+
+    if (!nearestJob) {
+      return claimDiagnostics(effectiveRunner, "no_available_job", "No pending or retrying jobs are available.", {
+        activeJobCount,
+        concurrency,
+        candidateJobCount: 0
+      });
+    }
+
+    const matchingJob = candidates.find((candidate) => canRunnerClaimJob(effectiveRunner, candidate, input.now));
+
+    if (matchingJob) {
+      return claimDiagnostics(effectiveRunner, "claim_available", "A matching job is available for this runner.", {
+        activeJobCount,
+        concurrency,
+        candidateJobCount: candidates.length,
+        nearestJobId: matchingJob.id
+      });
+    }
+
+    return claimDiagnostics(effectiveRunner, "no_matching_job", "Pending jobs exist, but none match this runner.", {
+      activeJobCount,
+      concurrency,
+      candidateJobCount: candidates.length,
+      nearestJobId: nearestJob.id,
+      nearestBlocker: runnerJobClaimBlocker(effectiveRunner, nearestJob, input.now)
     });
   }
 
@@ -217,7 +404,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
       `UPDATE workflow_job
        SET status = 'running', updated_at = ?
        WHERE id = ? AND claimed_by_runner_id = ? AND status = 'claimed'`,
-      [now.toISOString(), jobId, runnerId]
+      [toMysqlDateTime(now), jobId, runnerId]
     );
 
     return this.requireJob(jobId);
@@ -241,7 +428,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
 
       await connection.execute(
         `UPDATE workflow_job SET status = 'succeeded', updated_at = ? WHERE id = ?`,
-        [input.now.toISOString(), input.jobId]
+        [toMysqlDateTime(input.now), input.jobId]
       );
 
       return result;
@@ -271,7 +458,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         `UPDATE workflow_job
          SET status = ?, claimed_by_runner_id = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ?`,
-        [status, input.now.toISOString(), input.jobId]
+        [status, toMysqlDateTime(input.now), input.jobId]
       );
 
       return result;
@@ -297,7 +484,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
              lease_expires_at = ${clearClaim ? "NULL" : "lease_expires_at"},
              updated_at = ?
          WHERE id = ?`,
-        [status, input.now.toISOString(), input.jobId]
+        [status, toMysqlDateTime(input.now), input.jobId]
       );
 
       return {
@@ -333,7 +520,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         `UPDATE workflow_job
          SET status = 'canceled', claimed_by_runner_id = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ?`,
-        [input.now.toISOString(), input.jobId]
+        [toMysqlDateTime(input.now), input.jobId]
       );
 
       return result;
@@ -348,7 +535,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
            AND lease_expires_at IS NOT NULL
            AND lease_expires_at <= ?
          FOR UPDATE`,
-        [now.toISOString()]
+        [toMysqlDateTime(now)]
       );
       const jobs = rows.map(rowToWorkflowJob);
 
@@ -360,7 +547,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         `UPDATE workflow_job
          SET status = 'retrying', claimed_by_runner_id = NULL, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id IN (${jobs.map(() => "?").join(", ")})`,
-        [now.toISOString(), ...jobs.map((job) => job.id)]
+        [toMysqlDateTime(now), ...jobs.map((job) => job.id)]
       );
 
       return jobs.map((job) => ({
@@ -400,7 +587,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         event.type,
         event.message,
         JSON.stringify(event.metadata),
-        event.createdAt
+        toMysqlDateTime(event.createdAt)
       ]
     );
 
@@ -428,7 +615,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
 
     if (input.after) {
       conditions.push("(created_at > ? OR (created_at = ? AND id > ?))");
-      params.push(input.after.createdAt, input.after.createdAt, input.after.id);
+      params.push(toMysqlDateTime(input.after.createdAt), toMysqlDateTime(input.after.createdAt), input.after.id);
     }
 
     params.push(normalizeLimit(input.limit));
@@ -443,17 +630,38 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
     return rows.map(rowToWorkflowEvent);
   }
 
-  private async selectClaimCandidates(connection: MysqlQueryExecutor, now: Date): Promise<WorkflowJob[]> {
+  private async selectClaimCandidates(
+    connection: MysqlQueryExecutor,
+    now: Date,
+    forUpdate = true
+  ): Promise<WorkflowJob[]> {
     const [rows] = await connection.execute<MysqlRow[]>(
       `SELECT * FROM workflow_job
        WHERE status IN ('pending', 'retrying')
          AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
        ORDER BY priority DESC, created_at ASC
-       FOR UPDATE`,
-      [now.toISOString()]
+       ${forUpdate ? "FOR UPDATE" : ""}`,
+      [toMysqlDateTime(now)]
     );
 
     return rows.map(rowToWorkflowJob);
+  }
+
+  private async countActiveRunnerJobs(
+    connection: MysqlQueryExecutor,
+    runnerId: string,
+    now: Date
+  ): Promise<number> {
+    const [rows] = await connection.execute<MysqlRow[]>(
+      `SELECT COUNT(*) AS active_job_count
+       FROM workflow_job
+       WHERE claimed_by_runner_id = ?
+         AND status IN ('claimed', 'running', 'cancel_requested')
+         AND (lease_expires_at IS NULL OR lease_expires_at > ?)`,
+      [runnerId, toMysqlDateTime(now)]
+    );
+
+    return numberValue(rows[0]?.active_job_count ?? 0);
   }
 
   private async requireRunner(
@@ -556,7 +764,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         JSON.stringify(result.output),
         result.errorCode ?? null,
         result.errorMessage ?? null,
-        result.createdAt
+        toMysqlDateTime(result.createdAt)
       ]
     );
 
@@ -584,6 +792,7 @@ function jobToParams(job: WorkflowJob): unknown[] {
   return [
     job.id,
     job.runId,
+    job.taskId ?? null,
     job.jobType,
     job.status,
     JSON.stringify(job.input),
@@ -599,17 +808,50 @@ function jobToParams(job: WorkflowJob): unknown[] {
     job.executionPolicy,
     job.assignedRunnerId ?? null,
     job.claimedByRunnerId ?? null,
-    job.claimedAt ?? null,
-    job.leaseExpiresAt ?? null,
-    job.createdAt,
-    job.updatedAt
+    toNullableMysqlDateTime(job.claimedAt),
+    toNullableMysqlDateTime(job.leaseExpiresAt),
+    toMysqlDateTime(job.createdAt),
+    toMysqlDateTime(job.updatedAt)
   ];
+}
+
+function taskToParams(task: WorkflowTask): unknown[] {
+  return [
+    task.id,
+    task.runId,
+    task.parentTaskId ?? null,
+    task.taskType,
+    task.sourceKey,
+    task.title,
+    task.status,
+    task.currentDocumentId ?? null,
+    JSON.stringify(task.metadata),
+    toMysqlDateTime(task.createdAt),
+    toMysqlDateTime(task.updatedAt)
+  ];
+}
+
+export function rowToWorkflowTask(row: MysqlRow): WorkflowTask {
+  return {
+    id: stringValue(row.id),
+    runId: stringValue(row.run_id),
+    parentTaskId: optionalString(row.parent_task_id),
+    taskType: stringValue(row.task_type),
+    sourceKey: stringValue(row.source_key),
+    title: stringValue(row.title),
+    status: stringValue(row.status) as WorkflowTask["status"],
+    currentDocumentId: optionalString(row.current_document_id),
+    metadata: parseJsonRecord(row.metadata_json),
+    createdAt: isoValue(row.created_at),
+    updatedAt: isoValue(row.updated_at)
+  };
 }
 
 export function rowToWorkflowJob(row: MysqlRow): WorkflowJob {
   return {
     id: stringValue(row.id),
     runId: stringValue(row.run_id),
+    taskId: optionalString(row.task_id),
     jobType: stringValue(row.job_type),
     status: stringValue(row.status) as WorkflowJob["status"],
     input: parseJsonRecord(row.input_json),
@@ -703,7 +945,11 @@ function optionalIso(value: unknown): string | undefined {
 
 function isoValue(value: unknown): string {
   if (value instanceof Date) {
-    return value.toISOString();
+    return fromMysqlDateTime(value);
+  }
+
+  if (typeof value === "string") {
+    return fromMysqlDateTime(value);
   }
 
   return stringValue(value);
@@ -723,4 +969,19 @@ function normalizeLimit(value: number | undefined): number {
 
 function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function claimDiagnostics(
+  runner: Runner,
+  reason: RunnerClaimDiagnostics["reason"],
+  message: string,
+  details: Omit<RunnerClaimDiagnostics, "runnerId" | "reason" | "message" | "runnerStatus"> = {}
+): RunnerClaimDiagnostics {
+  return {
+    runnerId: runner.id,
+    reason,
+    message,
+    runnerStatus: runner.status,
+    ...details
+  };
 }

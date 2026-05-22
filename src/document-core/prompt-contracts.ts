@@ -8,7 +8,9 @@ export type DocumentWorkflowJobType =
   | "document.generate"
   | "document.evaluate"
   | "document.revise"
-  | "document.fan_out";
+  | "document.fan_out"
+  | "implementation.open_pr"
+  | "implementation.update_pr";
 
 export interface JsonSchema {
   type: "object" | "array" | "string" | "number" | "integer" | "boolean";
@@ -182,6 +184,14 @@ export function outputSchemaForJob(jobType: DocumentWorkflowJobType, documentTyp
     return fanOutOutputSchema(documentType);
   }
 
+  if (jobType === "implementation.open_pr") {
+    return implementationOpenPrOutputSchema();
+  }
+
+  if (jobType === "implementation.update_pr") {
+    return implementationUpdateOutputSchema();
+  }
+
   return draftOutputSchema(jobType);
 }
 
@@ -210,7 +220,9 @@ function normalizeJobType(jobType: string): DocumentWorkflowJobType {
     jobType === "document.generate" ||
     jobType === "document.evaluate" ||
     jobType === "document.revise" ||
-    jobType === "document.fan_out"
+    jobType === "document.fan_out" ||
+    jobType === "implementation.open_pr" ||
+    jobType === "implementation.update_pr"
   ) {
     return jobType;
   }
@@ -281,6 +293,38 @@ function fanOutOutputSchema(documentType: DocumentType): JsonSchema {
       targetDocumentType: { type: "string", enum: targetTypes },
       rationale: { type: "string" },
       downstreamDocuments: { type: "array", items: downstreamDocumentSchema(downstreamTypes) }
+    }
+  };
+}
+
+function implementationOpenPrOutputSchema(): JsonSchema {
+  return {
+    type: "object",
+    required: ["status", "summary"],
+    additionalProperties: true,
+    properties: {
+      status: { type: "string", enum: ["implemented", "succeeded"] },
+      latestCommitSha: { type: "string" },
+      summary: { type: "string" },
+      artifacts: { type: "array", items: { type: "object", additionalProperties: true } },
+      generatedFiles: { type: "array", items: { type: "object", additionalProperties: true } }
+    }
+  };
+}
+
+function implementationUpdateOutputSchema(): JsonSchema {
+  return {
+    type: "object",
+    required: ["status", "pullRequestNumber", "pullRequestUrl", "summary"],
+    additionalProperties: true,
+    properties: {
+      status: { type: "string", enum: ["succeeded"] },
+      pullRequestNumber: { type: "integer", minimum: 1 },
+      pullRequestUrl: { type: "string" },
+      latestCommitSha: { type: "string" },
+      summary: { type: "string" },
+      artifacts: { type: "array", items: { type: "object", additionalProperties: true } },
+      generatedFiles: { type: "array", items: { type: "object", additionalProperties: true } }
     }
   };
 }

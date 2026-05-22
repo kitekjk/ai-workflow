@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
 import { runRunnerWorkerOnce } from "../prd-confirmation/runner-worker";
 import { runSchedulerOnce } from "../prd-confirmation/scheduler";
@@ -18,7 +18,7 @@ import {
 } from "../prd-confirmation/domain";
 import type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../prd-confirmation/ports";
 import { redactSecrets } from "../runtime/secrets";
-import type { RunnerMode, WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
+import type { RunnerMode, WorkflowJob, WorkflowJobResult, WorkflowTask } from "../workflow-core/domain";
 import type { WorkflowScheduler } from "../workflow-core/scheduler";
 import {
   createEngineTransitionCommandInput,
@@ -57,9 +57,35 @@ export interface CreateWorkflowApiServerInput {
   workflowTransitionCommand?: WorkflowTransitionCommand;
   repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
   repositoryTransitionIntervalMs?: number;
+  schedulerRecoveryIntervalMs?: number;
   internalTickIntervalMs?: number;
+  auth?: WorkflowApiAuthConfig;
   enableTestControls?: boolean;
   now?: () => Date;
+}
+
+export interface WorkflowApiAuthConfig {
+  appToken?: string;
+  runnerTokens?: Record<string, string>;
+}
+
+interface RunnerOnboardingCommand {
+  label: string;
+  command: string;
+}
+
+interface RunnerOnboardingResponse {
+  runnerId: string;
+  ownerEmail: string;
+  apiBaseUrl: string;
+  mode: RunnerMode;
+  defaultEngine: string;
+  capabilities: string[];
+  engines: string[];
+  environment: Record<string, string>;
+  powershellSetup: string[];
+  commands: RunnerOnboardingCommand[];
+  requirements: string[];
 }
 
 export function createWorkflowApiServer({
@@ -76,7 +102,9 @@ export function createWorkflowApiServer({
   workflowTransitionCommand,
   repositoryTransitionResultReader,
   repositoryTransitionIntervalMs,
+  schedulerRecoveryIntervalMs,
   internalTickIntervalMs,
+  auth,
   enableTestControls = false,
   now = () => new Date()
 }: CreateWorkflowApiServerInput): WorkflowApiServer {
@@ -85,6 +113,8 @@ export function createWorkflowApiServer({
   let internalTickPromise: Promise<unknown> | undefined;
   let repositoryTransitionTimer: ReturnType<typeof setInterval> | undefined;
   let repositoryTransitionPromise: Promise<unknown> | undefined;
+  let schedulerRecoveryTimer: ReturnType<typeof setInterval> | undefined;
+  let schedulerRecoveryPromise: Promise<unknown> | undefined;
 
   const context: WorkflowApiRequestContext = {
     fixture,
@@ -99,6 +129,7 @@ export function createWorkflowApiServer({
     workflowResultCommand,
     workflowTransitionCommand,
     repositoryTransitionResultReader,
+    auth,
     repositoryTransitionLoopEnabled: Boolean(
       !fixture &&
         repositoryTransitionResultReader &&
@@ -151,6 +182,19 @@ export function createWorkflowApiServer({
       });
   };
 
+  const runSchedulerRecoveryLoop = () => {
+    if (!context.scheduler || schedulerRecoveryPromise) {
+      return;
+    }
+
+    schedulerRecoveryPromise = context.scheduler
+      .recoverExpiredLeases(context.now())
+      .catch(() => undefined)
+      .finally(() => {
+        schedulerRecoveryPromise = undefined;
+      });
+  };
+
   const startInternalTickLoop = () => {
     if (
       !context.fixture ||
@@ -184,6 +228,21 @@ export function createWorkflowApiServer({
     runRepositoryTransitionLoop();
   };
 
+  const startSchedulerRecoveryLoop = () => {
+    if (
+      !context.scheduler ||
+      schedulerRecoveryIntervalMs === undefined ||
+      schedulerRecoveryIntervalMs < 1 ||
+      schedulerRecoveryTimer
+    ) {
+      return;
+    }
+
+    schedulerRecoveryTimer = setInterval(runSchedulerRecoveryLoop, schedulerRecoveryIntervalMs);
+    schedulerRecoveryTimer.unref?.();
+    runSchedulerRecoveryLoop();
+  };
+
   const stopInternalTickLoop = () => {
     if (!internalTickTimer) {
       return;
@@ -202,6 +261,15 @@ export function createWorkflowApiServer({
     repositoryTransitionTimer = undefined;
   };
 
+  const stopSchedulerRecoveryLoop = () => {
+    if (!schedulerRecoveryTimer) {
+      return;
+    }
+
+    clearInterval(schedulerRecoveryTimer);
+    schedulerRecoveryTimer = undefined;
+  };
+
   return {
     get url() {
       return baseUrl;
@@ -217,6 +285,7 @@ export function createWorkflowApiServer({
           baseUrl = `http://127.0.0.1:${address.port}`;
           startInternalTickLoop();
           startRepositoryTransitionLoop();
+          startSchedulerRecoveryLoop();
           return this;
         }
 
@@ -229,8 +298,10 @@ export function createWorkflowApiServer({
     async close() {
       stopInternalTickLoop();
       stopRepositoryTransitionLoop();
+      stopSchedulerRecoveryLoop();
       await internalTickPromise;
       await repositoryTransitionPromise;
+      await schedulerRecoveryPromise;
       await closeServer(server);
     }
   };
@@ -249,6 +320,7 @@ interface WorkflowApiRequestContext {
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
   repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
+  auth?: WorkflowApiAuthConfig;
   repositoryTransitionLoopEnabled: boolean;
   enableTestControls: boolean;
   now: () => Date;
@@ -263,19 +335,22 @@ async function routeRequest(
   const url = new URL(request.url ?? "/", "http://localhost");
   const path = url.pathname;
 
+  authorizeEarlyRequest(context, request, method, path);
+
   if (method === "POST" && path === "/prd/intake") {
-    const body = await readJsonBody<{ prdJiraKey?: string }>(request);
+    const body = await readJsonBody<{ prdJiraKey?: string; requestedBy?: string }>(request);
     const prdJiraKey = requireString(body.prdJiraKey, "prdJiraKey");
+    const requestedBy = optionalString(body.requestedBy, "requestedBy");
 
     if (!context.fixture && context.jiraIssueReader && context.prdIntakeCommand) {
-      const result = await intakePrdTicketWithoutFixture(context, prdJiraKey);
+      const result = await intakePrdTicketWithoutFixture(context, prdJiraKey, requestedBy);
       writeJson(response, 202, result);
       return;
     }
 
     const fixture = requireCompatibilityFixture(context);
     const result = await fixture.workflow.intakePrdTicket(prdJiraKey);
-    await recordPrdIntakeCommand(context, prdJiraKey);
+    await recordPrdIntakeCommand(context, prdJiraKey, requestedBy);
     await persistFixtureSnapshot(context);
 
     writeJson(response, 202, result);
@@ -308,6 +383,11 @@ async function routeRequest(
     return;
   }
 
+  if (method === "POST" && path === "/repository-transitions/process-next") {
+    writeJson(response, 200, await processNextRepositoryTransitionResult(context));
+    return;
+  }
+
   if (context.enableTestControls && method === "POST" && path === "/test-controls/quality") {
     const fixture = requireCompatibilityFixture(context);
     const body = await readJsonBody<{ qualityPasses?: boolean }>(request);
@@ -316,12 +396,44 @@ async function routeRequest(
     return;
   }
 
+  if (method === "GET" && path === "/runner-onboarding") {
+    writeJson(response, 200, runnerOnboardingForRequest(request, url));
+    return;
+  }
+
+  if (method === "GET" && path === "/runners") {
+    const scheduler = requireScheduler(context);
+    const requestedAt = parseNow(url.searchParams.get("now"), context.now);
+    const runners = await scheduler.listRunners(requestedAt);
+    const runnersWithDiagnostics = await Promise.all(
+      runners.map(async (runner) => {
+        const claimDiagnostics = await scheduler.diagnoseClaim(runner.id, requestedAt);
+        const status =
+          runner.status === "online" && claimDiagnostics.reason === "runner_capacity_full" ? "busy" : runner.status;
+
+        return {
+          ...runner,
+          status,
+          claimDiagnostics: {
+            ...claimDiagnostics,
+            runnerStatus: status
+          }
+        };
+      })
+    );
+
+    writeJson(response, 200, { runners: runnersWithDiagnostics });
+    return;
+  }
+
   if (method === "POST" && path === "/runners/register") {
     const scheduler = requireScheduler(context);
     const body = await readJsonBody<RunnerRegistrationBody>(request);
+    const runnerId = requireString(body.id, "id");
+    requireRunnerAuthorization(context, request, runnerId);
     const runner = await scheduler.registerRunner({
-      id: requireString(body.id, "id"),
-      ownerUserId: optionalString(body.ownerUserId, "ownerUserId"),
+      id: runnerId,
+      ownerUserId: optionalRunnerOwner(body),
       mode: requireRunnerMode(body.mode),
       teamIds: optionalStringArray(body.teamIds, "teamIds"),
       allowedProjectIds: optionalStringArray(body.allowedProjectIds, "allowedProjectIds"),
@@ -349,7 +461,7 @@ async function routeRequest(
           ? await scheduler.heartbeat(decodedRunnerId, parseNow(body.now, context.now))
           : await scheduler.registerRunner({
               id: decodedRunnerId,
-              ownerUserId: optionalString(body.ownerUserId, "ownerUserId"),
+              ownerUserId: optionalRunnerOwner(body),
               mode: requireRunnerMode(body.mode),
               teamIds: optionalStringArray(body.teamIds, "teamIds"),
               allowedProjectIds: optionalStringArray(body.allowedProjectIds, "allowedProjectIds"),
@@ -365,11 +477,30 @@ async function routeRequest(
       return;
     }
 
+    if (action === "pause") {
+      const body = await readJsonBody<RunnerClaimBody>(request);
+      const runner = await scheduler.pauseRunner(decodedRunnerId, parseNow(body.now, context.now));
+
+      writeJson(response, 200, { runner });
+      return;
+    }
+
+    if (action === "resume") {
+      const body = await readJsonBody<RunnerClaimBody>(request);
+      const runner = await scheduler.resumeRunner(decodedRunnerId, parseNow(body.now, context.now));
+
+      writeJson(response, 200, { runner });
+      return;
+    }
+
     if (action === "claim") {
       const body = await readJsonBody<RunnerClaimBody>(request);
-      const claim = await scheduler.claim(decodedRunnerId, parseNow(body.now, context.now));
+      const result = await scheduler.claimWithDiagnostics(decodedRunnerId, parseNow(body.now, context.now));
 
-      writeJson(response, 200, { claim: claim ?? null });
+      writeJson(response, 200, {
+        claim: result.claim ?? null,
+        ...(result.diagnostics ? { diagnostics: result.diagnostics } : {})
+      });
       return;
     }
   }
@@ -388,9 +519,11 @@ async function routeRequest(
 
     if (method === "POST" && action === "start") {
       const body = await readJsonBody<RunnerJobActionBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
       const job = await scheduler.startJob(
         decodedJobId,
-        requireString(body.runnerId, "runnerId"),
+        runnerId,
         parseNow(body.now, context.now)
       );
 
@@ -413,9 +546,11 @@ async function routeRequest(
 
     if (method === "POST" && action === "canceled") {
       const body = await readJsonBody<RunnerJobResultBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
       const result = await scheduler.acknowledgeJobCancellation({
         jobId: decodedJobId,
-        runnerId: requireString(body.runnerId, "runnerId"),
+        runnerId,
         output: redactSecrets(optionalRecord(body.output, "output")),
         now: parseNow(body.now, context.now)
       });
@@ -427,6 +562,7 @@ async function routeRequest(
     if (method === "POST" && action === "results") {
       const body = await readJsonBody<RunnerJobResultBody>(request);
       const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
       const completedAt = parseNow(body.now, context.now);
       const jobBeforeCompletion =
         !context.fixture && context.workflowTransitionCommand?.recordRepositoryTransition
@@ -446,9 +582,11 @@ async function routeRequest(
 
     if (method === "POST" && action === "fail") {
       const body = await readJsonBody<RunnerJobFailureBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
       const result = await scheduler.failJob({
         jobId: decodedJobId,
-        runnerId: requireString(body.runnerId, "runnerId"),
+        runnerId,
         output: redactSecrets(optionalRecord(body.output, "output")),
         errorCode: requireString(body.errorCode, "errorCode"),
         errorMessage: redactSecrets(requireString(body.errorMessage, "errorMessage")),
@@ -462,9 +600,11 @@ async function routeRequest(
 
     if (method === "POST" && action === "logs") {
       const body = await readJsonBody<RunnerJobLogBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
       const event = await scheduler.recordJobLog({
         jobId: decodedJobId,
-        runnerId: requireString(body.runnerId, "runnerId"),
+        runnerId,
         level: optionalString(body.level, "level"),
         message: redactSecrets(requireString(body.message, "message")),
         metadata: redactSecrets(optionalRecord(body.metadata, "metadata")),
@@ -479,7 +619,9 @@ async function routeRequest(
       const scheduler = requireScheduler(context);
       const documentRepository = requireDocumentRepository(context);
       const body = await readJsonBody<RunnerJobArtifactBody>(request);
-      const job = await scheduler.requireClaimedJob(decodedJobId, requireString(body.runnerId, "runnerId"));
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
+      const job = await scheduler.requireClaimedJob(decodedJobId, runnerId);
       const artifact = await documentRepository.registerArtifact({
         documentId: optionalString(body.documentId, "documentId"),
         documentVersionId: optionalString(body.documentVersionId, "documentVersionId"),
@@ -640,6 +782,7 @@ async function routeRequest(
       await requireFeedbackRevisionCommand(context).recordRevisionJob({
         runId: current.document.workflowRunId,
         job: revisionJob,
+        taskId: current.document.workflowTaskId,
         feedbackItems: feedbackItemsForCommand,
         now: requestedAt
       });
@@ -866,24 +1009,29 @@ async function routeRequest(
 
       await command.recordDocumentState({
         document: updatedDocument,
+        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
         now: actedAt
       });
 
-      const downstreamJob =
-        action === "approve" ? downstreamJobForApprovedReadModelDocument(current, body, actedAt) : undefined;
+      const downstreamWork =
+        action === "approve" ? downstreamWorkForApprovedReadModelDocument(current, body, actedAt) : undefined;
 
-      if (downstreamJob) {
+      if (downstreamWork) {
         await command.recordWorkflowJob({
           runId: updatedDocument.workflowRunId,
-          job: downstreamJob,
+          job: downstreamWork.job,
+          taskId: downstreamWork.taskId,
+          workflowTask: downstreamWork.workflowTask,
           now: actedAt
         });
       }
 
       writeJson(response, 200, {
         approvalGate: approvalGateForReadModelAction(current.document, updatedDocument, body),
-        routingJob: downstreamJob,
-        routingStatus: downstreamJob ? "accepted" : undefined
+        routingJob: downstreamWork?.job,
+        routingTask: downstreamWork?.workflowTask,
+        routingStatus: downstreamWork ? "accepted" : undefined
       });
       return;
     }
@@ -920,7 +1068,10 @@ async function routeRequest(
         adrTitle: optionalString(body.adrTitle, "adrTitle"),
         now: approvedAt
       });
-      await recordDocumentStateCommand(context, documentId, approvedAt);
+      await recordDocumentStateCommand(context, documentId, approvedAt, {
+        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
+        reason: optionalString(body.reason, "reason")
+      });
       await recordWorkflowJobCommand(context, downstreamJob?.jobId, approvedAt);
       await persistFixtureSnapshot(context);
 
@@ -939,7 +1090,10 @@ async function routeRequest(
         actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
         reason: optionalString(body.reason, "reason")
       });
-      await recordDocumentStateCommand(context, documentId, rejectedAt);
+      await recordDocumentStateCommand(context, documentId, rejectedAt, {
+        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
+        reason: optionalString(body.reason, "reason")
+      });
       await persistFixtureSnapshot(context);
       writeJson(response, 200, { approvalGate });
       return;
@@ -947,6 +1101,225 @@ async function routeRequest(
   }
 
   writeJson(response, 404, { error: "Not found" });
+}
+
+function authorizeEarlyRequest(
+  context: WorkflowApiRequestContext,
+  request: IncomingMessage,
+  method: string,
+  path: string
+): void {
+  if (method === "POST" && path === "/runners/register") {
+    return;
+  }
+
+  if (method === "POST" && path.startsWith("/runners/")) {
+    const [runnerId, action] = path.slice("/runners/".length).split("/");
+
+    if (action === "pause" || action === "resume") {
+      requireAppAuthorization(context, request);
+      return;
+    }
+
+    requireRunnerAuthorization(context, request, decodeURIComponent(runnerId));
+    return;
+  }
+
+  if (path.startsWith("/runner-jobs/")) {
+    const [, action] = path.slice("/runner-jobs/".length).split("/");
+
+    if (method === "POST" && isRunnerJobCallbackAction(action)) {
+      return;
+    }
+
+    requireAppAuthorization(context, request);
+    return;
+  }
+
+  requireAppAuthorization(context, request);
+}
+
+function runnerOnboardingForRequest(request: IncomingMessage, url: URL): RunnerOnboardingResponse {
+  const ownerEmail = optionalString(url.searchParams.get("ownerEmail"), "ownerEmail") ?? "developer@example.com";
+  const runnerId = optionalString(url.searchParams.get("runnerId"), "runnerId") ?? runnerIdForOwnerEmail(ownerEmail);
+  const apiBaseUrl =
+    optionalString(url.searchParams.get("apiBaseUrl"), "apiBaseUrl") ?? apiBaseUrlForRequest(request);
+  const capabilities = queryList(
+    url.searchParams,
+    "capabilities",
+    [
+      "document.generate",
+      "document.evaluate",
+      "document.revise",
+      "workflow.route",
+      "workflow.fanout",
+      "implementation.open_pr",
+      "implementation.update_pr",
+      "implementation.collect_pr_status"
+    ]
+  );
+  const engines = queryList(url.searchParams, "engines", ["codex", "claude"]);
+  const defaultEngine = optionalString(url.searchParams.get("defaultEngine"), "defaultEngine") ?? engines[0] ?? "codex";
+  const maxJobs = optionalString(url.searchParams.get("maxJobs"), "maxJobs") ?? "6";
+  const environment: Record<string, string> = {
+    WORKFLOW_API_BASE_URL: apiBaseUrl,
+    LOCAL_RUNNER_ID: runnerId,
+    LOCAL_RUNNER_OWNER_EMAIL: ownerEmail,
+    LOCAL_RUNNER_MODE: "local",
+    LOCAL_RUNNER_ALLOWED_PROJECT_IDS: "prd-confirmation",
+    LOCAL_RUNNER_ALLOWED_REPOSITORY_IDS: "prd-docs",
+    LOCAL_RUNNER_CAPABILITIES: capabilities.join(","),
+    LOCAL_RUNNER_ENGINES: engines.join(","),
+    RUNNER_ENGINE: defaultEngine,
+    LOCAL_RUNNER_CONCURRENCY: "1",
+    LOCAL_RUNNER_WORKSPACE_ROOT: ".runner-workspaces",
+    LOCAL_RUNNER_MAX_JOBS: maxJobs
+  };
+  const requirements = [
+    "Run inside the ai-workflow repository checkout.",
+    `Install the selected CLI engine command for ${defaultEngine}.`,
+    "Set LOCAL_RUNNER_TOKEN when the Workflow API is protected by runner tokens."
+  ];
+
+  if (capabilities.some((capability) => capability.startsWith("implementation."))) {
+    environment.GITHUB_TOKEN = "<set locally>";
+    environment.GITHUB_OWNER = "<org>";
+    environment.GITHUB_REPO = "<repo>";
+    environment.GITHUB_DEFAULT_BASE_BRANCH = "main";
+    environment.GITHUB_CLONE_URL = "https://github.com/<org>/<repo>.git";
+    requirements.push("Set GitHub owner, repo, clone URL, and token before claiming implementation jobs.");
+  }
+
+  return {
+    runnerId,
+    ownerEmail,
+    apiBaseUrl,
+    mode: "local",
+    defaultEngine,
+    capabilities,
+    engines,
+    environment,
+    powershellSetup: Object.entries(environment).map(([key, value]) => `$env:${key}=${JSON.stringify(value)}`),
+    commands: [
+      {
+        label: "Install",
+        command: "npm install"
+      },
+      {
+        label: "Doctor",
+        command: "npm run doctor:local-runner"
+      },
+      {
+        label: "Drain",
+        command: "npm run start:local-runner"
+      },
+      {
+        label: "Watch",
+        command: "Remove-Item Env:LOCAL_RUNNER_MAX_JOBS -ErrorAction SilentlyContinue; npm run start:local-runner"
+      }
+    ],
+    requirements
+  };
+}
+
+function runnerIdForOwnerEmail(ownerEmail: string): string {
+  const slug = ownerEmail
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `runner-${slug || "local"}-pc`;
+}
+
+function queryList(params: URLSearchParams, key: string, fallback: string[]): string[] {
+  const values = params.getAll(key).flatMap((value) => value.split(","));
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+
+  return normalized.length > 0 ? [...new Set(normalized)] : fallback;
+}
+
+function apiBaseUrlForRequest(request: IncomingMessage): string {
+  const forwardedProto = headerValue(request.headers["x-forwarded-proto"]);
+  const forwardedHost = headerValue(request.headers["x-forwarded-host"]);
+  const proto = forwardedProto ?? "http";
+  const host = forwardedHost ?? headerValue(request.headers.host) ?? "127.0.0.1";
+
+  return `${proto}://${host}`;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function isRunnerJobCallbackAction(action: string | undefined): boolean {
+  return (
+    action === "start" ||
+    action === "canceled" ||
+    action === "results" ||
+    action === "fail" ||
+    action === "logs" ||
+    action === "artifacts"
+  );
+}
+
+function requireAppAuthorization(context: WorkflowApiRequestContext, request: IncomingMessage): void {
+  const token = context.auth?.appToken;
+
+  if (!token) {
+    return;
+  }
+
+  if (!isBearerTokenAuthorized(request, token)) {
+    throw new HttpError(401, "Unauthorized");
+  }
+}
+
+function requireRunnerAuthorization(
+  context: WorkflowApiRequestContext,
+  request: IncomingMessage,
+  runnerId: string
+): void {
+  const runnerTokens = context.auth?.runnerTokens;
+  const expectedRunnerToken = runnerTokens?.[runnerId];
+
+  if (expectedRunnerToken) {
+    if (!isBearerTokenAuthorized(request, expectedRunnerToken)) {
+      throw new HttpError(401, "Unauthorized");
+    }
+
+    return;
+  }
+
+  if (runnerTokens && Object.keys(runnerTokens).length > 0) {
+    throw new HttpError(403, "Forbidden");
+  }
+
+  requireAppAuthorization(context, request);
+}
+
+function isBearerTokenAuthorized(request: IncomingMessage, expectedToken: string): boolean {
+  const actualToken = bearerTokenFromRequest(request);
+  return Boolean(actualToken && safeTokenEquals(actualToken, expectedToken));
+}
+
+function bearerTokenFromRequest(request: IncomingMessage): string | undefined {
+  const header = Array.isArray(request.headers.authorization)
+    ? request.headers.authorization[0]
+    : request.headers.authorization;
+
+  if (!header) {
+    return undefined;
+  }
+
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match?.[1];
+}
+
+function safeTokenEquals(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 async function runCompatibilityWorkflowTick(
@@ -1012,7 +1385,11 @@ async function processNextRepositoryTransitionResult(
   });
 }
 
-async function recordPrdIntakeCommand(context: WorkflowApiRequestContext, prdJiraKey: string): Promise<void> {
+async function recordPrdIntakeCommand(
+  context: WorkflowApiRequestContext,
+  prdJiraKey: string,
+  requestedBy?: string
+): Promise<void> {
   if (!context.prdIntakeCommand) {
     return;
   }
@@ -1035,18 +1412,24 @@ async function recordPrdIntakeCommand(context: WorkflowApiRequestContext, prdJir
     jobId: draftJob.id,
     prdJiraKey,
     title: workItem.title ?? fixture.store.externalIssues.get(prdJiraKey)?.summary,
+    requestedBy,
     now: context.now()
   });
 }
 
 async function intakePrdTicketWithoutFixture(
   context: WorkflowApiRequestContext,
-  prdJiraKey: string
-): Promise<{ status: "accepted" }> {
+  prdJiraKey: string,
+  requestedBy?: string
+): Promise<{ status: "accepted"; runId?: string; documentId?: string; jobId?: string }> {
   const existingState = await context.readModel?.summarizeState(prdJiraKey);
 
   if (existingState) {
-    return { status: "accepted" };
+    return {
+      status: "accepted",
+      runId: stringOrUndefined(existingState.runId),
+      documentId: stringOrUndefined(existingState.documentId)
+    };
   }
 
   const jiraIssueReader = requireJiraIssueReader(context);
@@ -1057,16 +1440,17 @@ async function intakePrdTicketWithoutFixture(
 
   const workItemId = `wi_${randomUUID()}`;
 
-  await command.recordIntake({
+  const result = await command.recordIntake({
     runId: `run_${randomUUID()}`,
     workItemId,
     jobId: `job_${randomUUID()}`,
     prdJiraKey,
     title: loaded.prd.summary,
+    requestedBy,
     now: context.now()
   });
 
-  return { status: "accepted" };
+  return { status: "accepted", ...result };
 }
 
 function validatePrdIntakeIssue(prd: ExternalIssue, prdJiraKey: string, sources: ExternalIssue[]): void {
@@ -1160,7 +1544,8 @@ function feedbackItemsForRevision(context: WorkflowApiRequestContext, feedbackIt
 async function recordDocumentStateCommand(
   context: WorkflowApiRequestContext,
   documentId: string,
-  now: Date
+  now: Date,
+  metadata: { actor?: string; reason?: string } = {}
 ): Promise<void> {
   if (!context.workflowTransitionCommand) {
     return;
@@ -1175,7 +1560,12 @@ async function recordDocumentStateCommand(
     throw new Error(`Workflow transition command could not find fixture document state: ${documentId}`);
   }
 
-  await context.workflowTransitionCommand.recordDocumentState({ document, now });
+  await context.workflowTransitionCommand.recordDocumentState({
+    document,
+    actor: metadata.actor,
+    reason: metadata.reason,
+    now
+  });
 }
 
 async function recordWorkflowJobCommand(
@@ -1279,6 +1669,7 @@ async function persistFixtureSnapshot(context: WorkflowApiRequestContext): Promi
 interface RunnerRegistrationBody {
   id?: unknown;
   ownerUserId?: unknown;
+  ownerEmail?: unknown;
   mode?: unknown;
   teamIds?: unknown;
   allowedProjectIds?: unknown;
@@ -1439,6 +1830,7 @@ function summarizeWorkflowRun(snapshot: GenericPrdSnapshot, runId: string): Reco
   return {
     run,
     policy: snapshot.policy,
+    tasks: tasksForDocuments(snapshot.documents.filter((document) => document.workflowRunId === runId)),
     jobs: snapshot.workflowJobs.filter((job) => job.runId === runId),
     documents: snapshot.documents.filter((document) => document.workflowRunId === runId)
   };
@@ -1453,19 +1845,57 @@ function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): 
 
   const jobs = snapshot.workflowJobs.filter((job) => job.runId === runId);
   const documents = snapshot.documents.filter((document) => document.workflowRunId === runId);
+  const tasks = tasksForDocuments(documents);
 
   return {
     run: summary.run,
     policy: snapshot.policy,
-    nodes: jobs.map((job) => ({
-      id: job.id,
-      type: "workflow_job",
-      jobType: job.jobType,
-      status: job.status,
-      primaryDocumentId: primaryDocumentIdForJob(job, documents)
-    })),
+    tasks,
+    nodes: [
+      ...tasks.map((task) => ({
+        id: task.id,
+        type: "workflow_task",
+        taskType: task.taskType,
+        status: task.status,
+        currentDocumentId: task.currentDocumentId
+      })),
+      ...jobs.map((job) => ({
+        id: job.id,
+        type: "workflow_job",
+        jobType: job.jobType,
+        status: job.status,
+        taskId: taskIdForWorkflowJob(job),
+        primaryDocumentId: primaryDocumentIdForJob(job, documents)
+      }))
+    ],
     documents
   };
+}
+
+function tasksForDocuments(documents: Document[]): WorkflowTask[] {
+  return documents.map((document) => ({
+    id: document.workflowTaskId ?? taskIdForDocument(document.id),
+    runId: document.workflowRunId,
+    parentTaskId: document.parentDocumentId ? taskIdForDocument(document.parentDocumentId) : undefined,
+    taskType: document.type,
+    sourceKey: document.sourceKey,
+    title: document.title,
+    status: document.status,
+    currentDocumentId: document.id,
+    metadata: {
+      documentId: document.id
+    },
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt
+  }));
+}
+
+function taskIdForWorkflowJob(job: WorkflowJob): string | undefined {
+  return job.taskId ?? stringOrUndefined(job.input.taskId);
+}
+
+function taskIdForDocument(documentId: string): string {
+  return documentId.startsWith("doc_") ? `task_${documentId.slice("doc_".length)}` : `task_${documentId}`;
 }
 
 function summarizeDocumentCurrent(
@@ -1852,6 +2282,10 @@ function optionalString(value: unknown, name: string): string | undefined {
   return value;
 }
 
+function optionalRunnerOwner(body: { ownerUserId?: unknown; ownerEmail?: unknown }): string | undefined {
+  return optionalString(body.ownerEmail ?? body.ownerUserId, body.ownerEmail === undefined ? "ownerUserId" : "ownerEmail");
+}
+
 function optionalBoolean(value: unknown, name: string): boolean | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -2048,11 +2482,11 @@ function revisionJobForReadModelDocument(
   };
 }
 
-function downstreamJobForApprovedReadModelDocument(
+function downstreamWorkForApprovedReadModelDocument(
   current: DocumentCurrentReadModel,
   body: ApprovalActionBody,
   approvedAt: Date
-): AgentJob | undefined {
+): { job: AgentJob; taskId?: string; workflowTask?: WorkflowTask } | undefined {
   const document = current.document;
   const requestedBy = optionalString(body.requestedBy ?? body.actor, "requestedBy");
   const common = {
@@ -2064,55 +2498,83 @@ function downstreamJobForApprovedReadModelDocument(
 
   if (document.type === "prd") {
     return {
-      ...common,
-      jobType: "prd.route_downstream",
-      input: {
-        requestedBy,
-        approvedAt: approvedAt.toISOString(),
-        sourceDocumentId: document.id
-      }
+      job: {
+        ...common,
+        jobType: "prd.route_downstream",
+        input: {
+          requestedBy,
+          approvedAt: approvedAt.toISOString(),
+          sourceDocumentId: document.id
+        }
+      },
+      taskId: document.workflowTaskId
     };
   }
 
   if (document.type === "hld" || document.type === "lld") {
     return {
-      ...common,
-      jobType: "document.fan_out",
-      input: {
-        requestedBy,
-        approvedAt: approvedAt.toISOString(),
-        sourceDocumentId: document.id,
-        parentDocumentType: document.type,
-        targetDocumentType: document.type === "hld" ? "lld" : "spec",
-        includeAdr: optionalBoolean(body.includeAdr, "includeAdr") === true,
-        adrTitle: optionalString(body.adrTitle, "adrTitle"),
-        adrOnly: false
-      }
+      job: {
+        ...common,
+        jobType: "document.fan_out",
+        input: {
+          requestedBy,
+          approvedAt: approvedAt.toISOString(),
+          sourceDocumentId: document.id,
+          parentDocumentType: document.type,
+          targetDocumentType: document.type === "hld" ? "lld" : "spec",
+          includeAdr: optionalBoolean(body.includeAdr, "includeAdr") === true,
+          adrTitle: optionalString(body.adrTitle, "adrTitle"),
+          adrOnly: false
+        }
+      },
+      taskId: document.workflowTaskId
     };
   }
 
   if (document.type === "spec") {
-    return {
-      ...common,
-      jobType: "implementation.open_pr",
-      input: {
-        requestedBy,
-        approvedAt: approvedAt.toISOString(),
-        documentType: document.type,
+    const taskId = `task_${document.id}_code`;
+    const workflowTask: WorkflowTask = {
+      id: taskId,
+      runId: document.workflowRunId,
+      parentTaskId: document.workflowTaskId,
+      taskType: "code",
+      sourceKey: document.sourceKey,
+      title: `Code Implementation for ${document.sourceKey}`,
+      status: "draft",
+      currentDocumentId: document.id,
+      metadata: {
         documentId: document.id,
-        documentVersionId: current.currentVersion?.id,
-        documentVersionProducerJobId: current.currentVersion?.producerJobId,
-        sourceDocumentId: document.id,
-        currentDocumentArtifactUrl: currentArtifactUrlForRevision(current),
-        branchName: implementationBranchNameFor(document.sourceKey),
-        baseBranch: "main",
-        title: `Implement ${document.sourceKey}: ${document.title ?? document.sourceKey}`,
-        body: implementationPullRequestBodyFor(document, {
+        requestedBy
+      },
+      createdAt: approvedAt.toISOString(),
+      updatedAt: approvedAt.toISOString()
+    };
+
+    return {
+      job: {
+        ...common,
+        jobType: "implementation.open_pr",
+        input: {
           requestedBy,
-          artifactUrl: currentArtifactUrlForRevision(current)
-        }),
-        draft: true
-      }
+          approvedAt: approvedAt.toISOString(),
+          documentType: document.type,
+          documentId: document.id,
+          documentVersionId: current.currentVersion?.id,
+          documentVersionProducerJobId: current.currentVersion?.producerJobId,
+          sourceDocumentId: document.id,
+          currentDocumentArtifactUrl: currentArtifactUrlForRevision(current),
+          branchName: implementationBranchNameFor(document.sourceKey),
+          baseBranch: "main",
+          title: `Implement ${document.sourceKey}: ${document.title ?? document.sourceKey}`,
+          body: implementationPullRequestBodyFor(document, {
+            requestedBy,
+            artifactUrl: currentArtifactUrlForRevision(current)
+          }),
+          draft: true
+        }
+      },
+      taskId,
+      workflowTask
     };
   }
 
@@ -2230,7 +2692,7 @@ function writeJson(response: ServerResponse, statusCode: number, body: unknown):
 function setCorsHeaders(response: ServerResponse): void {
   response.setHeader("access-control-allow-origin", "*");
   response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
-  response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader("access-control-allow-headers", "authorization,content-type");
 }
 
 function statusCodeForError(error: unknown): number {

@@ -12,6 +12,7 @@ The dashboard still ships with a mock execution tree, and it can also connect to
 - Connected box-and-line workflow view similar to an execution canvas
 - Inline contrast between n8n-style separated child executions and the custom one-screen parent/child visibility target
 - Workflow selection also changes the tree, selected detail panel, and status ledger scope
+- Task Delivery Map for PRD -> HLD -> LLD -> Spec -> Code lineage, task job counts, document artifact counts, and Code implementation PR artifacts
 - Parent-child execution tree:
   - PRD Initiative
   - HLD Epic
@@ -21,9 +22,9 @@ The dashboard still ships with a mock execution tree, and it can also connect to
   - artifact type
   - Jira key
   - state
-  - agent job ID
+  - latest job ID
   - quality score
-  - retry count
+  - nested job count
   - GitHub PR placeholder
   - started and finished time
   - failed error message
@@ -31,8 +32,10 @@ The dashboard still ships with a mock execution tree, and it can also connect to
   - summary
   - source artifact
   - target repo/path
+  - implementation PR links, review status, and CI status when `pull_request` artifacts exist
+  - recent artifact history
   - quality gate result
-  - agent job info
+  - task job summary and nested job history
   - related Jira, GitHub, artifact, quality, and log links
 - Status events ledger:
   - `job.started`
@@ -51,12 +54,17 @@ The dashboard still ships with a mock execution tree, and it can also connect to
   - Reset Demo
 - API controls:
   - Seed API
+  - Full API Slice
   - Refresh API
   - Tick API
+  - Run Local Runner
   - Quality Pass
   - Feedback
   - Revise
   - Approve
+- Runner controls:
+  - Pause runner claims
+  - Resume runner claims
 
 ## Run Locally
 
@@ -85,6 +93,20 @@ The Vite dev server proxies `/api` to `http://127.0.0.1:3000` by default. Overri
 $env:VITE_WORKFLOW_API_PROXY_TARGET="http://127.0.0.1:3001"
 npm run dev
 ```
+
+`Run Local Runner` is a development helper for MySQL no-fixture mode. It
+registers a scoped local runner for the current Actor email, claims eligible
+jobs, submits deterministic runner results, and triggers repository transition
+processing between claims so follow-up jobs appear in the same bounded drain.
+
+`Full API Slice` seeds a unique synthetic `PRD-SMOKE-DASH-*` request, repeatedly
+drains the scoped local runner, approves pending PRD/HLD/LLD/Spec gates, and
+refreshes the dashboard after the full document-to-implementation path has
+reached PR artifacts.
+
+Runner pause/resume buttons call the Workflow API operator controls. Paused
+runners show as `disabled`, stop receiving claims, and stay disabled across
+heartbeat/register calls until explicitly resumed.
 
 ## Build Check
 

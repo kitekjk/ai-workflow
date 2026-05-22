@@ -40,7 +40,7 @@ describe("Runner API", () => {
     repository.createWorkflowJob({
       runId: run.id,
       jobType: "spec.implement",
-      assignedUserId: "dev-a",
+      assignedUserId: "dev-a@example.com",
       projectId: "project-a",
       repositoryId: "repo-a",
       requiredCapabilities: ["spec.implement"],
@@ -60,7 +60,7 @@ describe("Runner API", () => {
 
     const registrationResponse = await postJson(`${baseUrl}/runners/register`, {
       id: "runner-dev-a",
-      ownerUserId: "dev-a",
+      ownerEmail: "dev-a@example.com",
       mode: "local",
       allowedProjectIds: ["project-a"],
       allowedRepositoryIds: ["repo-a"],
@@ -75,7 +75,7 @@ describe("Runner API", () => {
     expect(registration).toMatchObject({
       runner: {
         id: "runner-dev-a",
-        ownerUserId: "dev-a",
+        ownerUserId: "dev-a@example.com",
         mode: "local",
         status: "online",
         engines: ["codex"]
@@ -104,7 +104,7 @@ describe("Runner API", () => {
         job: {
           id: "job_1",
           status: "claimed",
-          assignedUserId: "dev-a",
+          assignedUserId: "dev-a@example.com",
           claimedByRunnerId: "runner-dev-a",
           leaseExpiresAt: "2026-05-20T00:00:40.000Z"
         },
@@ -114,6 +114,519 @@ describe("Runner API", () => {
       }
     });
     expect(repository.workflowJobs[1].status).toBe("pending");
+  });
+
+  it("pauses a runner until an operator explicitly resumes it", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      defaultEngine: "codex",
+      now
+    });
+    const paused = await postJson(`${baseUrl}/runners/runner-dev-a/pause`, {
+      now: "2026-05-20T00:00:01.000Z"
+    });
+    const heartbeat = await postJson(`${baseUrl}/runners/runner-dev-a/heartbeat`, {
+      mode: "local",
+      ownerEmail: "dev-a@example.com",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      defaultEngine: "codex",
+      now: "2026-05-20T00:00:02.000Z"
+    });
+    const disabledClaim = await postJson(`${baseUrl}/runners/runner-dev-a/claim`, {
+      now: "2026-05-20T00:00:03.000Z"
+    });
+    const resumed = await postJson(`${baseUrl}/runners/runner-dev-a/resume`, {
+      now: "2026-05-20T00:00:04.000Z"
+    });
+    const claim = await postJson(`${baseUrl}/runners/runner-dev-a/claim`, {
+      now: "2026-05-20T00:00:05.000Z"
+    });
+
+    expect(paused.status).toBe(200);
+    expect(await paused.json()).toMatchObject({
+      runner: {
+        id: "runner-dev-a",
+        status: "disabled"
+      }
+    });
+    expect(await heartbeat.json()).toMatchObject({
+      runner: {
+        id: "runner-dev-a",
+        status: "disabled"
+      }
+    });
+    expect(await disabledClaim.json()).toMatchObject({
+      claim: null,
+      diagnostics: {
+        reason: "runner_disabled",
+        runnerStatus: "disabled"
+      }
+    });
+    expect(await resumed.json()).toMatchObject({
+      runner: {
+        id: "runner-dev-a",
+        status: "online"
+      }
+    });
+    expect(await claim.json()).toMatchObject({
+      claim: {
+        job: {
+          id: "job_1",
+          status: "claimed",
+          claimedByRunnerId: "runner-dev-a"
+        }
+      }
+    });
+  });
+
+  it("does not let a runner claim more jobs than its concurrency allows", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      concurrency: 1,
+      now
+    });
+
+    const firstClaim = await postJson(`${baseUrl}/runners/runner-dev-a/claim`, { now });
+    const secondClaim = await postJson(`${baseUrl}/runners/runner-dev-a/claim`, {
+      now: "2026-05-20T00:00:01.000Z"
+    });
+
+    expect(firstClaim.status).toBe(200);
+    expect(await firstClaim.json()).toMatchObject({
+      claim: {
+        job: {
+          id: "job_1",
+          claimedByRunnerId: "runner-dev-a"
+        }
+      }
+    });
+    expect(secondClaim.status).toBe(200);
+    expect(await secondClaim.json()).toMatchObject({
+      claim: null,
+      diagnostics: {
+        runnerId: "runner-dev-a",
+        reason: "runner_capacity_full",
+        runnerStatus: "online",
+        activeJobCount: 1,
+        concurrency: 1
+      }
+    });
+    expect(repository.workflowJobs.map((job) => job.status)).toEqual(["claimed", "pending"]);
+  });
+
+  it("recovers expired leases through the configured server loop", async () => {
+    const recoveryRepository = new InMemoryWorkflowRepository();
+    const recoveryScheduler = new WorkflowScheduler(recoveryRepository, { leaseMs: 10_000 });
+    const claimTime = new Date(now);
+    const run = recoveryRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: claimTime
+    });
+    recoveryRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: claimTime
+    });
+    await recoveryScheduler.registerRunner({
+      id: "runner-dev-a",
+      ownerUserId: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      now: claimTime
+    });
+    await recoveryScheduler.claim("runner-dev-a", claimTime);
+
+    const recoveryServer = await createWorkflowApiServer({
+      scheduler: recoveryScheduler,
+      schedulerRecoveryIntervalMs: 5,
+      now: () => new Date("2026-05-20T00:00:11.000Z")
+    }).listen(0);
+
+    try {
+      await waitForCondition(() => recoveryRepository.workflowJobs[0]?.status === "retrying");
+
+      expect(recoveryRepository.workflowJobs[0]).toMatchObject({
+        status: "retrying",
+        claimedByRunnerId: undefined,
+        leaseExpiresAt: undefined
+      });
+      expect(recoveryRepository.workflowEvents).toMatchObject([
+        {
+          type: "job.lease_expired",
+          metadata: {
+            alert: true,
+            metric: "workflow_job_lease_expirations_total"
+          }
+        }
+      ]);
+    } finally {
+      await recoveryServer.close();
+    }
+  });
+
+  it("lists registered runners for dashboard visibility", async () => {
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      now
+    });
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-managed-a",
+      mode: "managed",
+      capabilities: ["document.generate"],
+      engines: ["claude"],
+      now: "2026-05-20T00:00:05.000Z"
+    });
+
+    const response = await fetch(`${baseUrl}/runners?now=2026-05-20T00:00:10.000Z`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runners: [
+        {
+          id: "runner-dev-a",
+          ownerUserId: "dev-a@example.com",
+          mode: "local",
+          status: "online",
+          capabilities: ["spec.implement"],
+          engines: ["codex"],
+          claimDiagnostics: {
+            reason: "no_available_job",
+            runnerStatus: "online",
+            candidateJobCount: 0
+          }
+        },
+        {
+          id: "runner-managed-a",
+          mode: "managed",
+          status: "online",
+          capabilities: ["document.generate"],
+          engines: ["claude"],
+          claimDiagnostics: {
+            reason: "no_available_job",
+            runnerStatus: "online",
+            candidateJobCount: 0
+          }
+        }
+      ]
+    });
+  });
+
+  it("returns copyable local runner onboarding commands", async () => {
+    const response = await fetch(
+      `${baseUrl}/runner-onboarding?ownerEmail=dev-a%40example.com&defaultEngine=codex&maxJobs=4`
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      runnerId: "runner-dev-a-example-com-pc",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      defaultEngine: "codex",
+      capabilities: expect.arrayContaining(["document.generate", "implementation.open_pr", "implementation.update_pr"]),
+      environment: {
+        WORKFLOW_API_BASE_URL: expect.stringContaining("http://127.0.0.1:"),
+        LOCAL_RUNNER_ID: "runner-dev-a-example-com-pc",
+        LOCAL_RUNNER_OWNER_EMAIL: "dev-a@example.com",
+        LOCAL_RUNNER_WORKSPACE_ROOT: ".runner-workspaces",
+        LOCAL_RUNNER_MAX_JOBS: "4",
+        GITHUB_TOKEN: "<set locally>",
+        GITHUB_CLONE_URL: "https://github.com/<org>/<repo>.git"
+      },
+      commands: [
+        { label: "Install", command: "npm install" },
+        { label: "Doctor", command: "npm run doctor:local-runner" },
+        { label: "Drain", command: "npm run start:local-runner" },
+        {
+          label: "Watch",
+          command: "Remove-Item Env:LOCAL_RUNNER_MAX_JOBS -ErrorAction SilentlyContinue; npm run start:local-runner"
+        }
+      ]
+    });
+    expect(payload.powershellSetup).toContain('$env:LOCAL_RUNNER_OWNER_EMAIL="dev-a@example.com"');
+    expect(payload.powershellSetup).toContain('$env:LOCAL_RUNNER_MAX_JOBS="4"');
+    expect(JSON.stringify(payload)).not.toContain("ghp_");
+  });
+
+  it("shows runner claim availability diagnostics in the runner list", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      now
+    });
+
+    const response = await fetch(`${baseUrl}/runners?now=2026-05-20T00:00:10.000Z`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runners: [
+        {
+          id: "runner-dev-a",
+          claimDiagnostics: {
+            reason: "claim_available",
+            runnerStatus: "online",
+            candidateJobCount: 1,
+            nearestJobId: "job_1"
+          }
+        }
+      ]
+    });
+  });
+
+  it("marks capacity-full runners busy in the runner list", async () => {
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a@example.com",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      concurrency: 1,
+      now
+    });
+    await postJson(`${baseUrl}/runners/runner-dev-a/claim`, { now });
+
+    const response = await fetch(`${baseUrl}/runners?now=2026-05-20T00:00:10.000Z`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runners: [
+        {
+          id: "runner-dev-a",
+          status: "busy",
+          claimDiagnostics: {
+            reason: "runner_capacity_full",
+            runnerStatus: "busy",
+            activeJobCount: 1,
+            concurrency: 1
+          }
+        }
+      ]
+    });
+  });
+
+  it("marks stale runners offline in the runner list", async () => {
+    await postJson(`${baseUrl}/runners/register`, {
+      id: "runner-dev-a",
+      ownerEmail: "dev-a@example.com",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      now
+    });
+
+    const response = await fetch(`${baseUrl}/runners?now=2026-05-20T00:01:01.000Z`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runners: [
+        {
+          id: "runner-dev-a",
+          status: "offline",
+          lastHeartbeatAt: now,
+          claimDiagnostics: {
+            reason: "runner_offline",
+            runnerStatus: "offline"
+          }
+        }
+      ]
+    });
+  });
+
+  it("requires the configured app token for control-plane API calls", async () => {
+    const protectedServer = await createWorkflowApiServer({
+      fixture: createPrdConfirmationFixture(),
+      auth: {
+        appToken: "app-secret"
+      }
+    }).listen(0);
+
+    try {
+      const unauthorized = await postJson(`${protectedServer.url}/tick`, {});
+      const authorized = await postJson(`${protectedServer.url}/tick`, {}, "app-secret");
+
+      expect(unauthorized.status).toBe(401);
+      expect(await unauthorized.json()).toEqual({ error: "Unauthorized" });
+      expect(authorized.status).toBe(200);
+    } finally {
+      await protectedServer.close();
+    }
+  });
+
+  it("binds runner API authorization to the runner id", async () => {
+    const protectedRepository = new InMemoryWorkflowRepository();
+    const protectedScheduler = new WorkflowScheduler(protectedRepository, { leaseMs: 30_000 });
+    const run = protectedRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now: new Date(now)
+    });
+    protectedRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now: new Date(now)
+    });
+    const protectedServer = await createWorkflowApiServer({
+      scheduler: protectedScheduler,
+      auth: {
+        runnerTokens: {
+          "runner-dev-a": "runner-a-secret",
+          "runner-dev-b": "runner-b-secret"
+        }
+      }
+    }).listen(0);
+
+    try {
+      const body = {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["spec.implement"],
+        engines: ["codex"],
+        now
+      };
+      const missingToken = await postJson(`${protectedServer.url}/runners/register`, body);
+      const unknownRunner = await postJson(
+        `${protectedServer.url}/runners/register`,
+        {
+          ...body,
+          id: "runner-dev-c"
+        },
+        "runner-a-secret"
+      );
+      const registered = await postJson(`${protectedServer.url}/runners/register`, body, "runner-a-secret");
+      const wrongClaimToken = await postJson(
+        `${protectedServer.url}/runners/runner-dev-a/claim`,
+        { now },
+        "runner-b-secret"
+      );
+      const claim = await postJson(`${protectedServer.url}/runners/runner-dev-a/claim`, { now }, "runner-a-secret");
+      const wrongCallbackToken = await postJson(
+        `${protectedServer.url}/runner-jobs/job_1/start`,
+        {
+          runnerId: "runner-dev-a",
+          now
+        },
+        "runner-b-secret"
+      );
+      const started = await postJson(
+        `${protectedServer.url}/runner-jobs/job_1/start`,
+        {
+          runnerId: "runner-dev-a",
+          now
+        },
+        "runner-a-secret"
+      );
+
+      expect(missingToken.status).toBe(401);
+      expect(unknownRunner.status).toBe(403);
+      expect(registered.status).toBe(201);
+      expect(wrongClaimToken.status).toBe(401);
+      expect(claim.status).toBe(200);
+      expect(wrongCallbackToken.status).toBe(401);
+      expect(started.status).toBe(200);
+    } finally {
+      await protectedServer.close();
+    }
   });
 
   it("accepts start, success result, and retryable failure callbacks", async () => {
@@ -540,12 +1053,29 @@ describe("Runner API", () => {
   });
 });
 
-async function postJson(url: string, body: Record<string, unknown>): Promise<Response> {
+async function postJson(url: string, body: Record<string, unknown>, token?: string): Promise<Response> {
   return fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {})
+    },
     body: JSON.stringify(body)
   });
+}
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 750): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error("Timed out waiting for condition");
 }
 
 async function getJson(url: string): Promise<Record<string, unknown>> {

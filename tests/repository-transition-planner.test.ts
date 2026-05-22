@@ -9,7 +9,13 @@ describe("repository transition planner", () => {
     const plan = planRepositoryWorkflowTransition({
       document: document({ status: "draft" }),
       job: workflowJob({ jobType: "prd.generate_draft" }),
-      result: workflowJobResult({ output: { status: "succeeded" } }),
+      result: workflowJobResult({
+        output: {
+          status: "succeeded",
+          summary: "Draft generated",
+          markdown: "# PRD\n\nGenerated draft."
+        }
+      }),
       now,
       idGenerator: (prefix) => `${prefix}_next`
     });
@@ -21,6 +27,40 @@ describe("repository transition planner", () => {
           {
             id: "doc_1",
             status: "quality_review",
+            currentVersionId: "docv_doc_1__v1",
+            currentMarkdownArtifactId: "art_doc_1__v1_markdown",
+            updatedAt: "2026-05-21T00:00:00.000Z"
+          }
+        ],
+        documentVersions: [
+          {
+            id: "docv_doc_1__v1",
+            documentId: "doc_1",
+            version: 1,
+            producerJobId: "job_1",
+            summary: "Draft generated",
+            contentHash: expect.any(String),
+            createdAt: "2026-05-21T00:00:00.000Z"
+          }
+        ],
+        artifacts: [
+          {
+            id: "art_doc_1__v1_markdown",
+            documentId: "doc_1",
+            documentVersionId: "docv_doc_1__v1",
+            producerJobId: "job_1",
+            type: "document_markdown",
+            location: "database",
+            uri: "db://workflow-runs/run_1/documents/doc_1/versions/1/markdown",
+            contentHash: expect.any(String)
+          }
+        ],
+        documentCurrentPointers: [
+          {
+            id: "doc_1",
+            status: "quality_review",
+            currentVersionId: "docv_doc_1__v1",
+            currentMarkdownArtifactId: "art_doc_1__v1_markdown",
             updatedAt: "2026-05-21T00:00:00.000Z"
           }
         ],
@@ -87,6 +127,16 @@ describe("repository transition planner", () => {
       }
     ]);
     expect(plan.mutation.workflowJobs).toEqual([]);
+    expect(plan.mutation.qualityResults).toMatchObject([
+      {
+        id: "qg_result_1",
+        documentId: "doc_1",
+        evaluatorJobId: "job_1",
+        status: "needs_revision",
+        missingInformation: ["Success metric is missing"],
+        createdAt: "2026-05-21T00:01:00.000Z"
+      }
+    ]);
     expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
       transitionType: "prd_quality_needs_revision",
       qualityStatus: "needs_revision"
@@ -270,6 +320,22 @@ describe("repository transition planner", () => {
         status: "approved"
       }
     ]);
+    expect(plan.mutation.artifacts).toMatchObject([
+      {
+        id: "art_job_pr_pull_request",
+        documentId: "doc_spec",
+        documentVersionId: "docv_spec_1",
+        producerJobId: "job_pr",
+        type: "pull_request",
+        location: "external",
+        uri: "https://github.example.com/acme/app/pull/42",
+        externalId: "42",
+        metadata: {
+          source: "repository_runner_result",
+          pullRequestNumber: 42
+        }
+      }
+    ]);
     expect(plan.mutation.workflowJobs).toMatchObject([
       {
         id: "job_collect",
@@ -328,6 +394,360 @@ describe("repository transition planner", () => {
       transitionType: "implementation_pr_reviewed",
       createdJobIds: []
     });
+  });
+
+  it("routes implementation review changes back to the document task", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved",
+        currentVersionId: "docv_spec_1"
+      }),
+      job: workflowJob({
+        id: "job_collect",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          reviewStatus: "changes_requested",
+          ciStatus: "success",
+          feedback: "The endpoint contract is missing rollback behavior."
+        }
+      }),
+      now: new Date("2026-05-21T00:06:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_revise`
+    });
+
+    expect(plan.transitionType).toBe("implementation_revision_requested");
+    expect(plan.mutation.documentStates).toMatchObject([
+      {
+        id: "doc_spec",
+        status: "needs_revision",
+        updatedAt: "2026-05-21T00:06:00.000Z"
+      }
+    ]);
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_spec",
+          status: "needs_revision",
+          currentDocumentId: "doc_spec"
+        }),
+        expect.objectContaining({
+          id: "task_doc_spec_code",
+          taskType: "code",
+          status: "blocked",
+          currentDocumentId: "doc_spec"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_revise",
+        taskId: "task_spec",
+        jobType: "document.revise",
+        input: {
+          taskId: "task_spec",
+          requestedBy: "implementation.collect_pr_status",
+          documentType: "spec",
+          sourceDocumentId: "doc_spec",
+          currentDocumentVersionId: "docv_spec_1",
+          feedback: expect.stringContaining("rollback behavior"),
+          feedbackItemIds: ["fb_result_collect_implementation_review"],
+          revisionSource: "implementation.collect_pr_status",
+          sourceImplementationJobId: "job_collect",
+          sourceImplementationResultId: "result_collect",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          reviewStatus: "changes_requested",
+          ciStatus: "success"
+        },
+        requiredCapabilities: ["document.revise"]
+      }
+    ]);
+    expect(plan.mutation.feedbackItems).toMatchObject([
+      {
+        id: "fb_result_collect_implementation_review",
+        documentId: "doc_spec",
+        workItemId: "task_spec",
+        source: "github",
+        body: expect.stringContaining("rollback behavior"),
+        externalId: "42",
+        externalUrl: "https://github.example.com/acme/app/pull/42",
+        revisionJobId: "job_revise"
+      }
+    ]);
+    expect(plan.mutation.documentEvents).toMatchObject([
+      {
+        documentId: "doc_spec",
+        jobId: "job_revise",
+        type: "workflow.feedback_recorded"
+      }
+    ]);
+    expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
+      transitionType: "implementation_revision_requested",
+      createdFeedbackItemIds: ["fb_result_collect_implementation_review"],
+      createdJobIds: ["job_revise"]
+    });
+  });
+
+  it("schedules code-only implementation rework when PR checks fail", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved",
+        currentVersionId: "docv_spec_1"
+      }),
+      job: workflowJob({
+        id: "job_collect",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          documentId: "doc_spec",
+          documentVersionId: "docv_spec_1",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          reviewStatus: "approved",
+          ciStatus: "failure",
+          reworkRequired: true,
+          failureScope: "implementation",
+          repository: "acme/app",
+          repositoryCloneUrl: "https://github.example.com/acme/app.git",
+          branchName: "feature/spec-100",
+          baseBranch: "main",
+          latestCommitSha: "head-sha",
+          checkRuns: [
+            {
+              name: "unit",
+              status: "completed",
+              conclusion: "failure"
+            }
+          ]
+        }
+      }),
+      now: new Date("2026-05-21T00:06:30.000Z"),
+      idGenerator: (prefix) => `${prefix}_update`
+    });
+
+    expect(plan.transitionType).toBe("implementation_rework_requested");
+    expect(plan.mutation.documentStates).toMatchObject([
+      {
+        id: "doc_spec",
+        status: "approved"
+      }
+    ]);
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_doc_spec_code",
+          taskType: "code",
+          status: "in_progress",
+          currentDocumentId: "doc_spec"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_update",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.update_pr",
+        input: {
+          taskId: "task_doc_spec_code",
+          requestedBy: "implementation.collect_pr_status",
+          documentType: "spec",
+          documentId: "doc_spec",
+          documentVersionId: "docv_spec_1",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          repository: "acme/app",
+          repositoryCloneUrl: "https://github.example.com/acme/app.git",
+          branchName: "feature/spec-100",
+          baseBranch: "main",
+          latestCommitSha: "head-sha",
+          feedback: expect.stringContaining("Failing checks: unit"),
+          reworkSource: "implementation.collect_pr_status",
+          sourceImplementationJobId: "job_collect",
+          sourceImplementationResultId: "result_collect",
+          reviewStatus: "approved",
+          ciStatus: "failure",
+          runnerJobTemplate: {
+            runner: {
+              sandbox: "workspace-write",
+              workdir: "implementation"
+            }
+          }
+        },
+        requiredCapabilities: ["implementation.update_pr"]
+      }
+    ]);
+    expect(plan.mutation.feedbackItems).toBeUndefined();
+    expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
+      transitionType: "implementation_rework_requested",
+      createdJobIds: ["job_update"]
+    });
+  });
+
+  it("continues PR status collection after implementation rework updates the PR", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved",
+        currentVersionId: "docv_spec_1"
+      }),
+      job: workflowJob({
+        id: "job_update",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.update_pr",
+        input: {
+          documentId: "doc_spec",
+          documentVersionId: "docv_spec_1",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_update",
+        jobId: "job_update",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          latestCommitSha: "fix-sha"
+        }
+      }),
+      now: new Date("2026-05-21T00:06:45.000Z"),
+      idGenerator: (prefix) => `${prefix}_collect_again`
+    });
+
+    expect(plan.transitionType).toBe("implementation_pr_updated");
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_doc_spec_code",
+          status: "in_progress"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_collect_again",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          taskId: "task_doc_spec_code",
+          documentId: "doc_spec",
+          documentVersionId: "docv_spec_1",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          previousImplementationJobId: "job_update"
+        }
+      }
+    ]);
+    expect(plan.mutation.artifacts).toMatchObject([
+      {
+        id: "art_job_update_pull_request",
+        type: "pull_request",
+        documentId: "doc_spec",
+        documentVersionId: "docv_spec_1",
+        uri: "https://github.example.com/acme/app/pull/42",
+        externalId: "42",
+        externalVersion: "fix-sha"
+      }
+    ]);
+  });
+
+  it("can route implementation rework to an explicit upstream task", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        workflowTaskId: "task_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved"
+      }),
+      job: workflowJob({
+        id: "job_collect",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "needs_revision",
+          revisionRequired: true,
+          revisionTargetDocumentId: "doc_lld",
+          revisionTargetDocumentType: "lld",
+          revisionTargetTaskId: "task_lld",
+          revisionTargetDocumentVersionId: "docv_lld_2",
+          reviewStatus: "changes_requested",
+          ciStatus: "failure",
+          summary: "Implementation exposed an LLD gap."
+        }
+      }),
+      now: new Date("2026-05-21T00:07:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_revise_lld`
+    });
+
+    expect(plan.transitionType).toBe("implementation_revision_requested");
+    expect(plan.mutation.documentStates).toMatchObject([
+      {
+        id: "doc_spec",
+        status: "approved"
+      }
+    ]);
+    expect(plan.mutation.workflowJobs).toMatchObject([
+      {
+        id: "job_revise_lld",
+        taskId: "task_lld",
+        jobType: "document.revise",
+        input: {
+          taskId: "task_lld",
+          documentType: "lld",
+          sourceDocumentId: "doc_lld",
+          currentDocumentVersionId: "docv_lld_2",
+          feedback: expect.stringContaining("LLD gap"),
+          feedbackItemIds: ["fb_result_collect_implementation_review"]
+        }
+      }
+    ]);
+    expect(plan.mutation.feedbackItems).toMatchObject([
+      {
+        documentId: "doc_lld",
+        workItemId: "task_lld",
+        source: "github",
+        revisionJobId: "job_revise_lld"
+      }
+    ]);
   });
 });
 

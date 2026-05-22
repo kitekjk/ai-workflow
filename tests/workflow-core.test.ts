@@ -6,6 +6,35 @@ import { InMemoryWorkflowRepository } from "../src/workflow-core/in-memory-repos
 const now = new Date("2026-05-20T00:00:00.000Z");
 
 describe("workflow-core runner claim policy", () => {
+  it("keeps workflow tasks as the stable parent for concrete jobs", () => {
+    const repository = new InMemoryWorkflowRepository();
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const task = repository.createWorkflowTask({
+      runId: run.id,
+      taskType: "hld",
+      sourceKey: "PRD-100-HLD-1",
+      title: "System HLD",
+      now
+    });
+    const job = repository.createWorkflowJob({
+      runId: run.id,
+      taskId: task.id,
+      jobType: "document.generate",
+      now
+    });
+
+    expect(repository.listWorkflowTasks(run.id)).toEqual([task]);
+    expect(job).toMatchObject({
+      taskId: task.id,
+      jobType: "document.generate"
+    });
+  });
+
   it("allows a local runner to claim only its assigned scoped job", () => {
     const repository = new InMemoryWorkflowRepository();
     const run = repository.createWorkflowRun({
@@ -86,6 +115,39 @@ describe("workflow-core runner claim policy", () => {
     }
   });
 
+  it("requires a local runner owner email and a matching job assignment", () => {
+    const repository = new InMemoryWorkflowRepository();
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    const unassignedJob = repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      projectId: "pair",
+      repositoryId: "order-service",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now
+    });
+    const assignedJob = repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a",
+      projectId: "pair",
+      repositoryId: "order-service",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now
+    });
+
+    expect(canRunnerClaimJob(localRunner({ ownerUserId: undefined }), unassignedJob, now)).toBe(false);
+    expect(canRunnerClaimJob(localRunner({ ownerUserId: "dev-a" }), unassignedJob, now)).toBe(false);
+    expect(canRunnerClaimJob(localRunner({ ownerUserId: "dev-a" }), assignedJob, now)).toBe(true);
+  });
+
   it("does not let two runners claim the same job lease", () => {
     const repository = new InMemoryWorkflowRepository();
     const run = repository.createWorkflowRun({
@@ -123,6 +185,53 @@ describe("workflow-core runner claim policy", () => {
 
     expect(firstClaim?.job.id).toBe("job_1");
     expect(secondClaim).toBeUndefined();
+  });
+
+  it("does not let one runner exceed its configured concurrency", () => {
+    const repository = new InMemoryWorkflowRepository();
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    repository.upsertRunner(localRunner({ ownerUserId: "dev-a", concurrency: 1 }));
+
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a",
+      projectId: "pair",
+      repositoryId: "order-service",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a",
+      projectId: "pair",
+      repositoryId: "order-service",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now
+    });
+
+    const firstClaim = repository.claimNextJob({
+      runnerId: "runner-dev-a",
+      now,
+      leaseMs: 60_000
+    });
+    const secondClaim = repository.claimNextJob({
+      runnerId: "runner-dev-a",
+      now,
+      leaseMs: 60_000
+    });
+
+    expect(firstClaim?.job.id).toBe("job_1");
+    expect(secondClaim).toBeUndefined();
+    expect(repository.workflowJobs.map((job) => job.status)).toEqual(["claimed", "pending"]);
   });
 
   it("records job results as attempt history", () => {

@@ -1,3 +1,4 @@
+import { fromMysqlDateTime, toMysqlDateTime } from "../mysql/datetime";
 import type { WorkflowJobResult } from "../workflow-core/domain";
 import { rowToWorkflowJob, type MysqlDatabase } from "../workflow-core/mysql-repository";
 import type { RepositoryTransitionPendingResultReader } from "./repository-transition-processor";
@@ -9,6 +10,7 @@ type MysqlRow = Record<string, unknown>;
 export interface MysqlRepositoryTransitionWorkReaderOptions {
   workerId?: string;
   leaseMs?: number;
+  claimAttemptLimit?: number;
 }
 
 interface MysqlAffectedRows {
@@ -19,6 +21,7 @@ export class MysqlRepositoryTransitionWorkReader
   implements RepositoryTransitionPendingResultReader, RepositoryTransitionClaimStore {
   private readonly workerId: string;
   private readonly leaseMs: number;
+  private readonly claimAttemptLimit: number;
 
   constructor(
     private readonly database: MysqlDatabase,
@@ -26,11 +29,35 @@ export class MysqlRepositoryTransitionWorkReader
   ) {
     this.workerId = options.workerId ?? "repository-transition-worker";
     this.leaseMs = options.leaseMs ?? 30_000;
+    this.claimAttemptLimit = options.claimAttemptLimit ?? 10;
   }
 
   async nextPendingJobResult(input: { now?: Date } = {}) {
     const now = input.now ?? new Date();
-    const nowIso = now.toISOString();
+    const attempts = Math.max(1, this.claimAttemptLimit);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const row = await this.readOldestUnclaimedResult(now);
+
+      if (!row) {
+        return undefined;
+      }
+
+      const claimed = await this.claimResult(row, now);
+
+      if (claimed) {
+        return {
+          job: rowToWorkflowJob(row),
+          jobResult: rowToWorkflowJobResult(row)
+        };
+      }
+    }
+
+    return undefined;
+  }
+
+  private async readOldestUnclaimedResult(now: Date): Promise<MysqlRow | undefined> {
+    const nowMysql = toMysqlDateTime(now);
     const [rows] = await this.database.execute<MysqlRow[]>(
       `SELECT
          job.*,
@@ -61,29 +88,14 @@ export class MysqlRepositoryTransitionWorkReader
          AND claim.workflow_job_result_id IS NULL
        ORDER BY result.created_at ASC, result.id ASC
        LIMIT 1`,
-      ["workflow.engine_transition", nowIso, ...repositoryWorkflowTransitionJobTypes]
+      ["workflow.engine_transition", nowMysql, ...repositoryWorkflowTransitionJobTypes]
     );
-    const row = rows[0];
-
-    if (!row) {
-      return undefined;
-    }
-
-    const claimed = await this.claimResult(row, now);
-
-    if (!claimed) {
-      return undefined;
-    }
-
-    return {
-      job: rowToWorkflowJob(row),
-      jobResult: rowToWorkflowJobResult(row)
-    };
+    return rows[0];
   }
 
   private async claimResult(row: MysqlRow, now: Date): Promise<boolean> {
-    const nowIso = now.toISOString();
-    const leaseExpiresAt = new Date(now.getTime() + this.leaseMs).toISOString();
+    const nowMysql = toMysqlDateTime(now);
+    const leaseExpiresAt = toMysqlDateTime(new Date(now.getTime() + this.leaseMs));
     const [result] = await this.database.execute<MysqlAffectedRows>(
       `INSERT INTO workflow_transition_claim (
          workflow_job_result_id, job_id, run_id, status, claimed_by_worker_id,
@@ -101,9 +113,9 @@ export class MysqlRepositoryTransitionWorkReader
         stringValue(row.run_id),
         "claimed",
         this.workerId,
-        nowIso,
+        nowMysql,
         leaseExpiresAt,
-        nowIso
+        nowMysql
       ]
     );
 
@@ -111,15 +123,17 @@ export class MysqlRepositoryTransitionWorkReader
   }
 
   async markJobResultProcessed(input: { jobResultId: string; now: Date }): Promise<void> {
-    const nowIso = input.now.toISOString();
+    const nowMysql = toMysqlDateTime(input.now);
 
     await this.database.execute(
       `UPDATE workflow_transition_claim
        SET status = ?,
            processed_at = ?,
            updated_at = ?
-       WHERE workflow_job_result_id = ?`,
-      ["processed", nowIso, nowIso, input.jobResultId]
+       WHERE workflow_job_result_id = ?
+         AND claimed_by_worker_id = ?
+         AND status = ?`,
+      ["processed", nowMysql, nowMysql, input.jobResultId, this.workerId, "claimed"]
     );
   }
 }
@@ -171,7 +185,11 @@ function numberValue(value: unknown): number {
 
 function isoValue(value: unknown): string {
   if (value instanceof Date) {
-    return value.toISOString();
+    return fromMysqlDateTime(value);
+  }
+
+  if (typeof value === "string") {
+    return fromMysqlDateTime(value);
   }
 
   return stringValue(value);

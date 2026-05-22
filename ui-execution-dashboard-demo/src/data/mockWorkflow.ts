@@ -8,10 +8,41 @@ export type WorkState =
 
 export type ArtifactType = 'PRD' | 'HLD' | 'BE LLD' | 'FE LLD' | 'BE Spec' | 'FE Spec' | 'ADR'
 
+export type ArtifactLinkSummary = {
+  id: string
+  type: string
+  location: string
+  uri: string
+  createdAt: string
+}
+
+export type PullRequestSummary = {
+  id: string
+  label: string
+  url: string
+  reviewStatus?: string
+  ciStatus?: string
+  source?: string
+  createdAt: string
+}
+
+export type JobHistorySummary = {
+  id: string
+  jobType: string
+  status: string
+  state: WorkState
+  runnerId?: string
+  startedAt: string
+  finishedAt?: string
+  summary: string
+}
+
 export type WorkItem = {
   id: string
-  itemKind?: 'document' | 'job'
+  itemKind?: 'task' | 'document' | 'job'
+  taskKind?: 'prd' | 'hld' | 'lld' | 'adr' | 'spec' | 'code'
   documentId?: string
+  documentType?: string
   approvalGateId?: string
   parentId: string | null
   depth: number
@@ -33,6 +64,12 @@ export type WorkItem = {
   summary: string
   owner: string
   skill: string
+  versionCount?: number
+  artifactCount?: number
+  qualityRiskCount?: number
+  artifactLinks?: ArtifactLinkSummary[]
+  pullRequests?: PullRequestSummary[]
+  jobHistory?: JobHistorySummary[]
   gateResult: 'passed' | 'failed' | 'waiting' | 'not_started'
   links: {
     jira: string
@@ -125,19 +162,19 @@ export const workflowCatalog: WorkflowRunSummary[] = [
       'fe-spec-002',
     ],
     nodes: [
-      flowNode('wf-prd', 'PRD', 'OPS-123', 'trigger', 'completed', 18, 132, 'prd-initiative'),
-      flowNode('wf-hld', 'HLD', 'OPS-124', 'agent_job', 'completed', 130, 132, 'hld-epic'),
-      flowNode('wf-split-lld', 'LLD fan-out', '3 child runs', 'fanout', 'completed', 242, 132),
-      flowNode('wf-be-lld-001', 'BE-LLD-001', 'workflow model', 'child_workflow', 'completed', 365, 22, 'be-lld-001'),
-      flowNode('wf-be-lld-002', 'BE-LLD-002', 'observability', 'child_workflow', 'failed', 365, 132, 'be-lld-002'),
-      flowNode('wf-fe-lld-001', 'FE-LLD-001', 'dashboard', 'child_workflow', 'waiting_approval', 365, 232, 'fe-lld-001'),
-      flowNode('wf-be-spec-001', 'BE-SPEC-001', 'ledger API', 'child_workflow', 'completed', 500, 22, 'be-spec-001'),
-      flowNode('wf-be-spec-002', 'BE-SPEC-002', 'job claiming', 'child_workflow', 'running', 608, 22, 'be-spec-002'),
-      flowNode('wf-be-spec-003', 'BE-SPEC-003', 'event files', 'child_workflow', 'blocked', 500, 132, 'be-spec-003'),
-      flowNode('wf-be-spec-004', 'BE-SPEC-004', 'redaction', 'child_workflow', 'blocked', 608, 132, 'be-spec-004'),
-      flowNode('wf-fe-spec-001', 'FE-SPEC-001', 'tree/detail', 'child_workflow', 'pending', 500, 232, 'fe-spec-001'),
-      flowNode('wf-fe-spec-002', 'FE-SPEC-002', 'controls', 'child_workflow', 'pending', 608, 232, 'fe-spec-002'),
-      flowNode('wf-fanin-spec', 'Spec fan-in', 'all children', 'fanin', 'running', 720, 132),
+      flowNode('wf-prd', 'PRD', 'OPS-123', 'trigger', 'completed', 24, 198, 'prd-initiative'),
+      flowNode('wf-hld', 'HLD', 'OPS-124', 'agent_job', 'completed', 168, 198, 'hld-epic'),
+      flowNode('wf-split-lld', 'LLD fan-out', '3 child runs', 'fanout', 'completed', 312, 198),
+      flowNode('wf-be-lld-001', 'BE-LLD-001', 'workflow model', 'child_workflow', 'completed', 476, 48, 'be-lld-001'),
+      flowNode('wf-be-lld-002', 'BE-LLD-002', 'observability', 'child_workflow', 'failed', 476, 198, 'be-lld-002'),
+      flowNode('wf-fe-lld-001', 'FE-LLD-001', 'dashboard', 'child_workflow', 'waiting_approval', 476, 348, 'fe-lld-001'),
+      flowNode('wf-be-spec-001', 'BE-SPEC-001', 'ledger API', 'child_workflow', 'completed', 640, 48, 'be-spec-001'),
+      flowNode('wf-be-spec-002', 'BE-SPEC-002', 'job claiming', 'child_workflow', 'running', 804, 48, 'be-spec-002'),
+      flowNode('wf-be-spec-003', 'BE-SPEC-003', 'event files', 'child_workflow', 'blocked', 640, 198, 'be-spec-003'),
+      flowNode('wf-be-spec-004', 'BE-SPEC-004', 'redaction', 'child_workflow', 'blocked', 804, 198, 'be-spec-004'),
+      flowNode('wf-fe-spec-001', 'FE-SPEC-001', 'tree/detail', 'child_workflow', 'pending', 640, 348, 'fe-spec-001'),
+      flowNode('wf-fe-spec-002', 'FE-SPEC-002', 'controls', 'child_workflow', 'pending', 804, 348, 'fe-spec-002'),
+      flowNode('wf-fanin-spec', 'Spec fan-in', 'all children', 'fanin', 'running', 968, 198),
     ],
     edges: [
       edge('wf-prd', 'wf-hld'),

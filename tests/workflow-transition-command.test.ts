@@ -13,15 +13,29 @@ describe("MysqlWorkflowTransitionCommand", () => {
       document: document({
         status: "approved"
       }),
+      actor: "planner@example.com",
+      reason: "Approved in dashboard",
       now: new Date("2026-05-20T00:00:00.000Z")
     });
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("INSERT INTO workflow_task"),
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO workflow_event")
     ]);
     expect(database.statements[0].params).toEqual(
+      expect.arrayContaining([
+        "task_wi_1",
+        "run_1",
+        "prd",
+        "PRD-100",
+        "FAQ automation PRD",
+        "approved",
+        "doc_wi_1"
+      ])
+    );
+    expect(database.statements[1].params).toEqual(
       expect.arrayContaining([
         "doc_wi_1",
         "run_1",
@@ -29,10 +43,10 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "PRD-100",
         "FAQ automation PRD",
         "approved",
-        "2026-05-20T00:00:00.000Z"
+        "2026-05-20 00:00:00.000"
       ])
     );
-    expect(database.statements[1].params).toEqual(
+    expect(database.statements[2].params).toEqual(
       expect.arrayContaining([
         "event_1",
         "run_1",
@@ -40,11 +54,13 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "Document state recorded: doc_wi_1"
       ])
     );
-    expect(JSON.parse(String(database.statements[1].params[5]))).toEqual({
+    expect(JSON.parse(String(database.statements[2].params[5]))).toEqual({
       documentId: "doc_wi_1",
       documentType: "prd",
       sourceKey: "PRD-100",
-      status: "approved"
+      status: "approved",
+      actor: "planner@example.com",
+      reason: "Approved in dashboard"
     });
   });
 
@@ -59,8 +75,8 @@ describe("MysqlWorkflowTransitionCommand", () => {
       })
     });
 
-    expect(database.statements[0].params).toContain("2026-05-20T00:02:00.000Z");
-    expect(database.statements[1].params.at(-1)).toBe("2026-05-20T00:02:00.000Z");
+    expect(database.statements[0].params).toContain("2026-05-20 00:02:00.000");
+    expect(database.statements[2].params.at(-1)).toBe("2026-05-20 00:02:00.000");
   });
 
   it("records routing jobs with scheduler claim metadata", async () => {
@@ -196,12 +212,14 @@ describe("MysqlWorkflowTransitionCommand", () => {
 
     expect(database.events).toEqual(["begin", "commit", "release"]);
     expect(database.statements.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("INSERT INTO workflow_task"),
+      expect.stringContaining("INSERT INTO workflow_task"),
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO document"),
       expect.stringContaining("INSERT INTO workflow_job"),
       expect.stringContaining("INSERT INTO workflow_event")
     ]);
-    expect(database.statements[2].params).toEqual(
+    expect(database.statements[4].params).toEqual(
       expect.arrayContaining([
         "job_2",
         "run_1",
@@ -212,7 +230,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
         JSON.stringify(["document.evaluate"])
       ])
     );
-    expect(database.statements[3].params).toEqual(
+    expect(database.statements[5].params).toEqual(
       expect.arrayContaining([
         "event_1",
         "run_1",
@@ -220,7 +238,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "Workflow engine transition: prd_draft_generated"
       ])
     );
-    expect(JSON.parse(String(database.statements[3].params[5]))).toEqual({
+    expect(JSON.parse(String(database.statements[5].params[5]))).toEqual({
       transitionType: "prd_draft_generated",
       affectedWorkItemIds: ["wi_1"],
       affectedDocumentIds: ["doc_wi_1"],

@@ -1,4 +1,4 @@
-import type { Runner, WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
+import type { Runner, RunnerClaimDiagnostics, WorkflowJob, WorkflowJobResult } from "../workflow-core/domain";
 import { redactSecrets } from "../runtime/secrets";
 import type { RegisterRunnerInput } from "../workflow-core/scheduler";
 import { validateLocalRunnerEngineResult } from "./result-schema";
@@ -7,7 +7,8 @@ import {
   collectGeneratedFileArtifacts,
   prepareJobWorkspace,
   type GeneratedFileReference,
-  type LocalRunnerWorkspaceOptions
+  type LocalRunnerWorkspaceOptions,
+  type PreparedJobWorkspace
 } from "./workspace";
 
 export interface LocalRunnerEngineInput {
@@ -38,18 +39,68 @@ export interface LocalRunnerConfig extends Omit<RegisterRunnerInput, "now"> {
 }
 
 export type LocalRunnerOnceResult =
-  | { status: "idle"; runner: Runner }
+  | { status: "idle"; runner: Runner; diagnostics?: RunnerClaimDiagnostics }
   | { status: "completed"; runner: Runner; job: WorkflowJob; result: WorkflowJobResult }
   | { status: "canceled"; runner: Runner; job: WorkflowJob; result: WorkflowJobResult }
   | { status: "failed"; runner: Runner; job: WorkflowJob; result: WorkflowJobResult };
 
-export async function runLocalRunnerOnce(input: {
+export interface RunLocalRunnerOnceInput {
   client: WorkflowApiRunnerClient;
   engine: LocalRunnerEngine;
   runner: LocalRunnerConfig;
   workspace?: LocalRunnerWorkspaceOptions;
   now?: Date;
-}): Promise<LocalRunnerOnceResult> {
+}
+
+export interface RunLocalRunnerDrainInput extends Omit<RunLocalRunnerOnceInput, "now"> {
+  maxJobs: number;
+  now?: () => Date;
+}
+
+export interface LocalRunnerDrainResult {
+  stoppedReason: "idle" | "max_jobs";
+  processedJobs: number;
+  attempts: number;
+  results: LocalRunnerOnceResult[];
+}
+
+export async function runLocalRunnerDrain(input: RunLocalRunnerDrainInput): Promise<LocalRunnerDrainResult> {
+  if (!Number.isInteger(input.maxJobs) || input.maxJobs < 1) {
+    throw new Error(`maxJobs must be a positive integer, got: ${input.maxJobs}`);
+  }
+
+  const { maxJobs, now, ...onceInput } = input;
+  const results: LocalRunnerOnceResult[] = [];
+  let processedJobs = 0;
+
+  while (processedJobs < maxJobs) {
+    const result = await runLocalRunnerOnce({
+      ...onceInput,
+      now: now?.()
+    });
+    results.push(result);
+
+    if (result.status === "idle") {
+      return {
+        stoppedReason: "idle",
+        processedJobs,
+        attempts: results.length,
+        results
+      };
+    }
+
+    processedJobs += 1;
+  }
+
+  return {
+    stoppedReason: "max_jobs",
+    processedJobs,
+    attempts: results.length,
+    results
+  };
+}
+
+export async function runLocalRunnerOnce(input: RunLocalRunnerOnceInput): Promise<LocalRunnerOnceResult> {
   const now = input.now ?? new Date();
   const { retryableEngineErrors, ...runnerRegistration } = input.runner;
   const runner = await input.client.registerRunner({
@@ -58,28 +109,31 @@ export async function runLocalRunnerOnce(input: {
   });
   await input.client.heartbeat(runner.id, now);
 
-  const claim = await input.client.claim(runner.id, now);
+  const claimResponse = await input.client.claimWithDiagnostics(runner.id, now);
+  const claim = claimResponse.claim ?? undefined;
 
   if (!claim) {
-    return { status: "idle", runner };
+    return { status: "idle", runner, diagnostics: claimResponse.diagnostics };
   }
 
   const { job } = claim;
-  const workspace = input.workspace ? await prepareJobWorkspace({ job, workspace: input.workspace }) : undefined;
-  await input.client.startJob(job.id, runner.id, now);
-  await input.client.recordLog({
-    jobId: job.id,
-    runnerId: runner.id,
-    level: "info",
-    message: "Job started",
-    metadata: {
-      jobType: job.jobType,
-      workspaceDir: workspace?.workspaceDir
-    },
-    now
-  });
+  let workspace: PreparedJobWorkspace | undefined;
 
   try {
+    workspace = input.workspace ? await prepareJobWorkspace({ job, workspace: input.workspace }) : undefined;
+    await input.client.startJob(job.id, runner.id, now);
+    await input.client.recordLog({
+      jobId: job.id,
+      runnerId: runner.id,
+      level: "info",
+      message: "Job started",
+      metadata: {
+        jobType: job.jobType,
+        workspaceDir: workspace?.workspaceDir
+      },
+      now
+    });
+
     const engineResult = validateLocalRunnerEngineResult(
       await input.engine.run({
         runner,

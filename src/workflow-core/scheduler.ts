@@ -1,4 +1,13 @@
-import type { ClaimJobResult, Runner, WorkflowEvent, WorkflowJob, WorkflowJobResult } from "./domain";
+import type {
+  ClaimJobInput,
+  ClaimJobResult,
+  Runner,
+  RunnerClaimDiagnostics,
+  WorkflowEvent,
+  WorkflowJob,
+  WorkflowJobResult
+} from "./domain";
+import { runnerStatusAt } from "./domain";
 import type { WorkflowEventCursor } from "./repository";
 import type { WorkflowRepository } from "./repository";
 
@@ -39,11 +48,20 @@ export interface ListWorkflowEventsResult {
   nextCursor?: string;
 }
 
+export interface RunnerClaimWithDiagnosticsResult {
+  claim?: ClaimJobResult;
+  diagnostics?: RunnerClaimDiagnostics;
+}
+
 export class WorkflowScheduler {
+  private readonly runnerOfflineAfterMs: number;
+
   constructor(
     private readonly repository: WorkflowRepository,
-    private readonly options: { leaseMs: number }
-  ) {}
+    private readonly options: { leaseMs: number; runnerOfflineAfterMs?: number }
+  ) {
+    this.runnerOfflineAfterMs = options.runnerOfflineAfterMs ?? options.leaseMs * 2;
+  }
 
   async registerRunner(input: RegisterRunnerInput): Promise<Runner> {
     return this.repository.upsertRunner({
@@ -62,16 +80,55 @@ export class WorkflowScheduler {
     });
   }
 
+  async listRunners(now = new Date()): Promise<Runner[]> {
+    const runners = await this.repository.listRunners();
+
+    return runners.map((runner) => ({
+      ...runner,
+      status: runnerStatusAt(runner, now, this.runnerOfflineAfterMs)
+    }));
+  }
+
   async heartbeat(runnerId: string, now: Date): Promise<Runner> {
     return this.repository.heartbeatRunner(runnerId, now);
   }
 
+  async pauseRunner(runnerId: string, now: Date): Promise<Runner> {
+    return this.repository.setRunnerStatus(runnerId, "disabled", now);
+  }
+
+  async resumeRunner(runnerId: string, now: Date): Promise<Runner> {
+    return this.repository.setRunnerStatus(runnerId, "online", now);
+  }
+
   async claim(runnerId: string, now: Date): Promise<ClaimJobResult | undefined> {
-    return this.repository.claimNextJob({
+    return this.repository.claimNextJob(this.claimInput(runnerId, now));
+  }
+
+  async claimWithDiagnostics(runnerId: string, now: Date): Promise<RunnerClaimWithDiagnosticsResult> {
+    const input = this.claimInput(runnerId, now);
+    const claim = await this.repository.claimNextJob(input);
+
+    if (claim) {
+      return { claim };
+    }
+
+    return {
+      diagnostics: await this.repository.diagnoseClaim(input)
+    };
+  }
+
+  async diagnoseClaim(runnerId: string, now: Date): Promise<RunnerClaimDiagnostics> {
+    return this.repository.diagnoseClaim(this.claimInput(runnerId, now));
+  }
+
+  private claimInput(runnerId: string, now: Date): ClaimJobInput {
+    return {
       runnerId,
       now,
-      leaseMs: this.options.leaseMs
-    });
+      leaseMs: this.options.leaseMs,
+      runnerOfflineAfterMs: this.runnerOfflineAfterMs
+    };
   }
 
   async startJob(jobId: string, runnerId: string, now: Date): Promise<WorkflowJob> {
