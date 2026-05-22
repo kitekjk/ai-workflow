@@ -358,9 +358,13 @@ function restoreImplementationState(
   if (collectStatusResult) {
     const reviewStatus = stringOrUndefined(collectStatusResult.output.reviewStatus);
     const ciStatus = stringOrUndefined(collectStatusResult.output.ciStatus);
-    workItem.state = reviewStatus === "approved" && ciStatus === "success"
-      ? "implementation_reviewed"
-      : "implementation_in_review";
+    if (collectStatusResult.output.merged === true) {
+      workItem.state = "implementation_merged";
+    } else {
+      workItem.state = reviewStatus === "approved" && ciStatus === "success"
+        ? "implementation_reviewed"
+        : "implementation_in_review";
+    }
     return;
   }
 

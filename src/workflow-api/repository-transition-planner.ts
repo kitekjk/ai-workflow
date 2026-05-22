@@ -337,9 +337,32 @@ function repositoryTransitionFor(
   }
 
   if (input.job.jobType === "implementation.collect_pr_status") {
+    const merged = booleanOrUndefined(input.result.output.merged) === true;
     const reviewed = input.result.output.reviewStatus === "approved" && input.result.output.ciStatus === "success";
+    const pullNumber =
+      positiveIntegerOrUndefined(input.result.output.pullRequestNumber) ??
+      positiveIntegerOrUndefined(input.job.input.pullNumber);
+    const pullRequestUrl =
+      stringOrUndefined(input.result.output.pullRequestUrl) ??
+      stringOrUndefined(input.job.input.pullRequestUrl);
+    const documentVersionId =
+      stringOrUndefined(input.result.output.documentVersionId) ??
+      stringOrUndefined(input.job.input.documentVersionId);
+    const pullRequestArtifacts = pullRequestUrl
+      ? [
+          pullRequestArtifactFor({
+            document: input.document,
+            documentVersionId,
+            jobId: input.job.id,
+            pullNumber,
+            pullRequestUrl,
+            output: input.result.output,
+            now
+          })
+        ]
+      : [];
 
-    if (!reviewed && implementationRequiresDocumentRevision(input.result)) {
+    if (!merged && !reviewed && implementationRequiresDocumentRevision(input.result)) {
       const feedbackId = `fb_${input.result.id}_implementation_review`;
       const revisionTarget = implementationRevisionTargetFor(input, feedbackId);
       const revisionJob = createFollowUpJob(
@@ -356,12 +379,13 @@ function repositoryTransitionFor(
         documents: [],
         workflowTasks: [implementationTaskForJob(input, input.result, now, "blocked")],
         workflowJobs: [revisionJob],
+        artifacts: pullRequestArtifacts,
         feedbackItems: [feedbackItem],
         documentEvents: [feedbackRecordedEventFor(feedbackItem, now)]
       };
     }
 
-    if (!reviewed && implementationRequiresCodeRework(input.result)) {
+    if (!merged && !reviewed && implementationRequiresCodeRework(input.result)) {
       const updateJob = createFollowUpJob(
         input,
         "implementation.update_pr",
@@ -374,16 +398,18 @@ function repositoryTransitionFor(
         documentStatus: input.document.status,
         documents: [],
         workflowTasks: [implementationTaskForJob(input, input.result, now, "in_progress")],
-        workflowJobs: [updateJob]
+        workflowJobs: [updateJob],
+        artifacts: pullRequestArtifacts
       };
     }
 
     return {
-      transitionType: reviewed ? "implementation_pr_reviewed" : "implementation_pr_in_review",
+      transitionType: merged ? "implementation_pr_merged" : reviewed ? "implementation_pr_reviewed" : "implementation_pr_in_review",
       documentStatus: input.document.status,
       documents: [],
-      workflowTasks: [implementationTaskForJob(input, input.result, now, reviewed ? "completed" : "in_progress")],
-      workflowJobs: []
+      workflowTasks: [implementationTaskForJob(input, input.result, now, merged || reviewed ? "completed" : "in_progress")],
+      workflowJobs: [],
+      artifacts: pullRequestArtifacts
     };
   }
 
@@ -555,7 +581,15 @@ function pullRequestArtifactFor(input: {
     externalVersion: stringOrUndefined(input.output.latestCommitSha) ?? stringOrUndefined(input.output.commitSha),
     metadata: {
       source: "repository_runner_result",
+      provider: stringOrUndefined(input.output.provider),
+      repository: stringOrUndefined(input.output.repository),
+      repositoryCloneUrl: stringOrUndefined(input.output.repositoryCloneUrl),
       pullRequestNumber: input.pullNumber,
+      pullRequestState: stringOrUndefined(input.output.pullRequestState),
+      branchName: stringOrUndefined(input.output.branchName),
+      baseBranch: stringOrUndefined(input.output.baseBranch),
+      draft: booleanOrUndefined(input.output.draft),
+      merged: booleanOrUndefined(input.output.merged),
       reviewStatus: stringOrUndefined(input.output.reviewStatus),
       ciStatus: stringOrUndefined(input.output.ciStatus)
     },

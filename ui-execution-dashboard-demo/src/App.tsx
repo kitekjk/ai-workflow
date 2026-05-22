@@ -760,7 +760,7 @@ function App() {
                   <a href={pullRequest.url} target="_blank" rel="noreferrer" key={pullRequest.id}>
                     <GitPullRequest size={16} />
                     <strong>{pullRequest.label}</strong>
-                    <span>{pullRequest.reviewStatus ?? 'review pending'}</span>
+                    <span>{pullRequest.merged ? 'merged' : pullRequest.reviewStatus ?? pullRequest.pullRequestState ?? 'review pending'}</span>
                     <span>{pullRequest.ciStatus ?? 'ci pending'}</span>
                   </a>
                 ))}

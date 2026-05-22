@@ -86,6 +86,9 @@ PRD intake
   runner clones the repo, checks out the workflow branch, runs Codex/Claude with
   an initial code implementation prompt, pushes the branch, then creates the
   GitHub PR.
+- PR status collection now persists a new pull request artifact snapshot and
+  treats `merged=true` as the terminal Code task signal through
+  `implementation_pr_merged`.
 
 ## Next Work
 

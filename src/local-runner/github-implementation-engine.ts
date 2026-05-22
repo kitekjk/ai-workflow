@@ -107,8 +107,8 @@ export class GitHubImplementationLocalRunnerEngine implements LocalRunnerEngine 
     const documentVersionId = optionalString(input.job.input.documentVersionId);
     const pullNumber = requirePositiveInteger(input.job.input.pullNumber, "pullNumber");
     const status = await this.options.client.readPullRequestStatus(pullNumber);
-    const revisionRequired = status.reviewStatus === "changes_requested";
-    const reworkRequired = !revisionRequired && status.ciStatus === "failure";
+    const revisionRequired = !status.merged && status.reviewStatus === "changes_requested";
+    const reworkRequired = !status.merged && !revisionRequired && status.ciStatus === "failure";
 
     return {
       output: {

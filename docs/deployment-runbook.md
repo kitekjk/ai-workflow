@@ -532,6 +532,9 @@ GitHub implementation checks, when configured:
 - The workflow schedules `implementation.collect_pr_status`.
 - CI-only failures schedule `implementation.update_pr` on the same Code task
   and then collect PR status again.
+- Every PR status collection records a fresh pull request artifact snapshot.
+  When GitHub reports `merged=true`, the Code task is treated as terminal and
+  completed.
 - PR review/check status is visible in the current state and artifacts.
 
 ## Confluence Feedback Import

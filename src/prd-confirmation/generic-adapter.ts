@@ -327,7 +327,12 @@ function documentStatusForWorkItem(workItem: WorkItem): Document["status"] {
     return "approved";
   }
 
-  if (workItem.state === "implementation_pr_open" || workItem.state === "implementation_in_review" || workItem.state === "implementation_reviewed") {
+  if (
+    workItem.state === "implementation_pr_open" ||
+    workItem.state === "implementation_in_review" ||
+    workItem.state === "implementation_reviewed" ||
+    workItem.state === "implementation_merged"
+  ) {
     return "approved";
   }
 

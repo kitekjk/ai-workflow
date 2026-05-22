@@ -22,6 +22,8 @@ export type PullRequestSummary = {
   url: string
   reviewStatus?: string
   ciStatus?: string
+  pullRequestState?: string
+  merged?: boolean
   source?: string
   createdAt: string
 }

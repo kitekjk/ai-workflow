@@ -373,8 +373,13 @@ describe("repository transition planner", () => {
         jobId: "job_collect",
         output: {
           status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
           reviewStatus: "approved",
-          ciStatus: "success"
+          ciStatus: "success",
+          branchName: "feature/spec-100",
+          baseBranch: "main",
+          latestCommitSha: "reviewed-sha"
         }
       }),
       now: new Date("2026-05-21T00:05:00.000Z"),
@@ -390,10 +395,92 @@ describe("repository transition planner", () => {
       }
     ]);
     expect(plan.mutation.workflowJobs).toEqual([]);
+    expect(plan.mutation.artifacts).toMatchObject([
+      {
+        id: "art_job_collect_pull_request",
+        documentId: "doc_spec",
+        producerJobId: "job_collect",
+        type: "pull_request",
+        uri: "https://github.example.com/acme/app/pull/42",
+        externalId: "42",
+        externalVersion: "reviewed-sha",
+        metadata: {
+          pullRequestNumber: 42,
+          branchName: "feature/spec-100",
+          baseBranch: "main",
+          reviewStatus: "approved",
+          ciStatus: "success"
+        }
+      }
+    ]);
     expect(plan.mutation.events?.[0]?.metadata).toMatchObject({
       transitionType: "implementation_pr_reviewed",
       createdJobIds: []
     });
+  });
+
+  it("treats a merged implementation PR as the terminal implementation transition", () => {
+    const plan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_spec",
+        type: "spec",
+        sourceKey: "PRD-100-SPEC-1",
+        status: "approved"
+      }),
+      job: workflowJob({
+        id: "job_collect",
+        taskId: "task_doc_spec_code",
+        jobType: "implementation.collect_pr_status",
+        input: {
+          documentId: "doc_spec",
+          pullNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42"
+        }
+      }),
+      result: workflowJobResult({
+        id: "result_collect",
+        jobId: "job_collect",
+        output: {
+          status: "succeeded",
+          pullRequestNumber: 42,
+          pullRequestUrl: "https://github.example.com/acme/app/pull/42",
+          pullRequestState: "closed",
+          merged: true,
+          reviewStatus: "pending",
+          ciStatus: "pending",
+          latestCommitSha: "merged-sha"
+        }
+      }),
+      now: new Date("2026-05-21T00:05:30.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+
+    expect(plan.transitionType).toBe("implementation_pr_merged");
+    expect(plan.mutation.workflowTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task_doc_spec_code",
+          taskType: "code",
+          status: "completed",
+          currentDocumentId: "doc_spec"
+        })
+      ])
+    );
+    expect(plan.mutation.workflowJobs).toEqual([]);
+    expect(plan.mutation.artifacts).toMatchObject([
+      {
+        id: "art_job_collect_pull_request",
+        type: "pull_request",
+        uri: "https://github.example.com/acme/app/pull/42",
+        externalVersion: "merged-sha",
+        metadata: {
+          pullRequestState: "closed",
+          merged: true,
+          reviewStatus: "pending",
+          ciStatus: "pending"
+        }
+      }
+    ]);
   });
 
   it("routes implementation review changes back to the document task", () => {

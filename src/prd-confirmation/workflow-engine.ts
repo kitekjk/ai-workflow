@@ -45,6 +45,7 @@ export type WorkflowEngineTransitionType =
   | "implementation_pr_opened"
   | "implementation_pr_updated"
   | "implementation_pr_reviewed"
+  | "implementation_pr_merged"
   | "implementation_pr_in_review"
   | "implementation_rework_requested"
   | "implementation_revision_requested";
@@ -193,9 +194,18 @@ export async function runEngineStep(store: PrdConfirmationStore): Promise<Workfl
   if (result.jobType === "implementation.collect_pr_status") {
     const reviewStatus = stringOrUndefined(result.output.reviewStatus);
     const ciStatus = stringOrUndefined(result.output.ciStatus);
+    const merged = result.output.merged === true;
     const reviewed = reviewStatus === "approved" && ciStatus === "success";
-    workItem.state = reviewed ? "implementation_reviewed" : "implementation_in_review";
-    transitionType = reviewed ? "implementation_pr_reviewed" : "implementation_pr_in_review";
+    workItem.state = merged
+      ? "implementation_merged"
+      : reviewed
+        ? "implementation_reviewed"
+        : "implementation_in_review";
+    transitionType = merged
+      ? "implementation_pr_merged"
+      : reviewed
+        ? "implementation_pr_reviewed"
+        : "implementation_pr_in_review";
   }
 
   if (!transitionType) {

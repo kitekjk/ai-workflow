@@ -804,6 +804,9 @@ function pullRequestsFor(artifacts: Artifact[]): PullRequestSummary[] {
         metadataToken(artifact.metadata?.pullRequestNumber) ?? metadataToken(artifact.externalId)
       const reviewStatus = metadataToken(artifact.metadata?.reviewStatus)
       const ciStatus = metadataToken(artifact.metadata?.ciStatus)
+      const pullRequestState =
+        metadataToken(artifact.metadata?.pullRequestState) ?? metadataToken(artifact.metadata?.state)
+      const merged = metadataBoolean(artifact.metadata?.merged)
 
       return {
         id: artifact.id,
@@ -811,6 +814,8 @@ function pullRequestsFor(artifacts: Artifact[]): PullRequestSummary[] {
         url: artifact.uri,
         reviewStatus,
         ciStatus,
+        pullRequestState,
+        merged,
         source: metadataToken(artifact.metadata?.source),
         createdAt: artifact.createdAt,
       }
@@ -833,6 +838,22 @@ function metadataToken(value: unknown): string | undefined {
 
   if (typeof value === 'number' && Number.isFinite(value)) {
     return String(value)
+  }
+
+  return undefined
+}
+
+function metadataBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (value === 'true') {
+    return true
+  }
+
+  if (value === 'false') {
+    return false
   }
 
   return undefined
@@ -946,7 +967,7 @@ function mapCodeTaskItem(
   const latestJob = jobs.at(-1)
   const firstJob = jobs[0]
   const latestPullRequest = pullRequests.at(-1)
-  const state = implementationTaskState(jobs, pullRequests)
+  const state = implementationTaskState(task.status, jobs, pullRequests)
   const documentId = current?.document.id ?? task.currentDocumentId
   const sourceKey = current?.document.sourceKey ?? task.sourceKey
 
@@ -1484,7 +1505,7 @@ function createImplementationTaskItems(
       const latestJob = implementationJobs.at(-1)
       const firstJob = implementationJobs[0]
       const latestPullRequest = pullRequests.at(-1)
-      const state = implementationTaskState(implementationJobs, pullRequests)
+      const state = implementationTaskState(undefined, implementationJobs, pullRequests)
 
       const task: WorkItem = {
         id: `code_${spec.id}`,
@@ -1553,7 +1574,15 @@ function stripImplementationPrsFromDocumentTasks(
   })
 }
 
-function implementationTaskState(jobs: WorkflowJob[], pullRequests: PullRequestSummary[]): WorkState {
+function implementationTaskState(
+  taskStatus: string | undefined,
+  jobs: WorkflowJob[],
+  pullRequests: PullRequestSummary[],
+): WorkState {
+  if (taskStatus && taskStatus !== 'draft') {
+    return mapTaskState(taskStatus, jobs)
+  }
+
   if (jobs.some((job) => job.status === 'failed' || job.status === 'canceled')) {
     return 'failed'
   }
@@ -1566,8 +1595,17 @@ function implementationTaskState(jobs: WorkflowJob[], pullRequests: PullRequestS
     return 'running'
   }
 
-  if (pullRequests.length > 0 && (jobs.length === 0 || jobs.every((job) => isTerminalJob(job.status)))) {
+  const latestPullRequest = pullRequests.at(-1)
+
+  if (
+    latestPullRequest?.merged ||
+    (latestPullRequest?.reviewStatus === 'approved' && latestPullRequest?.ciStatus === 'success')
+  ) {
     return 'completed'
+  }
+
+  if (pullRequests.length > 0 && (jobs.length === 0 || jobs.every((job) => isTerminalJob(job.status)))) {
+    return 'running'
   }
 
   if (jobs.some((job) => job.status === 'succeeded')) {

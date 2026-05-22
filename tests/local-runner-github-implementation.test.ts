@@ -507,6 +507,66 @@ describe("GitHub implementation local runner engine", () => {
     });
   });
 
+  it("does not request revision or rework after the PR has already merged", async () => {
+    const engine = new GitHubImplementationLocalRunnerEngine({
+      client: {
+        createBranch: async () => ({ ref: "refs/heads/unused", sha: "unused" }),
+        createPullRequest: async () => ({
+          number: 1,
+          url: "https://github.com/acme/workflow-app/pull/1",
+          state: "open",
+          draft: true
+        }),
+        readPullRequestStatus: async () => ({
+          number: 42,
+          url: "https://github.com/acme/workflow-app/pull/42",
+          state: "closed",
+          draft: false,
+          merged: true,
+          latestCommitSha: "merged-sha",
+          reviewStatus: "changes_requested",
+          ciStatus: "failure",
+          checkRuns: [
+            {
+              name: "unit",
+              status: "completed",
+              conclusion: "failure",
+              url: "https://github.com/acme/workflow-app/actions/runs/1"
+            }
+          ]
+        })
+      },
+      owner: "acme",
+      repo: "workflow-app"
+    });
+
+    const result = await engine.run({
+      runner: {} as never,
+      job: {
+        id: "job_status",
+        runId: "run_1",
+        jobType: "implementation.collect_pr_status",
+        status: "running",
+        input: {
+          pullNumber: 42
+        },
+        priority: 0,
+        requiredCapabilities: ["implementation.collect_pr_status"],
+        executionPolicy: "local_allowed",
+        createdAt: "2026-05-20T00:00:00.000Z",
+        updatedAt: "2026-05-20T00:00:00.000Z"
+      }
+    });
+
+    expect(result.output).toMatchObject({
+      merged: true,
+      revisionRequired: false,
+      reworkRequired: false,
+      reviewStatus: "changes_requested",
+      ciStatus: "failure"
+    });
+  });
+
   function createSpecImplementationWork(input: {
     jobType: string;
     input: Record<string, unknown>;

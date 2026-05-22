@@ -1589,6 +1589,7 @@ Acceptance criteria:
 - GitHub PR status collection now returns PR head branch, base branch, and clone URL. Repository transitions pass those into `implementation.update_pr`, and local runners clone the PR branch into the prepared implementation workdir before launching Codex/Claude. Workspace preparation failures are recorded as normal runner failures so the scheduler retry policy still applies.
 - The CLI bridge has a dedicated `implementation.update_pr` prompt that tells the agent to work in the checked-out PR branch, apply code-only fixes from feedback/check runs, run relevant tests, commit locally, and return PR update JSON instead of markdown. The local runner pushes the PR branch after the CLI returns, so the next status collection sees the new commit.
 - `implementation.open_pr` can now run as an initial code implementation job when the local runner has `GITHUB_CLONE_URL` and an isolated workspace. The runner clones the implementation repo, checks out the workflow branch, runs Codex/Claude with an initial implementation prompt, pushes the branch, then opens the GitHub PR. If the clone/workspace prerequisites are missing, the existing lightweight GitHub branch/PR creation path remains available.
+- `implementation.collect_pr_status` now records a fresh pull request artifact snapshot for every status collection. If GitHub reports `merged=true`, the repository transition uses `implementation_pr_merged` and closes the Code task as `completed` even when stale review/check fields are still non-success.
 
 ## 13. 우선순위와 리스크
 
