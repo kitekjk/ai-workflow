@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { join } from "node:path";
 import { createWorkflowApiRuntimeFromEnv } from "../runtime/create-workflow-api-runtime";
 import { createLegacyPrdServerActionFactory } from "./legacy-prd-server-actions";
 import { createWorkflowApiServer } from "./server";
@@ -6,6 +7,10 @@ import { createWorkflowApiServer } from "./server";
 const port = Number(process.env.WORKFLOW_API_PORT ?? 3000);
 const runtime = createWorkflowApiRuntimeFromEnv(process.env);
 const restoreResult = await runtime.restorePrdSnapshot?.();
+await runtime.definitionRegistry?.bootstrap({
+  definitionsRoot: join(process.cwd(), "workflows", "definitions")
+});
+await runtime.refreshPrdSupplier?.();
 const server = await createWorkflowApiServer({
   compatibilityActionsFactory: createLegacyPrdServerActionFactory(runtime.legacyPrd),
   scheduler: runtime.scheduler,
@@ -22,7 +27,10 @@ const server = await createWorkflowApiServer({
   repositoryTransitionIntervalMs: runtime.repositoryTransitionIntervalMs,
   schedulerRecoveryIntervalMs: runtime.schedulerRecoveryIntervalMs,
   internalTickIntervalMs: runtime.internalTickIntervalMs,
-  auth: runtime.auth
+  auth: runtime.auth,
+  definitionRepository: runtime.definitionRepository,
+  definitionRegistry: runtime.definitionRegistry,
+  refreshPrdSupplier: runtime.refreshPrdSupplier
 }).listen(port);
 
 console.log(`Workflow API listening at ${server.url}`);

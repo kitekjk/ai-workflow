@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { MysqlDocumentRepository } from "../document-core/mysql-repository";
 import type { DocumentRepository } from "../document-core/repository";
 import { createWorkflowMysqlPoolFromEnv, type MysqlPoolEnv } from "../mysql/create-mysql-pool";
@@ -32,6 +33,10 @@ import {
   createStubJiraIssueReader
 } from "./integration-config";
 import { createLegacyPrdRuntimeFromEnv } from "./legacy-prd-runtime";
+import { MysqlWorkflowDefinitionRepository } from "../workflow-definition/mysql-repository";
+import { WorkflowDefinitionRegistry } from "../workflow-definition/registry";
+import type { WorkflowDefinitionRepository } from "../workflow-definition/repository";
+import { setPrdDefinitionSupplier } from "../workflow-api/prd-transition-planner";
 
 export interface WorkflowApiRuntime {
   legacyPrd?: LegacyPrdCompatibility;
@@ -52,6 +57,9 @@ export interface WorkflowApiRuntime {
   schedulerRecoveryIntervalMs?: number;
   internalTickIntervalMs?: number;
   runtimeStore: WorkflowRuntimeStore;
+  definitionRepository?: WorkflowDefinitionRepository;
+  definitionRegistry?: WorkflowDefinitionRegistry;
+  refreshPrdSupplier?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -108,7 +116,9 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     snapshotMirror: legacyPrdSnapshotPersistence?.snapshotMirror
   });
   const readModel = new MysqlWorkflowApiReadModel(database);
-  const workflowIntakeCommand = new MysqlWorkflowIntakeCommand(database);
+  const definitionRepository = new MysqlWorkflowDefinitionRepository(database);
+  const definitionRegistry = new WorkflowDefinitionRegistry(definitionRepository);
+  const workflowIntakeCommand = new MysqlWorkflowIntakeCommand(database, { definitionRepository });
   const feedbackRevisionCommand = new MysqlFeedbackRevisionCommand(database);
   const workflowResultCommand = new MysqlWorkflowResultCommand(database);
   const workflowTransitionCommand = new MysqlWorkflowTransitionCommand(database);
@@ -122,6 +132,13 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     ? undefined
     : parseRepositoryTransitionIntervalMs(env.WORKFLOW_REPOSITORY_TRANSITION_MS);
   const jiraIssueReader = !fixture ? createNoFixtureJiraIssueReader(env) : undefined;
+
+  const refreshPrdSupplier = async () => {
+    const record = await definitionRepository.findActiveById("prd-confirmation");
+    if (record) {
+      setPrdDefinitionSupplier(() => record.definition);
+    }
+  };
 
   return {
     legacyPrd,
@@ -142,6 +159,9 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     schedulerRecoveryIntervalMs,
     internalTickIntervalMs,
     runtimeStore,
+    definitionRepository,
+    definitionRegistry,
+    refreshPrdSupplier,
     close: () => closeMysqlDatabase(database)
   };
 }
