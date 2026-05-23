@@ -1,7 +1,4 @@
-import type {
-  Document,
-  DocumentType
-} from "../document-core/domain";
+import type { Document } from "../document-core/domain";
 import type {
   WorkflowEngineTransitionType,
   WorkflowJob,
@@ -9,24 +6,16 @@ import type {
   WorkflowRun,
   WorkflowTask
 } from "../workflow-core/domain";
-import type {
-  WorkflowMutation
-} from "./workflow-mutation-applier";
+import type { WorkflowMutation } from "./workflow-mutation-applier";
 import {
-  createDownstreamDocuments,
-  createFollowUpJob,
   defaultIdGenerator,
-  documentOutputProjection,
-  documentTypeOrUndefined,
-  explicitDownstreamDocumentsFor,
-  nextJobInputFor,
-  nextRevisionEvaluationInputFor,
   resultStatusFor,
   workflowTaskForDocument,
   type RepositoryTransition
 } from "./repository-transition-planner-shared";
 import { planImplementationTransition } from "./implementation-transition-planner";
 import { planDocumentTransition } from "./document-transition-planner";
+import { planPrdTransition } from "./prd-transition-planner";
 
 export type { RepositoryTransition } from "./repository-transition-planner-shared";
 
@@ -154,83 +143,9 @@ function repositoryTransitionFor(
     };
   }
 
-  if (input.job.jobType === "prd.generate_draft") {
-    const projection = documentOutputProjection(input, now);
-
-    return {
-      transitionType: "prd_draft_generated",
-      documentStatus: "quality_review",
-      documents: [],
-      workflowTasks: [],
-      workflowJobs: [createFollowUpJob(input, "prd.evaluate_quality", nextJobInputFor(input.document, "prd.evaluate_quality"))],
-      ...projection
-    };
-  }
-
-  if (input.job.jobType === "prd.apply_feedback_revision") {
-    const projection = documentOutputProjection(input, now, { revision: true });
-
-    return {
-      transitionType: "prd_feedback_revision_applied",
-      documentStatus: "quality_review",
-      documents: [],
-      workflowTasks: [],
-      workflowJobs: [
-        createFollowUpJob(input, "prd.evaluate_quality", nextRevisionEvaluationInputFor(input, "prd.evaluate_quality"))
-      ],
-      ...projection
-    };
-  }
-
-  if (
-    input.job.jobType === "document.generate" ||
-    input.job.jobType === "document.revise" ||
-    input.job.jobType === "document.fan_out" ||
-    input.job.jobType === "document.evaluate" ||
-    input.job.jobType === "prd.evaluate_quality"
-  ) {
-    return planDocumentTransition(input, idGenerator, now);
-  }
-
-  if (input.job.jobType === "prd.route_downstream") {
-    if (input.result.output.status === "needs_scope_confirmation") {
-      return {
-        transitionType: "prd_downstream_scope_confirmation_required",
-        documentStatus: "needs_revision",
-        documents: [],
-        workflowTasks: [],
-        workflowJobs: []
-      };
-    }
-
-    const created = createDownstreamDocuments(input, downstreamDocumentsFor(input.result), {
-      route: input.result.output.route,
-      routeRationale: input.result.output.rationale
-    }, idGenerator, now);
-
-    return {
-      transitionType: "prd_downstream_documents_created",
-      documentStatus: input.document.status,
-      ...created
-    };
-  }
-
-  if (input.job.jobType.startsWith("implementation.")) {
-    return planImplementationTransition(input, idGenerator, now);
-  }
+  if (input.job.jobType.startsWith("prd."))            return planPrdTransition(input, idGenerator, now);
+  if (input.job.jobType.startsWith("document."))       return planDocumentTransition(input, idGenerator, now);
+  if (input.job.jobType.startsWith("implementation.")) return planImplementationTransition(input, idGenerator, now);
 
   throw new Error(`No repository workflow transition mapped for job type: ${input.job.jobType}`);
 }
-
-function downstreamDocumentsFor(result: WorkflowJobResult): Array<{ type: DocumentType; title?: string }> {
-  const explicit = explicitDownstreamDocumentsFor(result);
-
-  if (explicit.length > 0) {
-    return explicit;
-  }
-
-  const route = documentTypeOrUndefined(result.output.route);
-  return route ? [{ type: route }] : [{ type: "hld" }];
-}
-
-

@@ -15,8 +15,7 @@ import {
   revisionResumeForQualityPass
 } from "./repository-transition-planner-shared";
 
-// Public entry: dispatches to the document.* handlers AND the shared
-// quality-evaluation handler used by both document.evaluate and prd.evaluate_quality.
+// Public entry: dispatches to the document.* handlers.
 export function planDocumentTransition(
   input: PlanRepositoryWorkflowTransitionInput,
   idGenerator: (prefix: string) => string,
@@ -26,10 +25,8 @@ export function planDocumentTransition(
   if (jobType === "document.generate")  return planDocumentGenerate(input, idGenerator, now);
   if (jobType === "document.revise")    return planDocumentRevise(input, idGenerator, now);
   if (jobType === "document.fan_out")   return planDocumentFanOut(input, idGenerator, now);
-  if (jobType === "document.evaluate" || jobType === "prd.evaluate_quality") {
-    return planQualityEvaluation(input, idGenerator, now);
-  }
-  throw new Error(`Unknown document/quality job type: ${jobType}`);
+  if (jobType === "document.evaluate")  return planQualityEvaluation(input, idGenerator, now);
+  throw new Error(`Unknown document job type: ${jobType}`);
 }
 
 // IMPORTANT: planQualityEvaluation must be exported because Task 5's PRD planner
