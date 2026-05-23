@@ -1114,6 +1114,26 @@ describe("repository transition planner", () => {
     ]);
   });
 
+  it("a failed prd.evaluate_quality result is mapped to job_failed transition with canceled document status", () => {
+    // The repository-transition-planner.ts dispatcher's early-return handles
+    // `result.status === "failed"` by emitting transitionType "job_failed" and
+    // documentStatus "canceled". This codifies the PRD-level rejection-equivalent
+    // path. The upcoming definition-driven interpreter must preserve this exact
+    // behavior.
+    const evalPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "quality_review" }),
+      job: workflowJob({ jobType: "prd.evaluate_quality" }),
+      result: workflowJobResult({
+        status: "failed",
+        output: { status: "failed", error: "evaluation rejected" }
+      }),
+      now: new Date("2026-05-21T00:02:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(evalPlan.transitionType).toBe("job_failed");
+    expect(evalPlan.mutation.documentStates[0].status).toBe("canceled");
+  });
+
   it("cascades a revised LLD into a child Spec revision before resuming Code", () => {
     const plan = planRepositoryWorkflowTransition({
       workflowTasks: [
