@@ -1,6 +1,5 @@
 import type { Artifact, Document, DocumentType } from "../document-core/domain";
 import type {
-  WorkflowJob,
   WorkflowJobResult,
   WorkflowRun,
   WorkflowTask
