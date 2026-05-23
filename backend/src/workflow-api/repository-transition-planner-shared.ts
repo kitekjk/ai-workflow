@@ -557,3 +557,92 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function defaultIdGenerator(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
 }
+
+export function explicitDownstreamDocumentsFor(result: WorkflowJobResult): Array<{ type: DocumentType; title?: string }> {
+  if (!Array.isArray(result.output.downstreamDocuments)) {
+    return [];
+  }
+
+  return result.output.downstreamDocuments.flatMap((candidate) => {
+    if (!isRecord(candidate)) {
+      return [];
+    }
+
+    const type = documentTypeOrUndefined(candidate.type);
+
+    if (!type) {
+      return [];
+    }
+
+    return [
+      {
+        type,
+        title: stringOrUndefined(candidate.title)
+      }
+    ];
+  });
+}
+
+export function createDownstreamDocuments(
+  input: PlanRepositoryWorkflowTransitionInput,
+  downstreamDocuments: Array<{ type: DocumentType; title?: string }>,
+  metadata: Record<string, unknown>,
+  idGenerator: (prefix: string) => string,
+  now: string
+): Pick<RepositoryTransition, "documents" | "workflowTasks" | "workflowJobs"> {
+  const documents: Document[] = [];
+  const workflowTasks: WorkflowTask[] = [];
+  const workflowJobs: WorkflowJob[] = [];
+  const typeCounts = new Map<DocumentType, number>();
+
+  for (const downstreamDocument of downstreamDocuments) {
+    const sequence = (typeCounts.get(downstreamDocument.type) ?? 0) + 1;
+    typeCounts.set(downstreamDocument.type, sequence);
+
+    const documentId = idGenerator("doc");
+    const taskId = taskIdForDocument(documentId);
+    const title = downstreamDocument.title ?? `${downstreamDocument.type.toUpperCase()} for ${input.document.sourceKey}`;
+    const task: WorkflowTask = {
+      id: taskId,
+      runId: input.document.workflowRunId,
+      parentTaskId: input.document.workflowTaskId,
+      taskType: downstreamDocument.type,
+      sourceKey: `${input.document.sourceKey}-${downstreamDocument.type.toUpperCase()}-${sequence}`,
+      title,
+      status: "draft",
+      currentDocumentId: documentId,
+      metadata: {
+        ...metadata,
+        parentDocumentId: input.document.id
+      },
+      createdAt: now,
+      updatedAt: now
+    };
+    const document: Document = {
+      id: documentId,
+      workflowRunId: input.document.workflowRunId,
+      workflowTaskId: taskId,
+      parentDocumentId: input.document.id,
+      type: downstreamDocument.type,
+      sourceKey: task.sourceKey,
+      title,
+      status: "draft",
+      createdAt: now,
+      updatedAt: now
+    };
+    const job = createFollowUpJob(input, "document.generate", {
+      ...metadata,
+      taskId,
+      documentType: document.type,
+      sourceDocumentId: document.id,
+      parentDocumentId: input.document.id,
+      title
+    }, idGenerator);
+
+    workflowTasks.push(task);
+    documents.push(document);
+    workflowJobs.push(job);
+  }
+
+  return { documents, workflowTasks, workflowJobs };
+}

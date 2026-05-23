@@ -13,23 +13,20 @@ import type {
   WorkflowMutation
 } from "./workflow-mutation-applier";
 import {
-  documentOutputProjection,
-  qualityResultFor,
+  createDownstreamDocuments,
   createFollowUpJob,
-  qualityTransitionTypeFor,
+  defaultIdGenerator,
+  documentOutputProjection,
+  documentTypeOrUndefined,
+  explicitDownstreamDocumentsFor,
   nextJobInputFor,
   nextRevisionEvaluationInputFor,
-  revisionResumeForQualityPass,
   resultStatusFor,
-  documentTypeOrUndefined,
-  stringOrUndefined,
   workflowTaskForDocument,
-  taskIdForDocument,
-  isRecord,
-  defaultIdGenerator,
   type RepositoryTransition
 } from "./repository-transition-planner-shared";
 import { planImplementationTransition } from "./implementation-transition-planner";
+import { planDocumentTransition } from "./document-transition-planner";
 
 export type { RepositoryTransition } from "./repository-transition-planner-shared";
 
@@ -185,46 +182,14 @@ function repositoryTransitionFor(
     };
   }
 
-  if (input.job.jobType === "document.generate") {
-    const projection = documentOutputProjection(input, now);
-
-    return {
-      transitionType: "document_generated",
-      documentStatus: "quality_review",
-      documents: [],
-      workflowTasks: [],
-      workflowJobs: [createFollowUpJob(input, "document.evaluate", nextJobInputFor(input.document, "document.evaluate"))],
-      ...projection
-    };
-  }
-
-  if (input.job.jobType === "document.revise") {
-    const projection = documentOutputProjection(input, now, { revision: true });
-
-    return {
-      transitionType: "document_revision_applied",
-      documentStatus: "quality_review",
-      documents: [],
-      workflowTasks: [],
-      workflowJobs: [
-        createFollowUpJob(input, "document.evaluate", nextRevisionEvaluationInputFor(input, "document.evaluate"))
-      ],
-      ...projection
-    };
-  }
-
-  if (input.job.jobType === "prd.evaluate_quality" || input.job.jobType === "document.evaluate") {
-    const passed = resultStatusFor(input.result) === "passed";
-    const revisionResume = passed ? revisionResumeForQualityPass(input, idGenerator, now) : undefined;
-    return {
-      transitionType: qualityTransitionTypeFor(input.job.jobType, passed),
-      documentStatus: passed ? "approval_pending" : "needs_revision",
-      documents: [],
-      workflowTasks: revisionResume?.workflowTasks ?? [],
-      workflowJobs: revisionResume?.workflowJobs ?? [],
-      qualityResults: [qualityResultFor(input, passed, now)],
-      qualityStatus: passed ? "passed" : "needs_revision"
-    };
+  if (
+    input.job.jobType === "document.generate" ||
+    input.job.jobType === "document.revise" ||
+    input.job.jobType === "document.fan_out" ||
+    input.job.jobType === "document.evaluate" ||
+    input.job.jobType === "prd.evaluate_quality"
+  ) {
+    return planDocumentTransition(input, idGenerator, now);
   }
 
   if (input.job.jobType === "prd.route_downstream") {
@@ -250,88 +215,11 @@ function repositoryTransitionFor(
     };
   }
 
-  if (input.job.jobType === "document.fan_out") {
-    const created = createDownstreamDocuments(input, downstreamDocumentsForFanOut(input.document, input.result), {
-      fanOutRationale: input.result.output.rationale,
-      parentDocumentType: input.document.type
-    }, idGenerator, now);
-
-    return {
-      transitionType: "document_fan_out_created",
-      documentStatus: input.document.status,
-      ...created
-    };
-  }
-
   if (input.job.jobType.startsWith("implementation.")) {
     return planImplementationTransition(input, idGenerator, now);
   }
 
   throw new Error(`No repository workflow transition mapped for job type: ${input.job.jobType}`);
-}
-
-function createDownstreamDocuments(
-  input: PlanRepositoryWorkflowTransitionInput,
-  downstreamDocuments: Array<{ type: DocumentType; title?: string }>,
-  metadata: Record<string, unknown>,
-  idGenerator: (prefix: string) => string,
-  now: string
-): Pick<RepositoryTransition, "documents" | "workflowTasks" | "workflowJobs"> {
-  const documents: Document[] = [];
-  const workflowTasks: WorkflowTask[] = [];
-  const workflowJobs: WorkflowJob[] = [];
-  const typeCounts = new Map<DocumentType, number>();
-
-  for (const downstreamDocument of downstreamDocuments) {
-    const sequence = (typeCounts.get(downstreamDocument.type) ?? 0) + 1;
-    typeCounts.set(downstreamDocument.type, sequence);
-
-    const documentId = idGenerator("doc");
-    const taskId = taskIdForDocument(documentId);
-    const title = downstreamDocument.title ?? `${downstreamDocument.type.toUpperCase()} for ${input.document.sourceKey}`;
-    const task: WorkflowTask = {
-      id: taskId,
-      runId: input.document.workflowRunId,
-      parentTaskId: input.document.workflowTaskId,
-      taskType: downstreamDocument.type,
-      sourceKey: `${input.document.sourceKey}-${downstreamDocument.type.toUpperCase()}-${sequence}`,
-      title,
-      status: "draft",
-      currentDocumentId: documentId,
-      metadata: {
-        ...metadata,
-        parentDocumentId: input.document.id
-      },
-      createdAt: now,
-      updatedAt: now
-    };
-    const document: Document = {
-      id: documentId,
-      workflowRunId: input.document.workflowRunId,
-      workflowTaskId: taskId,
-      parentDocumentId: input.document.id,
-      type: downstreamDocument.type,
-      sourceKey: task.sourceKey,
-      title,
-      status: "draft",
-      createdAt: now,
-      updatedAt: now
-    };
-    const job = createFollowUpJob(input, "document.generate", {
-      ...metadata,
-      taskId,
-      documentType: document.type,
-      sourceDocumentId: document.id,
-      parentDocumentId: input.document.id,
-      title
-    }, idGenerator);
-
-    workflowTasks.push(task);
-    documents.push(document);
-    workflowJobs.push(job);
-  }
-
-  return { documents, workflowTasks, workflowJobs };
 }
 
 function downstreamDocumentsFor(result: WorkflowJobResult): Array<{ type: DocumentType; title?: string }> {
@@ -343,70 +231,6 @@ function downstreamDocumentsFor(result: WorkflowJobResult): Array<{ type: Docume
 
   const route = documentTypeOrUndefined(result.output.route);
   return route ? [{ type: route }] : [{ type: "hld" }];
-}
-
-function downstreamDocumentsForFanOut(
-  parentDocument: Document,
-  result: WorkflowJobResult
-): Array<{ type: DocumentType; title?: string }> {
-  const explicit = explicitDownstreamDocumentsFor(result).filter((document) => document.type !== parentDocument.type);
-
-  if (explicit.length > 0) {
-    return explicit;
-  }
-
-  if (parentDocument.type === "hld") {
-    return [
-      {
-        type: "lld",
-        title: `Backend LLD for ${parentDocument.sourceKey}`
-      },
-      {
-        type: "lld",
-        title: `Frontend LLD for ${parentDocument.sourceKey}`
-      }
-    ];
-  }
-
-  if (parentDocument.type === "lld") {
-    return [
-      {
-        type: "spec",
-        title: `Implementation Spec 1 for ${parentDocument.sourceKey}`
-      },
-      {
-        type: "spec",
-        title: `Implementation Spec 2 for ${parentDocument.sourceKey}`
-      }
-    ];
-  }
-
-  return [];
-}
-
-function explicitDownstreamDocumentsFor(result: WorkflowJobResult): Array<{ type: DocumentType; title?: string }> {
-  if (!Array.isArray(result.output.downstreamDocuments)) {
-    return [];
-  }
-
-  return result.output.downstreamDocuments.flatMap((candidate) => {
-    if (!isRecord(candidate)) {
-      return [];
-    }
-
-    const type = documentTypeOrUndefined(candidate.type);
-
-    if (!type) {
-      return [];
-    }
-
-    return [
-      {
-        type,
-        title: stringOrUndefined(candidate.title)
-      }
-    ];
-  });
 }
 
 
