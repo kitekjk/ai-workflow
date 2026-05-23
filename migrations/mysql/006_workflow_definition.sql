@@ -47,13 +47,26 @@ PREPARE add_current_stage_id FROM @add_current_stage_id;
 EXECUTE add_current_stage_id;
 DEALLOCATE PREPARE add_current_stage_id;
 
-SET @add_stage_attempt_counts = (
-  SELECT IF(COUNT(*) = 0,
-    'ALTER TABLE workflow_task ADD COLUMN stage_attempt_counts JSON NULL AFTER current_stage_id',
+-- Rename stage_attempt_counts -> stage_attempt_counts_json if the old name exists
+SET @rename_stage_attempt_counts = (
+  SELECT IF(COUNT(*) > 0,
+    'ALTER TABLE workflow_task RENAME COLUMN stage_attempt_counts TO stage_attempt_counts_json',
     'SELECT 1')
   FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_task' AND COLUMN_NAME = 'stage_attempt_counts'
 );
-PREPARE add_stage_attempt_counts FROM @add_stage_attempt_counts;
-EXECUTE add_stage_attempt_counts;
-DEALLOCATE PREPARE add_stage_attempt_counts;
+PREPARE rename_stage_attempt_counts FROM @rename_stage_attempt_counts;
+EXECUTE rename_stage_attempt_counts;
+DEALLOCATE PREPARE rename_stage_attempt_counts;
+
+-- Add stage_attempt_counts_json if it does not yet exist (fresh DB path)
+SET @add_stage_attempt_counts_json = (
+  SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE workflow_task ADD COLUMN stage_attempt_counts_json JSON NULL AFTER current_stage_id',
+    'SELECT 1')
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_task' AND COLUMN_NAME = 'stage_attempt_counts_json'
+);
+PREPARE add_stage_attempt_counts_json FROM @add_stage_attempt_counts_json;
+EXECUTE add_stage_attempt_counts_json;
+DEALLOCATE PREPARE add_stage_attempt_counts_json;
