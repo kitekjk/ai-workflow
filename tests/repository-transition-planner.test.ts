@@ -143,6 +143,36 @@ describe("repository transition planner", () => {
     });
   });
 
+  it("prd.generate_draft followed by prd.evaluate_quality needs_revision is recorded as prd_quality_needs_revision", () => {
+    // Construct the chain: PRD draft generated → evaluate_quality with status=needs_revision.
+    // Verify that the planner produces transitionType "prd_quality_needs_revision"
+    // and documentStatus "needs_revision". This codifies the currently-implicit
+    // PRD quality-failure path so the upcoming definition-driven interpreter has
+    // a complete equivalence oracle.
+    const draftPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "draft" }),
+      job: workflowJob({ jobType: "prd.generate_draft" }),
+      result: workflowJobResult({
+        output: { status: "succeeded", markdown: "# Draft" }
+      }),
+      now: new Date("2026-05-21T00:00:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_next`
+    });
+    expect(draftPlan.transitionType).toBe("prd_draft_generated");
+
+    const evalPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "quality_review" }),
+      job: workflowJob({ jobType: "prd.evaluate_quality" }),
+      result: workflowJobResult({
+        output: { status: "needs_revision", score: 60 }
+      }),
+      now: new Date("2026-05-21T00:01:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(evalPlan.transitionType).toBe("prd_quality_needs_revision");
+    expect(evalPlan.mutation.documentStates[0].status).toBe("needs_revision");
+  });
+
   it("plans downstream document creation after PRD routing", () => {
     const idGenerator = sequenceGenerator();
     const plan = planRepositoryWorkflowTransition({
