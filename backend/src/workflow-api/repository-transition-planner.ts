@@ -117,7 +117,37 @@ export function planRepositoryWorkflowTransition(
           },
           createdAt: now
         }
-      ]
+      ],
+      // Stage-lifecycle events parallel to the legacy workflow.engine_transition.
+      // Kept in a separate field so existing oracle assertions on `events` are
+      // unaffected during this transition slice (Spec §12).
+      stageEvents: (transition.stageTransitions ?? []).flatMap((st) => [
+        {
+          runId: input.job.runId,
+          jobId: input.result.jobId,
+          type: "task.stage_exited",
+          message: `Stage exited: ${st.fromStageId} -> ${st.toStageId}`,
+          metadata: {
+            taskId: input.job.taskId,
+            fromStageId: st.fromStageId,
+            toStageId: st.toStageId,
+            reason: st.reason
+          },
+          createdAt: now
+        },
+        {
+          runId: input.job.runId,
+          jobId: input.result.jobId,
+          type: "task.stage_entered",
+          message: `Stage entered: ${st.toStageId}`,
+          metadata: {
+            taskId: input.job.taskId,
+            stageId: st.toStageId,
+            reason: st.reason
+          },
+          createdAt: now
+        }
+      ])
     }
   };
 }

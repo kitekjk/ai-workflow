@@ -18,6 +18,11 @@ export interface WorkflowMutation {
   feedbackItems?: WorkflowFeedbackItem[];
   documentEvents?: WorkflowDocumentMutationEvent[];
   events?: WorkflowMutationEvent[];
+  /** Stage-lifecycle events (task.stage_entered / task.stage_exited) emitted in
+   * parallel with the legacy workflow.engine_transition event.  Stored in the
+   * same workflow_event table; kept separate so existing oracle assertions on
+   * the `events` array are unaffected during this transition slice. */
+  stageEvents?: WorkflowMutationEvent[];
 }
 
 export type WorkflowMutationEvent = Omit<WorkflowEvent, "id">;
@@ -127,6 +132,10 @@ export class MysqlWorkflowMutationApplier implements WorkflowMutationApplier {
       }
 
       for (const event of mutation.events ?? []) {
+        await insertWorkflowEvent(connection, event, this.idGenerator);
+      }
+
+      for (const event of mutation.stageEvents ?? []) {
         await insertWorkflowEvent(connection, event, this.idGenerator);
       }
 

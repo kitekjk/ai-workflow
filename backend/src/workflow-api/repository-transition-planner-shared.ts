@@ -36,6 +36,7 @@ export interface RepositoryTransition {
   feedbackItems?: WorkflowFeedbackItem[];
   documentEvents?: WorkflowDocumentMutationEvent[];
   qualityStatus?: string;
+  stageTransitions?: Array<{ fromStageId: string; toStageId: string; reason: string }>;
 }
 
 export function documentOutputProjection(

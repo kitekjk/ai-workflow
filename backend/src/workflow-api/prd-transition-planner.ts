@@ -108,6 +108,7 @@ function interpreterOutputToRepositoryTransition(
       documents: [],
       workflowTasks: [],
       workflowJobs: [createFollowUpJob(input, "prd.evaluate_quality", nextJobInputFor(input.document, "prd.evaluate_quality"))],
+      stageTransitions: output.transitions,
       ...projection
     };
   }
@@ -122,6 +123,7 @@ function interpreterOutputToRepositoryTransition(
       workflowJobs: [
         createFollowUpJob(input, "prd.evaluate_quality", nextRevisionEvaluationInputFor(input, "prd.evaluate_quality"))
       ],
+      stageTransitions: output.transitions,
       ...projection
     };
   }
@@ -134,7 +136,8 @@ function interpreterOutputToRepositoryTransition(
       workflowTasks: [],
       workflowJobs: [],
       qualityResults: [qualityResultFor(input, true, now)],
-      qualityStatus: "passed"
+      qualityStatus: "passed",
+      stageTransitions: output.transitions
     };
   }
 
@@ -146,7 +149,8 @@ function interpreterOutputToRepositoryTransition(
       workflowTasks: [],
       workflowJobs: [],
       qualityResults: [qualityResultFor(input, false, now)],
-      qualityStatus: "needs_revision"
+      qualityStatus: "needs_revision",
+      stageTransitions: output.transitions
     };
   }
 
@@ -163,7 +167,8 @@ function interpreterOutputToRepositoryTransition(
         documentStatus: "needs_revision",
         documents: [],
         workflowTasks: [],
-        workflowJobs: []
+        workflowJobs: [],
+        stageTransitions: output.transitions
       };
     }
     // Default success path: create downstream documents
@@ -180,6 +185,7 @@ function interpreterOutputToRepositoryTransition(
     return {
       transitionType: "prd_downstream_documents_created",
       documentStatus: input.document.status,
+      stageTransitions: output.transitions,
       ...created
     };
   }
