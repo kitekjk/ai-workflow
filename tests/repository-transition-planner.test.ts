@@ -1232,6 +1232,26 @@ describe("repository transition planner", () => {
       }
     ]);
   });
+
+  it("prd.route_downstream with needs_scope_confirmation emits prd_downstream_scope_confirmation_required and needs_revision", () => {
+    // Codifies the current PRD scope-clarification path. The planner emits
+    // transitionType "prd_downstream_scope_confirmation_required" with
+    // documentStatus "needs_revision" when the route_downstream job's result
+    // output indicates scope clarification is needed. The upcoming definition-
+    // driven interpreter must preserve this behavior exactly.
+    const routePlan = planRepositoryWorkflowTransition({
+      document: document({ status: "approved" }),
+      job: workflowJob({ jobType: "prd.route_downstream" }),
+      result: workflowJobResult({
+        status: "succeeded",
+        output: { status: "needs_scope_confirmation", rationale: "scale unclear" }
+      }),
+      now: new Date("2026-05-21T00:03:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(routePlan.transitionType).toBe("prd_downstream_scope_confirmation_required");
+    expect(routePlan.mutation.documentStates[0].status).toBe("needs_revision");
+  });
 });
 
 function document(overrides: Partial<Document> = {}): Document {
