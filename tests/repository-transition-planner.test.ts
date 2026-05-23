@@ -170,7 +170,7 @@ describe("repository transition planner", () => {
       idGenerator: (prefix) => `${prefix}_unused`
     });
     expect(evalPlan.transitionType).toBe("prd_quality_needs_revision");
-    expect(evalPlan.mutation.documentStates[0].status).toBe("needs_revision");
+    expect(evalPlan.mutation.documentStates![0].status).toBe("needs_revision");
   });
 
   it("plans downstream document creation after PRD routing", () => {
@@ -1131,7 +1131,7 @@ describe("repository transition planner", () => {
       idGenerator: (prefix) => `${prefix}_unused`
     });
     expect(evalPlan.transitionType).toBe("job_failed");
-    expect(evalPlan.mutation.documentStates[0].status).toBe("canceled");
+    expect(evalPlan.mutation.documentStates![0].status).toBe("canceled");
   });
 
   it("cascades a revised LLD into a child Spec revision before resuming Code", () => {
@@ -1250,7 +1250,7 @@ describe("repository transition planner", () => {
       idGenerator: (prefix) => `${prefix}_unused`
     });
     expect(routePlan.transitionType).toBe("prd_downstream_scope_confirmation_required");
-    expect(routePlan.mutation.documentStates[0].status).toBe("needs_revision");
+    expect(routePlan.mutation.documentStates![0].status).toBe("needs_revision");
   });
 
   it("prd.route_downstream with operator-supplied route creates downstream HLD document after scope clarification", () => {
@@ -1280,8 +1280,8 @@ describe("repository transition planner", () => {
       idGenerator: sequenceGenerator()
     });
     expect(routePlan.transitionType).toBe("prd_downstream_documents_created");
-    expect(routePlan.mutation.documents.length).toBeGreaterThan(0);
-    expect(routePlan.mutation.documents[0]).toMatchObject({
+    expect(routePlan.mutation.documents!.length).toBeGreaterThan(0);
+    expect(routePlan.mutation.documents![0]).toMatchObject({
       workflowRunId: "run_1",
       parentDocumentId: "doc_prd",
       type: "hld",
