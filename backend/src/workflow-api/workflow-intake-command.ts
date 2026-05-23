@@ -7,6 +7,7 @@ import {
   type WorkflowMutation,
   type WorkflowMutationApplier
 } from "./workflow-mutation-applier";
+import type { WorkflowDefinitionRepository } from "../workflow-definition/repository";
 
 export type WorkflowSourceType = WorkflowRun["sourceType"];
 
@@ -51,12 +52,14 @@ export type PrdIntakeCommand = WorkflowIntakeCommand;
 export interface MysqlWorkflowIntakeCommandOptions {
   idGenerator?: (prefix: string) => string;
   mutationApplier?: WorkflowMutationApplier;
+  definitionRepository?: WorkflowDefinitionRepository;
 }
 
 export type MysqlPrdIntakeCommandOptions = MysqlWorkflowIntakeCommandOptions;
 
 export class MysqlWorkflowIntakeCommand implements WorkflowIntakeCommand {
   private readonly mutationApplier: WorkflowMutationApplier;
+  private readonly definitionRepository?: WorkflowDefinitionRepository;
 
   constructor(
     database: MysqlDatabase,
@@ -64,6 +67,7 @@ export class MysqlWorkflowIntakeCommand implements WorkflowIntakeCommand {
   ) {
     this.mutationApplier =
       options.mutationApplier ?? new MysqlWorkflowMutationApplier(database, { idGenerator: options.idGenerator });
+    this.definitionRepository = options.definitionRepository;
   }
 
   async recordIntake(input: RecordWorkflowIntakeInput | RecordPrdIntakeInput): Promise<RecordWorkflowIntakeResult> {
@@ -92,6 +96,9 @@ export class MysqlWorkflowIntakeCommand implements WorkflowIntakeCommand {
       requestedBy: normalized.requestedBy,
       legacyPrdInput
     });
+    const definitionRecord = this.definitionRepository
+      ? await this.definitionRepository.findActiveByDocumentType(normalized.documentType)
+      : null;
     const mutation: WorkflowMutation = {
       workflowRuns: [
         {
@@ -114,6 +121,10 @@ export class MysqlWorkflowIntakeCommand implements WorkflowIntakeCommand {
           title,
           status: "draft",
           currentDocumentId: documentId,
+          definitionId: definitionRecord?.definition.id,
+          definitionVersion: definitionRecord?.definition.version,
+          currentStageId: definitionRecord?.definition.entryStage,
+          stageAttemptCounts: definitionRecord ? {} : undefined,
           metadata: taskMetadata(metadata, legacyPrdInput),
           createdAt: now,
           updatedAt: now

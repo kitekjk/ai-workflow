@@ -149,6 +149,10 @@ export interface WorkflowTask {
   title: string;
   status: WorkflowTaskStatus;
   currentDocumentId?: string;
+  definitionId?: string;
+  definitionVersion?: number;
+  currentStageId?: string;
+  stageAttemptCounts?: Record<string, number>;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

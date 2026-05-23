@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { join } from "node:path";
 import type {
   ArtifactLocation,
   ArtifactType,
@@ -41,6 +42,8 @@ import {
   type WorkflowApiCompatibilityActions,
   workflowCompatibilityDisabledMessage
 } from "./compatibility-actions";
+import type { WorkflowDefinitionRepository } from "../workflow-definition/repository";
+import type { WorkflowDefinitionRegistry } from "../workflow-definition/registry";
 
 export interface WorkflowApiServer {
   url: string;
@@ -67,6 +70,9 @@ export interface CreateWorkflowApiServerInput {
   auth?: WorkflowApiAuthConfig;
   enableTestControls?: boolean;
   now?: () => Date;
+  definitionRepository?: WorkflowDefinitionRepository;
+  definitionRegistry?: WorkflowDefinitionRegistry;
+  refreshPrdSupplier?: () => Promise<void>;
 }
 
 export interface WorkflowApiAuthConfig {
@@ -111,7 +117,10 @@ export function createWorkflowApiServer({
   internalTickIntervalMs,
   auth,
   enableTestControls = false,
-  now = () => new Date()
+  now = () => new Date(),
+  definitionRepository,
+  definitionRegistry,
+  refreshPrdSupplier
 }: CreateWorkflowApiServerInput): WorkflowApiServer {
   let baseUrl = "";
   let internalTickTimer: ReturnType<typeof setInterval> | undefined;
@@ -151,7 +160,10 @@ export function createWorkflowApiServer({
     ),
     repositoryBackedMode: !compatibilityActions,
     enableTestControls,
-    now
+    now,
+    definitionRepository,
+    definitionRegistry,
+    refreshPrdSupplier
   };
 
   const server = createServer(async (request, response) => {
@@ -348,6 +360,9 @@ interface WorkflowApiRequestContext {
   repositoryBackedMode: boolean;
   enableTestControls: boolean;
   now: () => Date;
+  definitionRepository?: WorkflowDefinitionRepository;
+  definitionRegistry?: WorkflowDefinitionRegistry;
+  refreshPrdSupplier?: () => Promise<void>;
 }
 
 type ReadModelScheduledWork =
@@ -1149,6 +1164,57 @@ async function routeRequest(
       }));
       return;
     }
+  }
+
+  if (method === "POST" && path === "/workflow-definitions/reload") {
+    const actorEmail = request.headers["x-actor-email"];
+    await context.definitionRegistry?.bootstrap({
+      definitionsRoot: join(process.cwd(), "workflows", "definitions"),
+      actorEmail: typeof actorEmail === "string" ? actorEmail : undefined
+    });
+    await context.refreshPrdSupplier?.();
+    writeJson(response, 200, { status: "reloaded" });
+    return;
+  }
+
+  if (method === "GET" && path === "/workflow-definitions") {
+    const active = (await context.definitionRepository?.listActive()) ?? [];
+    writeJson(response, 200, {
+      definitions: active.map((r) => ({
+        id: r.definition.id,
+        version: r.definition.version,
+        name: r.definition.name,
+        documentTypes: r.definition.documentTypes,
+        entryStage: r.definition.entryStage,
+        status: r.status,
+        importedAt: r.importedAt
+      }))
+    });
+    return;
+  }
+
+  if (method === "GET" && path.startsWith("/workflow-definitions/")) {
+    const id = path.slice("/workflow-definitions/".length);
+    const versionParam = url.searchParams.get("version");
+    const version = versionParam ? Number(versionParam) : undefined;
+    const record = version
+      ? await context.definitionRepository?.findByIdAndVersion(id, version)
+      : await context.definitionRepository?.findActiveById(id);
+    if (!record) {
+      writeJson(response, 404, { error: "not_found" });
+      return;
+    }
+    writeJson(response, 200, {
+      id: record.definition.id,
+      version: record.definition.version,
+      name: record.definition.name,
+      documentTypes: record.definition.documentTypes,
+      entryStage: record.definition.entryStage,
+      status: record.status,
+      importedAt: record.importedAt,
+      body: record.definition
+    });
+    return;
   }
 
   writeJson(response, 404, { error: "Not found" });

@@ -71,6 +71,10 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       title: input.title,
       status: input.status ?? "draft",
       currentDocumentId: input.currentDocumentId,
+      definitionId: input.definitionId,
+      definitionVersion: input.definitionVersion,
+      currentStageId: input.currentStageId,
+      stageAttemptCounts: input.stageAttemptCounts,
       metadata: input.metadata ?? {},
       createdAt: now,
       updatedAt: now

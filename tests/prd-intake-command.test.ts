@@ -88,6 +88,50 @@ describe("MysqlPrdIntakeCommand", () => {
     expect(database.events).toEqual(["begin", "rollback", "release"]);
   });
 
+  it("intake of the same sourceKey twice produces TWO workflow runs (current unconditional behavior)", async () => {
+    // Codifies the current behavior of MysqlWorkflowIntakeCommand. The
+    // upcoming definition-driven interpreter and intake-pin task must preserve
+    // this exact behavior (whether the duplicate guard is added later is out
+    // of scope for this slice).
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowIntakeCommand(database);
+
+    const first = await command.recordIntake({
+      runId: "run_dup_1",
+      workItemId: "wi_dup_1",
+      jobId: "job_dup_1",
+      sourceType: "jira",
+      sourceKey: "PRD-DUP-1",
+      documentType: "prd",
+      requestedBy: "planner@example.com"
+    });
+
+    const statementCountAfterFirst = database.statements.length;
+
+    const second = await command.recordIntake({
+      runId: "run_dup_2",
+      workItemId: "wi_dup_2",
+      jobId: "job_dup_2",
+      sourceType: "jira",
+      sourceKey: "PRD-DUP-1",
+      documentType: "prd",
+      requestedBy: "planner@example.com"
+    });
+
+    // Current behavior: unconditional — both calls succeed with distinct runIds
+    expect(first.runId).toBe("run_dup_1");
+    expect(second.runId).toBe("run_dup_2");
+    expect(second.runId).not.toBe(first.runId);
+
+    // Each intake issued its own batch of INSERT statements (two workflow_run rows)
+    const allInsertSqls = database.statements.map((s) => s.sql);
+    const workflowRunInserts = allInsertSqls.filter((sql) => sql.includes("INSERT INTO workflow_run"));
+    expect(workflowRunInserts).toHaveLength(2);
+
+    // The second call wrote its own statements on top of the first batch
+    expect(database.statements.length).toBeGreaterThan(statementCountAfterFirst);
+  });
+
   it("records non-PRD workflow intake as a generic document generate task", async () => {
     const database = new FakeMysqlDatabase();
     const command = new MysqlWorkflowIntakeCommand(database, { idGenerator: fixedIds("event_1") });

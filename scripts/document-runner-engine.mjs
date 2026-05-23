@@ -16,6 +16,17 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await runEngine(args, prompt);
   const parsed = parseJsonObject(result.stdout);
 
+  // Normalize prd.route_downstream success status to "route_decided" so the
+  // upcoming definition-driven interpreter can distinguish the success path
+  // from needs_scope_confirmation through result.status.
+  const jobType = String(input.jobType ?? "document.generate");
+  if (jobType === "prd.route_downstream") {
+    const currentStatus = parsed?.status;
+    if (currentStatus !== "needs_scope_confirmation" && currentStatus !== "failed") {
+      parsed.status = "route_decided";
+    }
+  }
+
   process.stdout.write(`${JSON.stringify(parsed)}\n`);
 }
 

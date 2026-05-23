@@ -104,6 +104,10 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
       title: input.title,
       status: input.status ?? "draft",
       currentDocumentId: input.currentDocumentId,
+      definitionId: input.definitionId,
+      definitionVersion: input.definitionVersion,
+      currentStageId: input.currentStageId,
+      stageAttemptCounts: input.stageAttemptCounts,
       metadata: input.metadata ?? {},
       createdAt: now,
       updatedAt: now
@@ -112,8 +116,9 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
     await this.database.execute(
       `INSERT INTO workflow_task (
         id, run_id, parent_task_id, task_type, source_key, title, status,
-        current_document_id, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        current_document_id, definition_id, definition_version, current_stage_id,
+        stage_attempt_counts_json, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       taskToParams(task)
     );
 
@@ -897,6 +902,10 @@ function taskToParams(task: WorkflowTask): unknown[] {
     task.title,
     task.status,
     task.currentDocumentId ?? null,
+    task.definitionId ?? null,
+    task.definitionVersion ?? null,
+    task.currentStageId ?? null,
+    task.stageAttemptCounts !== undefined ? JSON.stringify(task.stageAttemptCounts) : null,
     JSON.stringify(task.metadata),
     toMysqlDateTime(task.createdAt),
     toMysqlDateTime(task.updatedAt)
@@ -904,6 +913,7 @@ function taskToParams(task: WorkflowTask): unknown[] {
 }
 
 export function rowToWorkflowTask(row: MysqlRow): WorkflowTask {
+  const stageAttemptCounts = parseOptionalJsonRecord(row.stage_attempt_counts_json);
   return {
     id: stringValue(row.id),
     runId: stringValue(row.run_id),
@@ -913,6 +923,14 @@ export function rowToWorkflowTask(row: MysqlRow): WorkflowTask {
     title: stringValue(row.title),
     status: stringValue(row.status) as WorkflowTask["status"],
     currentDocumentId: optionalString(row.current_document_id),
+    definitionId: optionalString(row.definition_id),
+    definitionVersion: row.definition_version !== null && row.definition_version !== undefined
+      ? numberValue(row.definition_version)
+      : undefined,
+    currentStageId: optionalString(row.current_stage_id),
+    stageAttemptCounts: stageAttemptCounts !== undefined
+      ? (stageAttemptCounts as Record<string, number>)
+      : undefined,
     metadata: parseJsonRecord(row.metadata_json),
     createdAt: isoValue(row.created_at),
     updatedAt: isoValue(row.updated_at)
@@ -980,6 +998,13 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
   return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
     : {};
+}
+
+function parseOptionalJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  return parseJsonRecord(value);
 }
 
 function parseJsonArray(value: unknown): string[] {

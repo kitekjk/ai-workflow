@@ -143,6 +143,36 @@ describe("repository transition planner", () => {
     });
   });
 
+  it("prd.generate_draft followed by prd.evaluate_quality needs_revision is recorded as prd_quality_needs_revision", () => {
+    // Construct the chain: PRD draft generated → evaluate_quality with status=needs_revision.
+    // Verify that the planner produces transitionType "prd_quality_needs_revision"
+    // and documentStatus "needs_revision". This codifies the currently-implicit
+    // PRD quality-failure path so the upcoming definition-driven interpreter has
+    // a complete equivalence oracle.
+    const draftPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "draft" }),
+      job: workflowJob({ jobType: "prd.generate_draft" }),
+      result: workflowJobResult({
+        output: { status: "succeeded", markdown: "# Draft" }
+      }),
+      now: new Date("2026-05-21T00:00:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_next`
+    });
+    expect(draftPlan.transitionType).toBe("prd_draft_generated");
+
+    const evalPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "quality_review" }),
+      job: workflowJob({ jobType: "prd.evaluate_quality" }),
+      result: workflowJobResult({
+        output: { status: "needs_revision", score: 60 }
+      }),
+      now: new Date("2026-05-21T00:01:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(evalPlan.transitionType).toBe("prd_quality_needs_revision");
+    expect(evalPlan.mutation.documentStates![0].status).toBe("needs_revision");
+  });
+
   it("plans downstream document creation after PRD routing", () => {
     const idGenerator = sequenceGenerator();
     const plan = planRepositoryWorkflowTransition({
@@ -1084,6 +1114,26 @@ describe("repository transition planner", () => {
     ]);
   });
 
+  it("a failed prd.evaluate_quality result is mapped to job_failed transition with canceled document status", () => {
+    // The repository-transition-planner.ts dispatcher's early-return handles
+    // `result.status === "failed"` by emitting transitionType "job_failed" and
+    // documentStatus "canceled". This codifies the PRD-level rejection-equivalent
+    // path. The upcoming definition-driven interpreter must preserve this exact
+    // behavior.
+    const evalPlan = planRepositoryWorkflowTransition({
+      document: document({ status: "quality_review" }),
+      job: workflowJob({ jobType: "prd.evaluate_quality" }),
+      result: workflowJobResult({
+        status: "failed",
+        output: { status: "failed", error: "evaluation rejected" }
+      }),
+      now: new Date("2026-05-21T00:02:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(evalPlan.transitionType).toBe("job_failed");
+    expect(evalPlan.mutation.documentStates![0].status).toBe("canceled");
+  });
+
   it("cascades a revised LLD into a child Spec revision before resuming Code", () => {
     const plan = planRepositoryWorkflowTransition({
       workflowTasks: [
@@ -1179,6 +1229,68 @@ describe("repository transition planner", () => {
           upstreamTaskId: "task_lld",
           upstreamDocumentId: "doc_lld"
         }
+      }
+    ]);
+  });
+
+  it("prd.route_downstream with needs_scope_confirmation emits prd_downstream_scope_confirmation_required and needs_revision", () => {
+    // Codifies the current PRD scope-clarification path. The planner emits
+    // transitionType "prd_downstream_scope_confirmation_required" with
+    // documentStatus "needs_revision" when the route_downstream job's result
+    // output indicates scope clarification is needed. The upcoming definition-
+    // driven interpreter must preserve this behavior exactly.
+    const routePlan = planRepositoryWorkflowTransition({
+      document: document({ status: "approved" }),
+      job: workflowJob({ jobType: "prd.route_downstream" }),
+      result: workflowJobResult({
+        status: "succeeded",
+        output: { status: "needs_scope_confirmation", rationale: "scale unclear" }
+      }),
+      now: new Date("2026-05-21T00:03:00.000Z"),
+      idGenerator: (prefix) => `${prefix}_unused`
+    });
+    expect(routePlan.transitionType).toBe("prd_downstream_scope_confirmation_required");
+    expect(routePlan.mutation.documentStates![0].status).toBe("needs_revision");
+  });
+
+  it("prd.route_downstream with operator-supplied route creates downstream HLD document after scope clarification", () => {
+    // Codifies the success path of prd.route_downstream when the operator has
+    // resolved scope clarification. After scope clarification the operator
+    // re-triggers route_downstream with an explicit route value (which may be
+    // uppercase from operator input). The planner must normalize the route to a
+    // known document type via the fallback path and produce
+    // prd_downstream_documents_created with at least one downstream document.
+    // The upcoming definition-driven interpreter must preserve this behavior exactly.
+    const routePlan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_prd",
+        status: "approved"
+      }),
+      job: workflowJob({
+        id: "job_route",
+        jobType: "prd.route_downstream",
+        input: { sourceDocumentId: "doc_prd" }
+      }),
+      result: workflowJobResult({
+        id: "result_route",
+        jobId: "job_route",
+        output: { status: "succeeded", route: "HLD", rationale: "single domain change" }
+      }),
+      now: new Date("2026-05-21T00:03:30.000Z"),
+      idGenerator: sequenceGenerator()
+    });
+    expect(routePlan.transitionType).toBe("prd_downstream_documents_created");
+    expect(routePlan.mutation.documents!.length).toBeGreaterThan(0);
+    expect(routePlan.mutation.documents![0]).toMatchObject({
+      workflowRunId: "run_1",
+      parentDocumentId: "doc_prd",
+      type: "hld",
+      status: "draft"
+    });
+    expect(routePlan.mutation.workflowJobs).toMatchObject([
+      {
+        jobType: "document.generate",
+        input: expect.objectContaining({ documentType: "hld", parentDocumentId: "doc_prd" })
       }
     ]);
   });
