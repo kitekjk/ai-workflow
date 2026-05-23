@@ -319,14 +319,26 @@ PRD intake
 - The dashboard Workflow List now includes a compact create form wired to the
   same product intake route, so operators can seed Jira PRD runs or app/GitHub
   document-root runs without using the old PRD-specific action.
+- Planning was reprioritized around "Runnable End-to-End First". The goal is
+  the real product workflow becoming executable across runner, skills/plugins,
+  workflow/task/job state, artifacts, and pull request status. UI work should
+  remain minimal until that execution path is stable.
 
 ## Next Work
 
 Continue in large feature slices:
 
-- Continue reducing compatibility projection code now that the API can return
-  real tasks and explicit graph edges; fixture/mock views should remain
-  fallback-only.
+- Build runner runtime completeness first: registration, scoped claiming by
+  owner email/project/capabilities/engine, heartbeat, execution logs, and
+  normalized completion/failure reporting.
+- Add runner skill/plugin dependency resolution so jobs can declare required
+  execution capabilities and fail with actionable errors when missing.
+- Wire the real workflow path across PRD/HLD/LLD/Spec/Code/pull request status
+  using workflow -> task -> job, where repeated evaluation or revision creates
+  more jobs under the same visible task.
+- Keep dashboard work to the minimum needed to operate and observe the real
+  path: workflow create/select, task/job attempts, runner/job status, and
+  generated artifacts.
 
 ## Validation Baseline
 

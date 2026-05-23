@@ -2,13 +2,40 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** PRD confirmation vertical slice를 참고 구현으로 삼아, PRD/HLD/LLD/ADR/Spec/Dev/Test/Review까지 확장 가능한 실제 AI workflow 시스템을 단계적으로 구현한다.
+**Goal:** Make the real AI workflow product runnable end to end across
+workflow/task/job state, local runner execution, AI skill/plugin resolution,
+artifacts, and pull request status.
 
-**Architecture:** 기존 PRD 전용 in-memory slice를 바로 확장하지 않고, workflow metadata, persistent workflow state, generic document pipeline, runner abstraction, artifact store, publisher, approval gate를 별도 경계로 재구성한다. Jira는 v1 승인과 업무 추적의 source of truth로 두고, Git repo는 markdown 원본, Confluence는 review/publish surface로 사용한다.
+**Architecture:** A central scheduler owns workflow and job assignment. Local
+runners connect as scoped workers, claim only matching jobs by owner email,
+project, engine, and capability requirements, execute work with Codex/Claude
+or other configured engines, and report normalized task/job state back to the
+backend. The visible workflow graph is workflow -> task -> job, where tasks
+are stable stage nodes and repeated attempts are jobs under each task.
 
-**Tech Stack:** TypeScript, Node.js HTTP API, Vitest, MySQL 또는 MySQL 호환 persistent store, Jira REST, GitHub REST, Confluence REST, Claude CLI, Codex CLI.
+**Tech Stack:** TypeScript, Node.js HTTP API, Vitest, MySQL or
+MySQL-compatible persistent store, Jira REST, GitHub REST, Confluence REST,
+Claude CLI, Codex CLI, local runner, and AI skill/plugin registry.
 
 ---
+
+## 0. Current Priority: Runnable End-to-End First
+
+The current development priority is to make the real product workflow runnable
+end to end. This is not a separate presentation-only path; the same workflow
+path should be usable for hands-on evaluation and later production hardening.
+
+The next work should optimize for actual execution over detailed UI polish:
+
+1. Runner runtime and local execution readiness
+2. Skill/plugin resolution for runner jobs
+3. Runnable workflow path across PRD/HLD/LLD/Spec/Code/pull request status
+4. Minimal control UI for operating the runnable path
+5. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
+6. Product cleanup: legacy compatibility removal, runner management screens,
+   advanced authorization, dashboard polish, and workflow editor depth
+
+Detailed design: `docs/superpowers/specs/2026-05-23-runnable-end-to-end-priority-design.md`.
 
 ## 1. 현재 상태 요약
 
@@ -1590,7 +1617,7 @@ Acceptance criteria:
 - MySQL no-fixture runtime is now the default when `WORKFLOW_RUNTIME_STORE` is unset or `mysql`; runner APIs, read-model-backed workflow/document/approval GET views, PRD intake with a configured Jira reader, the PRD feedback-revision shortcut, document feedback/wiki-feedback/revision/fan-out POST routes, approval approve/reject/refresh POST routes, and repository-backed result transitions no longer require the legacy PRD fixture. Legacy fixture-only routes fail closed with `501` unless `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or `WORKFLOW_RUNTIME_STORE=memory` is set explicitly.
 - Deployment topology, local runner scope, MySQL migration, smoke check, rollback, and production readiness gates are documented in `docs/deployment-runbook.md`.
 - `backend/src/workflow-api/main.ts` boots into MySQL no-fixture mode by default, wiring runner/scheduler APIs, read-model APIs, document artifact APIs, and repository transitions to MySQL repositories.
-- Legacy MySQL fixture mode can still mirror PRD compatibility snapshots into the read model and hydrate them on startup for old fixture-backed demos/tests. The default MySQL no-fixture path instead records PRD intake, feedback/revision requests, approval/routing/fan-out/implementation scheduling, repository transitions, runner result projections, document versions, artifacts, quality results, feedback, and current document pointers directly through shared MySQL command/mutation paths.
+- Legacy MySQL fixture mode can still mirror PRD compatibility snapshots into the read model and hydrate them on startup for old fixture-backed compatibility tests. The default MySQL no-fixture path instead records PRD intake, feedback/revision requests, approval/routing/fan-out/implementation scheduling, repository transitions, runner result projections, document versions, artifacts, quality results, feedback, and current document pointers directly through shared MySQL command/mutation paths.
 - Legacy engine transition command input assembly now lives in `backend/src/workflow-api/legacy-prd-engine-transition-projection.ts`, keeping compatibility workflow tick orchestration focused on scheduling, execution, engine stepping, and command dispatch. The API runtime now starts this tick loop automatically when the compatibility fixture is enabled; `WORKFLOW_INTERNAL_TICK_MS=0` or `disabled` keeps only the manual development/test trigger.
 - Repository-backed transition planning now exists for no-fixture runner results for PRD/document generate, evaluate, revise, downstream routing, fan-out, and implementation PR status jobs. Generate/revise transitions now persist document versions, markdown/wiki artifacts, and current document pointers; evaluate transitions persist quality gate results, so MySQL no-fixture current/history views are backed by actual runner output rather than status-only projections. The API records the resulting mutation through the transition command after a runner result is accepted when the loop is disabled, and MySQL no-fixture mode also runs an internal repository transition loop controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS`. The loop reads terminal job results without a matching `workflow.engine_transition` event for `processedResult.resultId` and processes them through the same `RepositoryTransitionProcessor`; when it is enabled, runner result requests only persist the result to avoid duplicate workflow transitions. `POST /repository-transitions/process-next` can process one pending transition on demand for local development and dashboard-driven bounded runner drains. The same worker core can now run as `npm run start:repository-transition-worker`, and multiple workers coordinate through the MySQL `workflow_transition_claim` lease table. Successful transitions close the claim as `processed`. The MySQL reader now retries after losing a claim race so parallel transition workers can claim distinct visible results in the same polling wave, and `tests/repository-transition-work-reader.test.ts` covers an 8-worker contention scenario.
 - Workflow job role/capability/default metadata now lives in `backend/src/workflow-core/job-metadata.ts` and is reused by PRD intake, generic snapshot conversion, transition commands, and repository transition planning.
@@ -1617,20 +1644,20 @@ Acceptance criteria:
 - No-fixture approval refresh now treats an already-approved read-model document as a scheduling signal, so externally synchronized PRD/HLD/LLD/Spec approvals can continue into route/fan-out/implementation work without calling the explicit approve endpoint.
 - Repository-backed implementation completion now marks the workflow run `completed` only after a merged PR completes the current Code task and every Code task in the run is already `completed`, keeping the run lifecycle aligned with multi-Spec Code task completion in no-fixture mode.
 - The API runtime now defaults to the MySQL no-fixture path when `WORKFLOW_RUNTIME_STORE` is unset or `mysql`. The old PRD confirmation fixture is an explicit legacy opt-in via `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or `WORKFLOW_RUNTIME_STORE=memory`, so the product path can continue without relying on the compatibility engine/tick loop.
-- Legacy fixture-only routes now fail closed with a `501` message that points operators to repository-backed APIs or explicit legacy opt-in. This makes remaining fixture usage discoverable and removable as soon as old tests/demos have repository-backed replacements.
+- Legacy fixture-only routes now fail closed with a `501` message that points operators to repository-backed APIs or explicit legacy opt-in. This makes remaining fixture usage discoverable and removable as soon as old tests have repository-backed replacements.
 - Product intake code now lives in `backend/src/workflow-api/workflow-intake-command.ts`; `prd-intake-command.ts` is a compatibility re-export for old tests and legacy wiring. Repository-backed `POST /workflow-runs/intake` accepts `jira`, `app`, or `github` sources and can seed root `prd`, `hld`, `lld`, `adr`, or `spec` tasks. Non-PRD roots start with `document.generate`, while Jira PRD roots still validate PRD readiness and source links before scheduling `prd.generate_draft`.
 
 ## 13. 우선순위와 리스크
 
 ### 우선순위
 
-1. Persistent workflow/document/artifact model
-2. Central scheduler claim model and runner registry
-3. Generic document pipeline
-4. Approval/revision loop
-5. Runner hardening
-6. Dashboard/API
-7. Production integration
+1. Runner runtime and local execution readiness
+2. Skill/plugin resolution for runner jobs
+3. Runnable workflow path across PRD/HLD/LLD/Spec/Code/pull request status
+4. Minimal control UI for operating the runnable path
+5. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
+6. Product cleanup: legacy compatibility removal, runner management screens,
+   advanced authorization, dashboard polish, and workflow editor depth
 
 ### 주요 리스크
 
