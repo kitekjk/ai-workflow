@@ -266,6 +266,9 @@ function evaluationOutputSchema(documentType: DocumentType): JsonSchema {
 }
 
 function routeOutputSchema(): JsonSchema {
+  // The runner engine normalizes any non-error success status to "route_decided"
+  // before returning; "routed" is what the LLM produces, "route_decided" is what
+  // callers receive at result.status. "needs_scope_confirmation" and "failed" pass through unchanged.
   return {
     type: "object",
     required: ["status", "route", "rationale", "downstreamDocuments"],
