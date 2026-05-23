@@ -1,4 +1,9 @@
 import type { AgentJob, AgentJobResult, DocumentArtifactType, PrdConfirmationStore, WorkItem } from "./domain";
+import type {
+  WorkflowEngineExternalIssueStatus,
+  WorkflowEngineTransitionType,
+  WorkflowEngineWorkItemState
+} from "../../workflow-core/domain";
 
 export async function runEngineOnce(store: PrdConfirmationStore): Promise<boolean> {
   return (await runEngineStep(store)).progressed;
@@ -16,39 +21,6 @@ export interface WorkflowEngineStepResult {
   createdJobIds: string[];
   createdWorkItemIds: string[];
 }
-
-export interface WorkflowEngineWorkItemState {
-  workItemId: string;
-  before: string;
-  after: string;
-}
-
-export interface WorkflowEngineExternalIssueStatus {
-  issueKey: string;
-  before?: string;
-  after?: string;
-}
-
-export type WorkflowEngineTransitionType =
-  | "job_failed"
-  | "prd_draft_generated"
-  | "prd_quality_passed"
-  | "prd_quality_needs_revision"
-  | "prd_feedback_revision_applied"
-  | "prd_downstream_scope_confirmation_required"
-  | "prd_downstream_documents_created"
-  | "document_fan_out_created"
-  | "document_generated"
-  | "document_quality_passed"
-  | "document_quality_needs_revision"
-  | "document_revision_applied"
-  | "implementation_pr_opened"
-  | "implementation_pr_updated"
-  | "implementation_pr_reviewed"
-  | "implementation_pr_merged"
-  | "implementation_pr_in_review"
-  | "implementation_rework_requested"
-  | "implementation_revision_requested";
 
 export async function runEngineStep(store: PrdConfirmationStore): Promise<WorkflowEngineStepResult> {
   const result = store.agentJobResults.find((candidate) => !candidate.processed);

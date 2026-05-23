@@ -210,6 +210,10 @@ type WorkflowRunResponse = {
   documents: WorkflowDocument[]
 }
 
+type WorkflowRunListResponse = {
+  runs: WorkflowRun[]
+}
+
 type WorkflowRunTreeEdge = {
   id: string
   type?: string
@@ -307,6 +311,17 @@ export type ApiActionResult = {
   message?: string
 }
 
+export type WorkflowSourceType = 'jira' | 'app' | 'github'
+export type WorkflowIntakeDocumentType = 'prd' | 'hld' | 'lld' | 'adr' | 'spec'
+
+export type WorkflowIntakeRequest = {
+  sourceType: WorkflowSourceType
+  sourceKey: string
+  documentType: WorkflowIntakeDocumentType
+  workflowDefinitionId?: string
+  title?: string
+}
+
 export type LocalRunnerDrainSummary = {
   runnerId: string
   processedJobs: number
@@ -322,7 +337,10 @@ export async function fetchApiDashboard(
   runId = defaultRunId,
   ownerEmail = defaultActorEmail,
 ): Promise<ApiDashboardData> {
-  const dashboardBundle = await fetchApiDashboardBundle(runId, ownerEmail)
+  const [dashboardBundle, workflowRuns] = await Promise.all([
+    fetchApiDashboardBundle(runId, ownerEmail),
+    fetchApiWorkflowRuns(),
+  ])
 
   if (dashboardBundle) {
     const runners = dashboardBundle.runners ?? await fetchApiRunners()
@@ -335,6 +353,7 @@ export async function fetchApiDashboard(
       runners,
       dashboardBundle.tree,
       dashboardBundle.runnerOnboarding,
+      workflowRuns,
     )
   }
 
@@ -355,19 +374,41 @@ export async function fetchApiDashboard(
   )
   const ledgerEvents = await fetchApiRunEvents(runResponse.run.id)
 
-  return mapApiDashboard(runResponse, currentViews, histories, ledgerEvents, runners, treeResponse)
+  return mapApiDashboard(runResponse, currentViews, histories, ledgerEvents, runners, treeResponse, undefined, workflowRuns)
 }
 
 export async function seedApiRun(
   actorEmail = defaultActorEmail,
   prdJiraKey = seededPrdKey,
 ): Promise<ApiActionResult> {
-  const response = await apiPost<{ status: string; runId?: string }>('/prd/intake', {
-    prdJiraKey,
+  return intakeApiWorkflow(
+    {
+      sourceType: 'jira',
+      sourceKey: prdJiraKey,
+      documentType: 'prd',
+      workflowDefinitionId: 'prd_to_spec',
+    },
+    actorEmail,
+  )
+}
+
+export async function intakeApiWorkflow(
+  input: WorkflowIntakeRequest,
+  actorEmail = defaultActorEmail,
+): Promise<ApiActionResult> {
+  const response = await apiPost<{ status: string; runId?: string }>('/workflow-runs/intake', {
+    sourceType: input.sourceType,
+    sourceKey: input.sourceKey,
+    documentType: input.documentType,
+    ...(input.workflowDefinitionId ? { workflowDefinitionId: input.workflowDefinitionId } : {}),
+    ...(input.title ? { title: input.title } : {}),
     requestedBy: actorEmail,
   })
 
-  return { runId: response.runId }
+  return {
+    runId: response.runId,
+    message: `Workflow intake accepted: ${input.sourceKey}`,
+  }
 }
 
 export async function tickApiRun(): Promise<void> {
@@ -734,6 +775,15 @@ async function fetchApiRunTree(runId: string): Promise<WorkflowRunTreeResponse |
   }
 }
 
+async function fetchApiWorkflowRuns(): Promise<WorkflowRun[]> {
+  try {
+    const response = await apiGet<WorkflowRunListResponse>('/workflow-runs?limit=50')
+    return Array.isArray(response.runs) ? response.runs : []
+  } catch {
+    return []
+  }
+}
+
 async function fetchApiDashboardBundle(
   runId: string,
   ownerEmail: string,
@@ -805,6 +855,7 @@ function mapApiDashboard(
   runners: WorkflowRunner[],
   treeResponse?: WorkflowRunTreeResponse,
   runnerOnboarding?: RunnerOnboardingSummary,
+  workflowRuns: WorkflowRun[] = [],
 ): ApiDashboardData {
   const workflowTreeEdges = treeResponse?.edges ?? []
   const apiTasks = applyWorkflowTreeParentEdges(
@@ -818,19 +869,14 @@ function mapApiDashboard(
   const documentToItemId = createDocumentToItemIdMap(items)
   const events = createEvents(runResponse, currentViews, histories, ledgerEvents, jobToTaskId, documentToItemId)
   const progress = calculateProgress(items)
-  const workflow: WorkflowRunSummary = {
-    id: `api-${runResponse.run.id}`,
-    name: runResponse.run.workflowDefinitionId,
-    projectKey: runResponse.run.sourceKey,
-    runId: runResponse.run.id,
+  const workflow = workflowSummaryFromRun(runResponse.run, {
     state: mapRunState(runResponse.run.status, items),
     progress,
-    owner: 'Workflow API',
-    description: `${runResponse.run.sourceType ?? 'source'} ${runResponse.run.sourceKey}`,
     itemIds: items.map((item) => item.id),
     nodes: createNodes(items),
     edges: createEdges(items, workflowTreeEdges),
-  }
+  })
+  const workflows = mergeWorkflowSummaries(workflow, workflowRuns)
 
   return {
     summary: {
@@ -840,7 +886,7 @@ function mapApiDashboard(
       startedAt: formatDateTime(runResponse.run.createdAt),
       elapsed: formatElapsed(runResponse.run.createdAt, runResponse.run.updatedAt),
     },
-    workflows: [workflow],
+    workflows,
     items,
     events,
     runners: runners.map(mapRunnerSummary),
@@ -859,6 +905,51 @@ function mapRunnerSummary(runner: WorkflowRunner): RunnerStatusSummary {
     capabilities: compactList(runner.capabilities),
     engines: compactList(runner.defaultEngine ? [runner.defaultEngine, ...runner.engines] : runner.engines),
     heartbeat: formatTime(runner.lastHeartbeatAt),
+  }
+}
+
+function mergeWorkflowSummaries(
+  currentWorkflow: WorkflowRunSummary,
+  runs: WorkflowRun[],
+): WorkflowRunSummary[] {
+  const summaries = runs.map((run) =>
+    run.id === currentWorkflow.runId
+      ? currentWorkflow
+      : workflowSummaryFromRun(run, {
+          state: mapRunStatusToState(run.status),
+          progress: run.status === 'completed' ? 100 : 0,
+          itemIds: [],
+          nodes: [],
+          edges: [],
+        }),
+  )
+  const hasCurrent = summaries.some((workflow) => workflow.runId === currentWorkflow.runId)
+
+  return hasCurrent ? summaries : [currentWorkflow, ...summaries]
+}
+
+function workflowSummaryFromRun(
+  run: WorkflowRun,
+  detail: {
+    state: WorkState
+    progress: number
+    itemIds: string[]
+    nodes: FlowNode[]
+    edges: FlowEdge[]
+  },
+): WorkflowRunSummary {
+  return {
+    id: `api-${run.id}`,
+    name: run.workflowDefinitionId,
+    projectKey: run.sourceKey,
+    runId: run.id,
+    state: detail.state,
+    progress: detail.progress,
+    owner: 'Workflow API',
+    description: `${run.sourceType ?? 'source'} ${run.sourceKey}`,
+    itemIds: detail.itemIds,
+    nodes: detail.nodes,
+    edges: detail.edges,
   }
 }
 
@@ -1510,6 +1601,15 @@ function mapRunState(status: string, items: WorkItem[]): WorkState {
   }
 
   return items.some((item) => item.state === 'running') ? 'running' : 'pending'
+}
+
+function mapRunStatusToState(status: string): WorkState {
+  if (status === 'completed') return 'completed'
+  if (status === 'failed') return 'failed'
+  if (status === 'blocked') return 'blocked'
+  if (status === 'running' || status === 'in_progress') return 'running'
+
+  return 'pending'
 }
 
 function mapDocumentState(status: DocumentStatus, approvalStatus?: string): WorkState {

@@ -1,11 +1,4 @@
-import type { ExternalIssue } from "./domain";
-
-export interface JiraIssueReader {
-  loadPrdWithSources(prdJiraKey: string): Promise<{
-    prd: ExternalIssue;
-    sources: ExternalIssue[];
-  }>;
-}
+export type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../../integrations/workflow-ports";
 
 export interface PrdRepository {
   commitPrd(input: {
@@ -42,27 +35,6 @@ export interface WikiPublisher {
     type: "prd_wiki_page";
     location: "wiki";
     url: string;
-  }>;
-}
-
-export interface WikiCollectedFeedback {
-  externalId: string;
-  author?: string;
-  body: string;
-  createdAt?: string;
-  url?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WikiFeedbackCollector {
-  collectPageFeedback(input: {
-    pageId?: string;
-    pageUrl?: string;
-    limit?: number;
-    includeResolved?: boolean;
-  }): Promise<{
-    pageId: string;
-    comments: WikiCollectedFeedback[];
   }>;
 }
 

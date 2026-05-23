@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyStore } from "../backend/src/prd-confirmation/domain";
-import { MysqlPrdSnapshotLoader } from "../backend/src/prd-confirmation/mysql-snapshot-loader";
-import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
-import { PrdConfirmationWorkflow } from "../backend/src/prd-confirmation/workflow";
+import { createEmptyStore } from "../backend/src/legacy/prd-confirmation/domain";
+import { MysqlPrdSnapshotLoader } from "../backend/src/legacy/prd-confirmation/mysql-snapshot-loader";
+import { runEngineOnce } from "../backend/src/legacy/prd-confirmation/workflow-engine";
+import { PrdConfirmationWorkflow } from "../backend/src/legacy/prd-confirmation/workflow";
 import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdSnapshotLoader", () => {

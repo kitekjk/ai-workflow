@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AdapterBackedPrdSkills } from "../../backend/src/prd-confirmation/adapter-backed-skills";
-import { CliPrdSkills } from "../../backend/src/prd-confirmation/cli-prd-skills";
-import { StubPrdSkills } from "../../backend/src/prd-confirmation/runner-skills";
+import { AdapterBackedPrdSkills } from "../../backend/src/legacy/prd-confirmation/adapter-backed-skills";
+import { CliPrdSkills } from "../../backend/src/legacy/prd-confirmation/cli-prd-skills";
+import { StubPrdSkills } from "../../backend/src/legacy/prd-confirmation/runner-skills";
 import {
   createWorkflowApiRuntimeFromEnv,
   parseLeaseMs,
@@ -11,16 +11,16 @@ import {
 } from "../../backend/src/runtime/create-workflow-api-runtime";
 import {
   confluenceParentPageIdsByDocumentType,
-  createRuntimeFromEnv,
   createStubJiraIssueReader,
   githubRuntimeConfig,
   jiraTransitionIds,
   jiraWritebackFieldIds
-} from "../../backend/src/runtime/create-runtime";
+} from "../../backend/src/runtime/integration-config";
+import { createLegacyPrdRuntimeFromEnv } from "../../backend/src/runtime/legacy-prd-runtime";
 
-describe("createRuntimeFromEnv", () => {
+describe("createLegacyPrdRuntimeFromEnv", () => {
   it("uses seeded stub runtime when integration mode is not real", () => {
-    const runtime = createRuntimeFromEnv({
+    const runtime = createLegacyPrdRuntimeFromEnv({
       INTEGRATION_MODE: "stub",
       STUB_QUALITY_PASSES: "false"
     });
@@ -31,7 +31,7 @@ describe("createRuntimeFromEnv", () => {
   });
 
   it("uses stub PRD skills in real integration mode when RUNNER_SKILL_MODE=stub", () => {
-    const runtime = createRuntimeFromEnv({
+    const runtime = createLegacyPrdRuntimeFromEnv({
       ...realEnv(),
       RUNNER_SKILL_MODE: "stub",
       STUB_QUALITY_PASSES: "false"
@@ -42,7 +42,7 @@ describe("createRuntimeFromEnv", () => {
   });
 
   it("uses adapter-backed PRD skills in real integration mode when RUNNER_SKILL_MODE=adapter", () => {
-    const runtime = createRuntimeFromEnv({
+    const runtime = createLegacyPrdRuntimeFromEnv({
       ...realEnv(),
       RUNNER_SKILL_MODE: "adapter"
     });
@@ -51,7 +51,7 @@ describe("createRuntimeFromEnv", () => {
   });
 
   it("uses Claude CLI PRD skills in real integration mode when requested", () => {
-    const runtime = createRuntimeFromEnv({
+    const runtime = createLegacyPrdRuntimeFromEnv({
       ...realEnv(),
       RUNNER_SKILL_MODE: "cli",
       RUNNER_ENGINE: "claude",
@@ -63,7 +63,7 @@ describe("createRuntimeFromEnv", () => {
   });
 
   it("uses Codex CLI PRD skills in real integration mode when requested", () => {
-    const runtime = createRuntimeFromEnv({
+    const runtime = createLegacyPrdRuntimeFromEnv({
       ...realEnv(),
       RUNNER_SKILL_MODE: "cli",
       RUNNER_ENGINE: "codex",
@@ -75,7 +75,7 @@ describe("createRuntimeFromEnv", () => {
 
   it("throws a clear env error when the selected CLI path is missing", () => {
     expect(() =>
-      createRuntimeFromEnv({
+      createLegacyPrdRuntimeFromEnv({
         ...realEnv(),
         RUNNER_SKILL_MODE: "cli",
         RUNNER_ENGINE: "claude"
@@ -219,13 +219,42 @@ describe("createRuntimeFromEnv", () => {
     }
   });
 
-  it("keeps API runtime persistence in memory unless MySQL is explicitly requested", async () => {
+  it("defaults the API runtime to MySQL without the compatibility fixture", async () => {
     const runtime = createWorkflowApiRuntimeFromEnv({
       INTEGRATION_MODE: "stub"
     });
 
     try {
+      expect(runtime.runtimeStore).toBe("mysql");
+      expect(runtime.legacyPrd).toBeUndefined();
+      expect(runtime.jiraIssueReader).toBeDefined();
+      expect(runtime.scheduler).toBeDefined();
+      expect(runtime.documentRepository).toBeDefined();
+      expect(runtime.restorePrdSnapshot).toBeUndefined();
+      expect(runtime.readModel).toBeDefined();
+      expect(runtime.workflowIntakeCommand).toBeDefined();
+      expect(runtime.prdIntakeCommand).toBeDefined();
+      expect(runtime.feedbackRevisionCommand).toBeDefined();
+      expect(runtime.workflowResultCommand).toBeDefined();
+      expect(runtime.workflowTransitionCommand).toBeDefined();
+      expect(runtime.repositoryTransitionResultReader).toBeDefined();
+      expect(runtime.repositoryTransitionIntervalMs).toBe(1_000);
+      expect(runtime.internalTickIntervalMs).toBeUndefined();
+      expect(runtime.schedulerRecoveryIntervalMs).toBe(1_000);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("keeps the legacy memory runtime explicit", async () => {
+    const runtime = createWorkflowApiRuntimeFromEnv({
+      INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "memory"
+    });
+
+    try {
       expect(runtime.runtimeStore).toBe("memory");
+      expect(runtime.legacyPrd?.fixture).toBeDefined();
       expect(runtime.scheduler).toBeUndefined();
       expect(runtime.documentRepository).toBeUndefined();
       expect(runtime.internalTickIntervalMs).toBe(1_000);
@@ -235,21 +264,23 @@ describe("createRuntimeFromEnv", () => {
     }
   });
 
-  it("wires MySQL scheduler and document repositories when requested", async () => {
+  it("wires MySQL scheduler and document repositories with the legacy fixture when requested", async () => {
     const runtime = createWorkflowApiRuntimeFromEnv({
       INTEGRATION_MODE: "stub",
       WORKFLOW_RUNTIME_STORE: "mysql",
+      WORKFLOW_COMPATIBILITY_FIXTURE: "enabled",
       WORKFLOW_JOB_LEASE_MS: "45000"
     });
 
     try {
       expect(runtime.runtimeStore).toBe("mysql");
+      expect(runtime.legacyPrd?.fixture).toBeDefined();
       expect(runtime.scheduler).toBeDefined();
       expect(runtime.documentRepository).toBeDefined();
-      expect(runtime.snapshotMirror).toBeDefined();
-      expect(runtime.snapshotLoader).toBeDefined();
+      expect(runtime.legacyPrd?.snapshotMirror).toBeDefined();
       expect(runtime.restorePrdSnapshot).toBeDefined();
       expect(runtime.readModel).toBeDefined();
+      expect(runtime.workflowIntakeCommand).toBeDefined();
       expect(runtime.prdIntakeCommand).toBeDefined();
       expect(runtime.feedbackRevisionCommand).toBeDefined();
       expect(runtime.workflowResultCommand).toBeDefined();
@@ -264,10 +295,12 @@ describe("createRuntimeFromEnv", () => {
   it("allows the compatibility internal tick interval to be disabled or tuned", async () => {
     const disabledRuntime = createWorkflowApiRuntimeFromEnv({
       INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "memory",
       WORKFLOW_INTERNAL_TICK_MS: "0"
     });
     const tunedRuntime = createWorkflowApiRuntimeFromEnv({
       INTEGRATION_MODE: "stub",
+      WORKFLOW_RUNTIME_STORE: "memory",
       WORKFLOW_INTERNAL_TICK_MS: "250"
     });
 
@@ -289,15 +322,14 @@ describe("createRuntimeFromEnv", () => {
 
     try {
       expect(runtime.runtimeStore).toBe("mysql");
-      expect(runtime.fixture).toBeUndefined();
+      expect(runtime.legacyPrd).toBeUndefined();
       expect(runtime.jiraIssueReader).toBeDefined();
       expect(runtime.wikiFeedbackCollector).toBeUndefined();
-      expect(runtime.snapshotMirror).toBeUndefined();
-      expect(runtime.snapshotLoader).toBeUndefined();
       expect(runtime.restorePrdSnapshot).toBeUndefined();
       expect(runtime.scheduler).toBeDefined();
       expect(runtime.documentRepository).toBeDefined();
       expect(runtime.readModel).toBeDefined();
+      expect(runtime.workflowIntakeCommand).toBeDefined();
       expect(runtime.prdIntakeCommand).toBeDefined();
       expect(runtime.feedbackRevisionCommand).toBeDefined();
       expect(runtime.workflowResultCommand).toBeDefined();
@@ -386,8 +418,9 @@ describe("createRuntimeFromEnv", () => {
 
     try {
       expect(runtime.runtimeStore).toBe("mysql");
-      expect(runtime.fixture).toBeUndefined();
+      expect(runtime.legacyPrd).toBeUndefined();
       expect(runtime.jiraIssueReader).toBeDefined();
+      expect(runtime.workflowIntakeCommand).toBeDefined();
       expect(runtime.prdIntakeCommand).toBeDefined();
       expect(runtime.internalTickIntervalMs).toBeUndefined();
     } finally {
@@ -396,7 +429,7 @@ describe("createRuntimeFromEnv", () => {
   });
 
   it("parses API runtime store and runner lease configuration", () => {
-    expect(parseWorkflowRuntimeStore(undefined)).toBe("memory");
+    expect(parseWorkflowRuntimeStore(undefined)).toBe("mysql");
     expect(parseWorkflowRuntimeStore("memory")).toBe("memory");
     expect(parseWorkflowRuntimeStore("mysql")).toBe("mysql");
     expect(() => parseWorkflowRuntimeStore("sqlite")).toThrow(/WORKFLOW_RUNTIME_STORE/);

@@ -1,12 +1,19 @@
-import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
+import type {
+  Artifact,
+  Document,
+  DocumentQualityResult,
+  DocumentVersion,
+  FeedbackItem,
+  FeedbackSource
+} from "../document-core/domain";
 import { rowToArtifact, rowToDocument, rowToDocumentVersion } from "../document-core/mysql-repository";
 import { fromMysqlDateTime } from "../mysql/datetime";
-import { prdConfirmationWorkflowPolicy, type FeedbackItem, type FeedbackSource } from "../prd-confirmation/domain";
-import type { WorkflowJob, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
+import { prdConfirmationWorkflowPolicy, type WorkflowJob, type WorkflowRun, type WorkflowTask } from "../workflow-core/domain";
 import { rowToWorkflowJob, rowToWorkflowTask, type MysqlDatabase } from "../workflow-core/mysql-repository";
 
 export interface WorkflowApiReadModel {
   summarizeState(sourceKey: string): Promise<Record<string, unknown> | undefined>;
+  listWorkflowRuns?(input?: { limit?: number }): Promise<WorkflowRun[]>;
   summarizeWorkflowRun(runId: string): Promise<Record<string, unknown> | undefined>;
   summarizeWorkflowRunTree(runId: string): Promise<Record<string, unknown> | undefined>;
   summarizeDocumentCurrent(documentId: string): Promise<DocumentCurrentReadModel | undefined>;
@@ -27,6 +34,19 @@ type MysqlRow = Record<string, unknown>;
 
 export class MysqlWorkflowApiReadModel implements WorkflowApiReadModel {
   constructor(private readonly database: MysqlDatabase) {}
+
+  async listWorkflowRuns(input: { limit?: number } = {}): Promise<WorkflowRun[]> {
+    const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
+    const [rows] = await this.database.execute<MysqlRow[]>(
+      `SELECT *
+       FROM workflow_run
+       ORDER BY updated_at DESC, created_at DESC, id DESC
+       LIMIT ?`,
+      [limit]
+    );
+
+    return rows.map(rowToWorkflowRun);
+  }
 
   async summarizeState(sourceKey: string): Promise<Record<string, unknown> | undefined> {
     const run = await this.getWorkflowRunBySourceKey(sourceKey);

@@ -1,11 +1,12 @@
 import type { Document } from "../document-core/domain";
-import type { AgentJob, JobType } from "../prd-confirmation/domain";
-import type { WorkflowTask } from "../workflow-core/domain";
 import type {
   WorkflowEngineExternalIssueStatus,
   WorkflowEngineTransitionType,
-  WorkflowEngineWorkItemState
-} from "../prd-confirmation/workflow-engine";
+  WorkflowEngineWorkItemState,
+  WorkflowCommandJob,
+  WorkflowCommandJobType,
+  WorkflowTask
+} from "../workflow-core/domain";
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
 import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 import {
@@ -24,7 +25,7 @@ export interface RecordDocumentStateCommandInput {
 
 export interface RecordWorkflowJobCommandInput {
   runId: string;
-  job: AgentJob;
+  job: WorkflowCommandJob;
   taskId?: string;
   workflowTask?: WorkflowTask;
   now?: Date;
@@ -51,7 +52,7 @@ export interface RecordRepositoryTransitionCommandInput {
 
 export interface WorkflowEngineProcessedResultSummary {
   jobId: string;
-  jobType: JobType;
+  jobType: WorkflowCommandJobType;
   primaryJiraKey: string;
   status?: string;
 }
@@ -290,7 +291,7 @@ function toIso(date: Date | undefined): string {
   return (date ?? new Date()).toISOString();
 }
 
-function assignedUserIdForWorkflowJob(job: AgentJob): string | undefined {
+function assignedUserIdForWorkflowJob(job: WorkflowCommandJob): string | undefined {
   const requestedBy = job.input.requestedBy;
 
   return typeof requestedBy === "string" && requestedBy.length > 0 ? requestedBy : undefined;

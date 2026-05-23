@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
-import { createGenericPrdSnapshot } from "../backend/src/prd-confirmation/generic-adapter";
-import { MysqlPrdSnapshotMirror } from "../backend/src/prd-confirmation/mysql-snapshot-mirror";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
+import { createGenericPrdSnapshot } from "../backend/src/legacy/prd-confirmation/generic-adapter";
+import { MysqlPrdSnapshotMirror } from "../backend/src/legacy/prd-confirmation/mysql-snapshot-mirror";
 import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdSnapshotMirror", () => {

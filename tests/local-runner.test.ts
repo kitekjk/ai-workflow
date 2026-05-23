@@ -12,12 +12,20 @@ import {
 import { runLocalRunnerDrain, runLocalRunnerOnce, type LocalRunnerEngine } from "../backend/src/local-runner/local-runner";
 import { RunnerResultValidationError } from "../backend/src/local-runner/result-schema";
 import { WorkflowApiRunnerClient } from "../backend/src/local-runner/runner-client";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
 import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
 import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
+import { createLegacyPrdCompatibility } from "../backend/src/workflow-api/legacy-prd-compatibility";
+import { createLegacyPrdServerActionFactory } from "../backend/src/workflow-api/legacy-prd-server-actions";
 import { createWorkflowApiServer, type WorkflowApiServer } from "../backend/src/workflow-api/server";
 
 const now = new Date("2026-05-20T00:00:00.000Z");
+
+type TestLegacyPrdFixture = ReturnType<typeof createPrdConfirmationFixture>;
+
+function legacyPrdActionsFactory(fixture: TestLegacyPrdFixture) {
+  return createLegacyPrdServerActionFactory(createLegacyPrdCompatibility({ fixture }));
+}
 
 describe("local runner loop", () => {
   let workflowRepository: InMemoryWorkflowRepository;
@@ -32,7 +40,7 @@ describe("local runner loop", () => {
     const scheduler = new WorkflowScheduler(workflowRepository, { leaseMs: 30_000 });
 
     server = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       scheduler,
       documentRepository
     }).listen(0);

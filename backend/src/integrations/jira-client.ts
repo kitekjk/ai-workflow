@@ -1,4 +1,4 @@
-import type { ExternalIssue } from "../prd-confirmation/domain";
+import type { ExternalIssue } from "./external-issue";
 
 export interface JiraRestClientOptions {
   baseUrl: string;

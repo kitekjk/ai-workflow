@@ -18,30 +18,24 @@ The repository already contains:
 
 Important readiness note:
 
-- `backend/src/workflow-api/main.ts` supports `WORKFLOW_RUNTIME_STORE=memory` and
-  `WORKFLOW_RUNTIME_STORE=mysql`.
-- `memory` is the default fixture-backed local mode.
-- `mysql` wires the runner/scheduler APIs and document artifact APIs to
-  `MysqlWorkflowRepository` and `MysqlDocumentRepository`.
-- `WORKFLOW_COMPATIBILITY_FIXTURE=disabled` is supported only with
-  `WORKFLOW_RUNTIME_STORE=mysql`. In that mode, runner APIs plus generic
-  workflow/document/approval GET views run without the legacy PRD fixture.
-  Repository-backed PRD intake, document feedback, wiki-feedback import,
-  explicit revision, and approval approve/reject/refresh POST routes also run
-  without the fixture when the Jira reader, read model, and command writers are
-  configured. Compatibility-engine endpoints return `501` until the
-  repository-backed transition engine replaces them.
-- The PRD/document workflow intake slice still uses the compatibility fixture
-  for transitions. While that fixture is enabled, the API process advances it
-  with an internal workflow tick loop and state-changing actions mirror the
-  generic workflow snapshot into MySQL read-model tables.
-- `WORKFLOW_INTERNAL_TICK_MS` controls the compatibility tick loop. It defaults
-  to `1000` ms when the fixture is enabled; set it to `0` or `disabled` to use
-  only the manual development/test `POST /tick` trigger.
-- `WORKFLOW_REPOSITORY_TRANSITION_MS` controls the repository-backed runner
-  result transition loop when the compatibility fixture is disabled. It
-  defaults to `1000` ms in MySQL no-fixture mode; set it to `0` or `disabled`
-  when a separate worker process owns result transitions.
+- `backend/src/workflow-api/main.ts` now defaults to the MySQL no-fixture
+  runtime when `WORKFLOW_RUNTIME_STORE` is unset or set to `mysql`.
+- The default runtime wires runner/scheduler APIs, document artifact APIs,
+  read-model views, PRD intake, feedback/revision commands, approval actions,
+  downstream scheduling, and runner result transitions through MySQL
+  repositories and command writers.
+- `WORKFLOW_RUNTIME_STORE=memory` and
+  `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` are explicit legacy PRD fixture
+  modes for old demos/tests only. Fixture-only routes fail closed with `501`
+  when the fixture is not enabled.
+- `WORKFLOW_INTERNAL_TICK_MS` controls only the legacy compatibility tick loop.
+  It defaults to `1000` ms when the fixture is explicitly enabled; set it to
+  `0` or `disabled` to use only the manual development/test `POST /tick`
+  trigger.
+- `WORKFLOW_REPOSITORY_TRANSITION_MS` controls the default repository-backed
+  runner result transition loop. It defaults to `1000` ms in MySQL no-fixture
+  mode; set it to `0` or `disabled` when a separate worker process owns result
+  transitions.
 - `WORKFLOW_REPOSITORY_TRANSITION_WORKER_ID` and
   `WORKFLOW_REPOSITORY_TRANSITION_LEASE_MS` identify repository transition
   workers and control the MySQL claim lease for pending runner results.
@@ -52,26 +46,25 @@ Important readiness note:
   recovers expired claimed/running job leases. It defaults to `1000` ms when a
   MySQL scheduler is configured; set it to `0` or `disabled` only if another
   scheduler process owns lease recovery.
-- On API startup in MySQL mode, the compatibility fixture is hydrated from the
-  MySQL read-model snapshot before HTTP routes are served.
-- In MySQL mode, the PRD state view plus generic workflow/document/approval
+- In MySQL no-fixture mode, the PRD state view plus generic workflow/document/approval
   gate GET views read workflow runs, jobs, documents, versions, quality
   results, artifacts, feedback, and approval gate status directly from the
   MySQL read model. Missing PRD state returns `404` instead of falling back to
   the compatibility fixture.
+- If the legacy fixture is explicitly enabled with MySQL, startup hydrates the
+  fixture from the MySQL read-model snapshot before HTTP routes are served.
 - PRD intake is guarded by Jira status and only starts from `prd_requested`
   or the Jira display status `PRD 요청`; unreadable PRD/source tickets return
   `404`, missing linked source requests return `400`, and other PRD statuses
   return `409`.
 - PRD intake, feedback/revision requests, approval/routing/fan-out job
-  scheduling, compatibility engine transition projection, and runner result
-  projection now produce `WorkflowMutation` objects that are applied by
+  scheduling, repository transition planning, and runner result projection now
+  produce `WorkflowMutation` objects that are applied by
   `MysqlWorkflowMutationApplier` in one transaction. This shared path owns the
   MySQL upsert/event insert order for workflow runs, documents, jobs, job
   results, document versions, artifacts, quality results, feedback, and current
-  document pointers while the remaining transition logic still runs through the
-  compatibility fixture.
-- With the compatibility fixture disabled, document-scoped feedback/revision
+  document pointers.
+- In default no-fixture mode, document-scoped feedback/revision
   actions and the PRD feedback-revision shortcut build feedback items and
   revision jobs directly from the MySQL read model and record them through the
   shared command writer. Approval approve/reject actions update document state
@@ -95,7 +88,7 @@ Important readiness note:
   requests through the Jira reader, validates the same requested-status/source
   requirements as the fixture workflow, and records the initial run/document/job
   through the shared command writer.
-- With the compatibility fixture disabled, runner result submission and the
+- In default no-fixture mode, runner result submission and the
   internal repository transition loop now plan repository-backed transitions
   for PRD/document generate, evaluate, revise, downstream routing, fan-out, and
   implementation PR status jobs, then record the resulting `WorkflowMutation`
@@ -364,6 +357,7 @@ Required environment variables:
 
 ```bash
 WORKFLOW_RUNTIME_STORE=mysql
+WORKFLOW_COMPATIBILITY_FIXTURE=disabled
 WORKFLOW_JOB_LEASE_MS=30000
 WORKFLOW_RUNNER_OFFLINE_AFTER_MS=60000
 WORKFLOW_SCHEDULER_RECOVERY_MS=1000
@@ -419,9 +413,10 @@ show tables like 'feedback_item';
 show tables like 'workflow_transition_claim';
 ```
 
-7. Start or restart the Workflow API after migrations are complete. In MySQL
-   mode, startup logs should include the restored work-item/job counts when
-   snapshot rows are present.
+7. Start or restart the Workflow API after migrations are complete. In default
+   MySQL no-fixture mode, startup should initialize the read model,
+   scheduler, and repository transition loop without hydrating the legacy PRD
+   fixture.
 8. Start local runners only after the API has passed smoke checks.
 
 To run repository-backed result transitions outside the API process, start the
@@ -481,19 +476,31 @@ Recommended rollout order:
 
 ## Smoke Checks
 
-Current fixture-backed API checks:
+Default MySQL no-fixture API checks:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/prd/intake \
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
   -H 'content-type: application/json' \
-  -d '{"prdJiraKey":"PRD-100"}'
+  -d '{"sourceType":"jira","sourceKey":"PRD-100","documentType":"prd","workflowDefinitionId":"prd_to_spec"}'
 
-curl http://127.0.0.1:3000/state/PRD-100
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
+  -H 'content-type: application/json' \
+  -d '{"sourceType":"app","sourceKey":"HLD-APP-1","documentType":"hld","title":"Manual HLD seed","requestedBy":"developer@example.com"}'
+
+curl http://127.0.0.1:3000/workflow-sources/PRD-100/state
+
+curl http://127.0.0.1:3000/workflow-runs?limit=25
 ```
 
-The fixture-backed API normally advances through its internal tick loop. Use
-`POST /tick` only for development/test harnesses or when
-`WORKFLOW_INTERNAL_TICK_MS=0`.
+The default API advances completed runner results through repository
+transitions. `POST /tick` is only useful after explicitly enabling the legacy
+PRD fixture with `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or
+`WORKFLOW_RUNTIME_STORE=memory`.
+The legacy `/prd/intake` and `/state/:sourceKey` endpoints remain available as
+compatibility aliases, but new clients should use the workflow/source routes.
+Repository-backed intake accepts `jira`, `app`, or `github` sources and can
+seed root `prd`, `hld`, `lld`, `adr`, or `spec` documents. Non-PRD roots start
+with a generic `document.generate` job.
 
 MySQL no-fixture smoke can use stub Jira data for local checks:
 
@@ -502,16 +509,15 @@ npm run smoke:mysql:no-fixture
 ```
 
 The smoke command applies migrations unless `SMOKE_SKIP_MIGRATIONS=true`, then
-starts an in-process API with `WORKFLOW_RUNTIME_STORE=mysql`,
-`WORKFLOW_COMPATIBILITY_FIXTURE=disabled`, and repository transitions processed
-inline. It intakes a unique `PRD-SMOKE-*` stub PRD, registers a scoped local
-runner, drains PRD generation/evaluation, approves the PRD, drains downstream
-routing plus HLD generation/evaluation, approves the HLD, drains LLD fan-out
-and generation/evaluation, approves the LLDs, drains Spec fan-out and
-generation/evaluation, approves the Specs, then drains implementation PR
-creation and PR status collection. The final smoke verifies the PRD, HLD, LLD,
-and Spec documents are approved and that pull request artifacts were recorded
-for the generated Specs.
+starts an in-process default no-fixture API and processes repository
+transitions inline. It intakes a unique `PRD-SMOKE-*` stub PRD, registers a
+scoped local runner, drains PRD generation/evaluation, approves the PRD,
+drains downstream routing plus HLD generation/evaluation, approves the HLD,
+drains LLD fan-out and generation/evaluation, approves the LLDs, drains Spec
+fan-out and generation/evaluation, approves the Specs, then drains
+implementation PR creation and PR status collection. The final smoke verifies
+the PRD, HLD, LLD, and Spec documents are approved and that pull request
+artifacts were recorded for the generated Specs.
 
 Useful overrides:
 
@@ -547,9 +553,9 @@ final `workflow_run` / Code task completion state without contacting GitHub.
 Manual equivalent when a no-fixture API is already running:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/prd/intake \
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
   -H 'content-type: application/json' \
-  -d '{"prdJiraKey":"PRD-100","requestedBy":"yourname@example.com"}'
+  -d '{"sourceType":"jira","sourceKey":"PRD-100","documentType":"prd","workflowDefinitionId":"prd_to_spec","requestedBy":"yourname@example.com"}'
 ```
 
 With `LOCAL_RUNNER_OWNER_EMAIL=yourname@example.com`, a separate
@@ -665,9 +671,8 @@ strings before storing runner-visible output.
 
 Before treating the system as production-backed, complete these gates:
 
-- Replace the remaining compatibility fixture transition layer with repository
-  backed workflow commands once the generic engine owns PRD/document state
-  directly.
+- Delete the legacy PRD compatibility fixture package after the remaining
+  fixture-only tests/demos have repository-backed equivalents.
 - Keep any new workflow write paths on the shared workflow mutation applier so
   use cases do not reintroduce duplicate MySQL upsert SQL.
 - Decide whether scheduler claim/recovery remains in-process with the API or

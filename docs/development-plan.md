@@ -12,9 +12,28 @@
 
 ## 1. 현재 상태 요약
 
+Current product runtime defaults to the repository-backed MySQL no-fixture
+path. The old PRD confirmation vertical slice now lives under
+`backend/src/legacy/prd-confirmation/*` as compatibility/reference code only.
+Shared contracts that the product path still needs, such as Jira issue shape,
+feedback items, workflow policy, and transition event types, live outside the
+legacy folder.
+Runtime wiring follows the same boundary: product integration settings live in
+`backend/src/runtime/integration-config.ts`, the old fixture factory lives in
+`backend/src/runtime/legacy-prd-runtime.ts`, and the historical
+`backend/src/runtime/create-runtime.ts` compatibility re-export has been
+removed.
+Product API clients should use `/workflow-runs/intake` for source intake and
+`/workflow-sources/:sourceKey/state` for source-state lookup, and
+`/workflow-sources/:sourceKey/feedback-revision` for source-scoped feedback
+revision shortcuts. `GET /workflow-runs?limit=N` is the product workflow list
+surface for dashboard list/detail navigation. The older `/prd/intake`,
+`/prd/feedback-revision`, `/state/:prdJiraKey`, and `/tick` routes remain
+compatibility surfaces while PRD-specific API names are phased out.
+
 현재 브랜치의 구현은 PRD confirmation vertical slice로 동작한다.
 
-- `backend/src/prd-confirmation/*`: PRD intake, job 생성, scheduler, runner worker, engine transition, in-memory store를 포함한다.
+- `backend/src/legacy/prd-confirmation/*`: PRD intake, job 생성, scheduler, runner worker, engine transition, in-memory store를 포함한다.
 - `backend/src/workflow-api/server.ts`: `/prd/intake`, `/prd/feedback-revision`, `/state/:prdJiraKey`와 수동 개발/테스트용 `/tick` API를 제공한다.
 - `backend/src/runner-engines/*`: Claude CLI/Codex CLI를 실행하고 JSON 결과를 파싱하는 runner engine 초안을 제공한다.
 - `scripts/prd-cli-engine.mjs`: PRD 생성/평가/수정 prompt bridge 역할을 한다.
@@ -1568,11 +1587,11 @@ Acceptance criteria:
 - 운영자는 `GET /workflow-runs/{runId}/events`에서 run 단위 event stream을 조회하고 `type`, `limit`, `cursor`로 필터링/페이지네이션할 수 있다.
 - PRD intake는 Jira 상태가 `prd_requested` 또는 표시 상태 `PRD 요청`일 때만 허용하고, 그 외 상태는 API에서 `409`로 응답한다.
 - MySQL write side는 `WorkflowMutation`을 만들고 `MysqlWorkflowMutationApplier`가 transaction/upsert/event insert를 담당하는 공용 경로로 수렴했다. PRD intake, feedback/revision, approval/routing/fan-out job scheduling, compatibility engine transition projection, runner result projection command는 SQL/transaction을 직접 소유하지 않고 mutation만 생성한다. 새 write path는 이 applier를 우선 사용해야 한다.
-- MySQL runtime can now be started with `WORKFLOW_COMPATIBILITY_FIXTURE=disabled`; runner APIs, read-model-backed workflow/document/approval GET views, PRD intake with a configured Jira reader, the PRD feedback-revision shortcut, document feedback/wiki-feedback/revision/fan-out POST routes, and approval approve/reject/refresh POST routes no longer require the legacy PRD fixture when the read model and command writers are configured. Endpoints that still need the compatibility engine fail closed with `501` until the repository-backed transition engine lands.
+- MySQL no-fixture runtime is now the default when `WORKFLOW_RUNTIME_STORE` is unset or `mysql`; runner APIs, read-model-backed workflow/document/approval GET views, PRD intake with a configured Jira reader, the PRD feedback-revision shortcut, document feedback/wiki-feedback/revision/fan-out POST routes, approval approve/reject/refresh POST routes, and repository-backed result transitions no longer require the legacy PRD fixture. Legacy fixture-only routes fail closed with `501` unless `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or `WORKFLOW_RUNTIME_STORE=memory` is set explicitly.
 - Deployment topology, local runner scope, MySQL migration, smoke check, rollback, and production readiness gates are documented in `docs/deployment-runbook.md`.
-- `backend/src/workflow-api/main.ts` can now boot with `WORKFLOW_RUNTIME_STORE=mysql`, wiring runner/scheduler APIs and document artifact APIs to MySQL repositories while the PRD workflow compatibility fixture remains in place.
-- MySQL mode now mirrors PRD compatibility fixture snapshots into `workflow_run`, `workflow_job`, `workflow_job_result`, `document`, `document_version`, `artifact`, `quality_gate_result`, and `feedback_item` read-model tables after state-changing API actions, API startup hydrates the PRD compatibility fixture back from those read-model rows before routes are served, generic workflow/document/approval gate GET views read directly from the MySQL read model when configured without state-view fallback to the compatibility fixture, PRD intake is recorded through a MySQL write command for the initial run/document/draft job plus `workflow.prd_intake` event, feedback/revision requests are recorded through a MySQL write command for `feedback_item` plus revision `workflow_job` rows and `workflow.feedback_recorded`/`workflow.revision_job_recorded` events, approval/routing/fan-out/implementation scheduling is recorded through MySQL write commands and `workflow.document_state`/`workflow.job_recorded` events for affected `document` and `workflow_job` rows, engine-created document state changes and follow-up jobs are recorded through one command transaction during the compatibility workflow tick with a `workflow.engine_transition` event containing explicit engine transition type, processed result summary, work item and external issue before/after state metadata, affected work item/document ids, and created work item ids for later repository-backed engine migration, and runner result processing records a MySQL run projection plus a `workflow.result_projection` event for `workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`, and current document pointers.
-- Engine transition command input assembly now lives in `backend/src/workflow-api/engine-transition-projection.ts`, keeping compatibility workflow tick orchestration focused on scheduling, execution, engine stepping, and command dispatch. The API runtime now starts this tick loop automatically when the compatibility fixture is enabled; `WORKFLOW_INTERNAL_TICK_MS=0` or `disabled` keeps only the manual development/test trigger.
+- `backend/src/workflow-api/main.ts` boots into MySQL no-fixture mode by default, wiring runner/scheduler APIs, read-model APIs, document artifact APIs, and repository transitions to MySQL repositories.
+- Legacy MySQL fixture mode can still mirror PRD compatibility snapshots into the read model and hydrate them on startup for old fixture-backed demos/tests. The default MySQL no-fixture path instead records PRD intake, feedback/revision requests, approval/routing/fan-out/implementation scheduling, repository transitions, runner result projections, document versions, artifacts, quality results, feedback, and current document pointers directly through shared MySQL command/mutation paths.
+- Legacy engine transition command input assembly now lives in `backend/src/workflow-api/legacy-prd-engine-transition-projection.ts`, keeping compatibility workflow tick orchestration focused on scheduling, execution, engine stepping, and command dispatch. The API runtime now starts this tick loop automatically when the compatibility fixture is enabled; `WORKFLOW_INTERNAL_TICK_MS=0` or `disabled` keeps only the manual development/test trigger.
 - Repository-backed transition planning now exists for no-fixture runner results for PRD/document generate, evaluate, revise, downstream routing, fan-out, and implementation PR status jobs. Generate/revise transitions now persist document versions, markdown/wiki artifacts, and current document pointers; evaluate transitions persist quality gate results, so MySQL no-fixture current/history views are backed by actual runner output rather than status-only projections. The API records the resulting mutation through the transition command after a runner result is accepted when the loop is disabled, and MySQL no-fixture mode also runs an internal repository transition loop controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS`. The loop reads terminal job results without a matching `workflow.engine_transition` event for `processedResult.resultId` and processes them through the same `RepositoryTransitionProcessor`; when it is enabled, runner result requests only persist the result to avoid duplicate workflow transitions. `POST /repository-transitions/process-next` can process one pending transition on demand for local development and dashboard-driven bounded runner drains. The same worker core can now run as `npm run start:repository-transition-worker`, and multiple workers coordinate through the MySQL `workflow_transition_claim` lease table. Successful transitions close the claim as `processed`. The MySQL reader now retries after losing a claim race so parallel transition workers can claim distinct visible results in the same polling wave, and `tests/repository-transition-work-reader.test.ts` covers an 8-worker contention scenario.
 - Workflow job role/capability/default metadata now lives in `backend/src/workflow-core/job-metadata.ts` and is reused by PRD intake, generic snapshot conversion, transition commands, and repository transition planning.
 - Human identity remains email-first for the MVP: Workflow App actions use `requestedBy`/`actor`/`author`, and local runner scope uses `LOCAL_RUNNER_OWNER_EMAIL` with `LOCAL_RUNNER_OWNER_USER_ID` retained as a compatibility alias. The runner registration API accepts `ownerEmail` and stores it in the existing `ownerUserId` scheduler field so claim matching stays backward compatible. Local runners without an owner email are not eligible to claim jobs, and the local runner CLI fails fast when local mode has no owner email. Approval-created downstream jobs now inherit the requester email so the same local runner can continue through route/fan-out/document generation work without scope leakage. The dashboard now exposes an Actor email field and passes that email through intake, feedback, revision, and approval API actions; it also has a development `Run Local Runner` control that registers a scoped browser-side stub runner, drains eligible jobs, and triggers repository transition processing between claims. PRD intake jobs are assigned to the requester email, PRD intake events can store `requestedBy` in metadata, approval document-state events can store `actor`/`reason`, and the dashboard Status Events view now mixes in persisted workflow run events with actor/requester labels when available.
@@ -1597,6 +1616,9 @@ Acceptance criteria:
 - Read-model-backed no-fixture scheduling now preserves fixture idempotency for PRD routing, HLD/LLD fan-out, Spec implementation start, and ADR-only follow-up fan-out, returning `already_scheduled` instead of writing duplicate jobs when matching work already exists.
 - No-fixture approval refresh now treats an already-approved read-model document as a scheduling signal, so externally synchronized PRD/HLD/LLD/Spec approvals can continue into route/fan-out/implementation work without calling the explicit approve endpoint.
 - Repository-backed implementation completion now marks the workflow run `completed` only after a merged PR completes the current Code task and every Code task in the run is already `completed`, keeping the run lifecycle aligned with multi-Spec Code task completion in no-fixture mode.
+- The API runtime now defaults to the MySQL no-fixture path when `WORKFLOW_RUNTIME_STORE` is unset or `mysql`. The old PRD confirmation fixture is an explicit legacy opt-in via `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or `WORKFLOW_RUNTIME_STORE=memory`, so the product path can continue without relying on the compatibility engine/tick loop.
+- Legacy fixture-only routes now fail closed with a `501` message that points operators to repository-backed APIs or explicit legacy opt-in. This makes remaining fixture usage discoverable and removable as soon as old tests/demos have repository-backed replacements.
+- Product intake code now lives in `backend/src/workflow-api/workflow-intake-command.ts`; `prd-intake-command.ts` is a compatibility re-export for old tests and legacy wiring. Repository-backed `POST /workflow-runs/intake` accepts `jira`, `app`, or `github` sources and can seed root `prd`, `hld`, `lld`, `adr`, or `spec` tasks. Non-PRD roots start with `document.generate`, while Jira PRD roots still validate PRD readiness and source links before scheduling `prd.generate_draft`.
 
 ## 13. 우선순위와 리스크
 
@@ -1631,14 +1653,14 @@ Acceptance criteria:
 - `backend/src/integrations/confluence-wiki.ts`: generic `publishMarkdownPage()`를 중심으로 재사용한다.
 - `backend/src/integrations/jira-client.ts`: Jira issue/source loading adapter 기반으로 재사용한다.
 - `backend/src/integrations/local-git-prd-repository.ts`: Git markdown repository adapter의 참고 구현으로 재사용한다.
-- `backend/src/prd-confirmation/runner-worker.ts`: runner result 저장 흐름의 참고 구현으로 재사용한다.
+- `backend/src/legacy/prd-confirmation/runner-worker.ts`: runner result 저장 흐름의 참고 구현으로 재사용한다.
 - `tests/*cli*`, `tests/*confluence*`: runner/publisher regression test의 출발점으로 재사용한다.
 
 ### 제품 구조로 옮기며 대체할 코드
 
-- `backend/src/prd-confirmation/domain.ts`: PRD 전용 type을 generic workflow/document domain으로 대체한다.
-- `backend/src/prd-confirmation/workflow-engine.ts`: hardcoded PRD transition을 workflow definition 기반 transition으로 대체한다.
-- `backend/src/prd-confirmation/workflow.ts`: PRD intake command는 generic workflow intake handler와 PRD adapter로 분리한다.
+- `backend/src/legacy/prd-confirmation/domain.ts`: PRD 전용 type을 generic workflow/document domain으로 대체한다.
+- `backend/src/legacy/prd-confirmation/workflow-engine.ts`: hardcoded PRD transition을 workflow definition 기반 transition으로 대체한다.
+- `backend/src/legacy/prd-confirmation/workflow.ts`: PRD intake command는 generic workflow intake handler와 PRD adapter로 분리한다.
 - `backend/src/workflow-api/server.ts`: PRD 전용 endpoint를 generic workflow/document API로 대체하고, PRD endpoint는 compatibility wrapper로 남긴다.
 - `scripts/prd-cli-engine.mjs`: generic document runner bridge로 교체한다.
 - `Artifact` type의 `prd_markdown`, `prd_wiki_page`: `document_markdown`, `wiki_page` + `documentType` 모델로 대체한다.

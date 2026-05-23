@@ -1,4 +1,5 @@
-import type { AgentJob, FeedbackItem } from "../prd-confirmation/domain";
+import type { FeedbackItem } from "../document-core/domain";
+import type { WorkflowCommandJob } from "../workflow-core/domain";
 import type { MysqlDatabase } from "../workflow-core/mysql-repository";
 import {
   MysqlWorkflowMutationApplier,
@@ -12,7 +13,7 @@ export interface RecordFeedbackCommandInput {
 
 export interface RecordRevisionJobCommandInput {
   runId: string;
-  job: AgentJob;
+  job: WorkflowCommandJob;
   taskId?: string;
   feedbackItems: FeedbackItem[];
   now?: Date;
@@ -110,7 +111,7 @@ function feedbackRecordedEvent(feedback: FeedbackItem): NonNullable<WorkflowMuta
   };
 }
 
-function capabilitiesForJobType(jobType: AgentJob["jobType"]): string[] {
+function capabilitiesForJobType(jobType: WorkflowCommandJob["jobType"]): string[] {
   if (jobType === "document.revise") {
     return ["document.revise"];
   }
@@ -118,7 +119,7 @@ function capabilitiesForJobType(jobType: AgentJob["jobType"]): string[] {
   return ["document.generate"];
 }
 
-function roleForJobType(jobType: AgentJob["jobType"]): string {
+function roleForJobType(jobType: WorkflowCommandJob["jobType"]): string {
   if (jobType === "document.revise") {
     return "developer";
   }

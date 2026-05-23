@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { LocalGitPrdRepository } from "../backend/src/integrations/local-git-prd-repository";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
-import { CliPrdSkills } from "../backend/src/prd-confirmation/cli-prd-skills";
-import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
-import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
+import { CliPrdSkills } from "../backend/src/legacy/prd-confirmation/cli-prd-skills";
+import { runRunnerWorkerOnce } from "../backend/src/legacy/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/legacy/prd-confirmation/scheduler";
+import { runEngineOnce } from "../backend/src/legacy/prd-confirmation/workflow-engine";
 import { CliEngine } from "../backend/src/runner-engines/cli-engine";
 
 describe("CliPrdSkills", () => {

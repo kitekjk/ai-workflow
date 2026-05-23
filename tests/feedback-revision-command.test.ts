@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentJob, FeedbackItem } from "../backend/src/prd-confirmation/domain";
+import type { FeedbackItem } from "../backend/src/document-core/domain";
+import type { WorkflowCommandJob } from "../backend/src/workflow-core/domain";
 import { MysqlFeedbackRevisionCommand } from "../backend/src/workflow-api/feedback-revision-command";
 import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
@@ -53,7 +54,7 @@ describe("MysqlFeedbackRevisionCommand", () => {
   it("records revision jobs before feedback rows that point at the job", async () => {
     const database = new FakeMysqlDatabase();
     const command = new MysqlFeedbackRevisionCommand(database, { idGenerator: fixedIds("event_1", "event_2") });
-    const job: AgentJob = {
+    const job: WorkflowCommandJob = {
       id: "job_2",
       workItemId: "wi_1",
       jobType: "document.revise",

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { GitHubRestClient } from "../integrations/github-client";
-import { githubRuntimeConfig } from "../runtime/create-runtime";
+import { githubRuntimeConfig } from "../runtime/integration-config";
 import type { RunnerMode } from "../workflow-core/domain";
 import {
   GitHubImplementationLocalRunnerEngine,

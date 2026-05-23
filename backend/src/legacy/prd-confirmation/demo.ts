@@ -1,4 +1,4 @@
-import { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
+import { createPrdConfirmationFixture } from "./fixture";
 
 const fixture = createPrdConfirmationFixture({ qualityPasses: false });
 

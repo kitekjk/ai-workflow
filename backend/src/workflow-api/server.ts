@@ -1,48 +1,45 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import type { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
-import { runRunnerWorkerOnce } from "../prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../prd-confirmation/scheduler";
-import { runEngineStep, type WorkflowEngineStepResult } from "../prd-confirmation/workflow-engine";
-import { createGenericPrdSnapshot, type GenericPrdSnapshot } from "../prd-confirmation/generic-adapter";
-import type { PrdSnapshotMirror } from "../prd-confirmation/mysql-snapshot-mirror";
-import type { ArtifactLocation, ArtifactType, Document } from "../document-core/domain";
+import type {
+  ArtifactLocation,
+  ArtifactType,
+  Document,
+  DocumentType,
+  FeedbackItem,
+  FeedbackSource
+} from "../document-core/domain";
 import type { DocumentRepository } from "../document-core/repository";
-import {
-  prdConfirmationWorkflowPolicy,
-  type AgentJob,
-  type ExternalIssue,
-  type FeedbackItem,
-  type FeedbackSource
-} from "../prd-confirmation/domain";
-import type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../prd-confirmation/ports";
+import type { ExternalIssue } from "../integrations/external-issue";
+import type { JiraIssueReader, WikiCollectedFeedback, WikiFeedbackCollector } from "../integrations/workflow-ports";
 import { redactSecrets } from "../runtime/secrets";
 import type {
   Runner,
   RunnerClaimDiagnostics,
   RunnerMode,
+  WorkflowCommandJob,
   WorkflowJob,
   WorkflowJobResult,
+  WorkflowRun,
   WorkflowTask
 } from "../workflow-core/domain";
+import { prdConfirmationWorkflowPolicy } from "../workflow-core/domain";
 import type { WorkflowScheduler } from "../workflow-core/scheduler";
-import {
-  createEngineTransitionCommandInput,
-  workflowJobCommandInputForFixtureJob
-} from "./engine-transition-projection";
 import type { DocumentCurrentReadModel, WorkflowApiReadModel } from "./mysql-read-model";
 import {
   RepositoryTransitionProcessor,
   type RepositoryTransitionPendingResultReader
 } from "./repository-transition-processor";
 import { runRepositoryTransitionWorkerOnce } from "./repository-transition-worker";
-import type { PrdIntakeCommand } from "./prd-intake-command";
+import type { PrdIntakeCommand, WorkflowIntakeCommand } from "./workflow-intake-command";
 import type { FeedbackRevisionCommand } from "./feedback-revision-command";
 import type { WorkflowResultCommand } from "./workflow-result-command";
 import type { WorkflowTransitionCommand } from "./workflow-transition-command";
-
-type Fixture = ReturnType<typeof createPrdConfirmationFixture>;
+import {
+  type WorkflowApiCompatibilityActionFactory,
+  type WorkflowApiCompatibilityActions,
+  workflowCompatibilityDisabledMessage
+} from "./compatibility-actions";
 
 export interface WorkflowApiServer {
   url: string;
@@ -51,13 +48,13 @@ export interface WorkflowApiServer {
 }
 
 export interface CreateWorkflowApiServerInput {
-  fixture?: Fixture;
+  compatibilityActionsFactory?: WorkflowApiCompatibilityActionFactory;
   scheduler?: WorkflowScheduler;
   documentRepository?: DocumentRepository;
   jiraIssueReader?: JiraIssueReader;
   wikiFeedbackCollector?: WikiFeedbackCollector;
-  snapshotMirror?: PrdSnapshotMirror;
   readModel?: WorkflowApiReadModel;
+  workflowIntakeCommand?: WorkflowIntakeCommand;
   prdIntakeCommand?: PrdIntakeCommand;
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
@@ -96,13 +93,13 @@ interface RunnerOnboardingResponse {
 }
 
 export function createWorkflowApiServer({
-  fixture,
+  compatibilityActionsFactory,
   scheduler,
   documentRepository,
   jiraIssueReader,
   wikiFeedbackCollector,
-  snapshotMirror,
   readModel,
+  workflowIntakeCommand,
   prdIntakeCommand,
   feedbackRevisionCommand,
   workflowResultCommand,
@@ -122,27 +119,36 @@ export function createWorkflowApiServer({
   let repositoryTransitionPromise: Promise<unknown> | undefined;
   let schedulerRecoveryTimer: ReturnType<typeof setInterval> | undefined;
   let schedulerRecoveryPromise: Promise<unknown> | undefined;
+  const effectiveWorkflowIntakeCommand = workflowIntakeCommand ?? prdIntakeCommand;
+  const compatibilityActions = compatibilityActionsFactory?.({
+    prdIntakeCommand: prdIntakeCommand ?? effectiveWorkflowIntakeCommand,
+    feedbackRevisionCommand,
+    workflowResultCommand,
+    workflowTransitionCommand,
+    now
+  });
+  const effectiveReadModel = readModel ?? compatibilityActions?.readModel;
 
   const context: WorkflowApiRequestContext = {
-    fixture,
+    compatibilityActions,
     scheduler,
     documentRepository,
     jiraIssueReader,
     wikiFeedbackCollector,
-    snapshotMirror,
-    readModel,
-    prdIntakeCommand,
+    readModel: effectiveReadModel,
+    workflowIntakeCommand: effectiveWorkflowIntakeCommand,
     feedbackRevisionCommand,
     workflowResultCommand,
     workflowTransitionCommand,
     repositoryTransitionResultReader,
     auth,
     repositoryTransitionLoopEnabled: Boolean(
-      !fixture &&
+      !compatibilityActions &&
         repositoryTransitionResultReader &&
         repositoryTransitionIntervalMs !== undefined &&
         repositoryTransitionIntervalMs >= 1
     ),
+    repositoryBackedMode: !compatibilityActions,
     enableTestControls,
     now
   };
@@ -204,7 +210,7 @@ export function createWorkflowApiServer({
 
   const startInternalTickLoop = () => {
     if (
-      !context.fixture ||
+      context.repositoryBackedMode ||
       internalTickIntervalMs === undefined ||
       internalTickIntervalMs < 1 ||
       internalTickTimer
@@ -219,7 +225,7 @@ export function createWorkflowApiServer({
 
   const startRepositoryTransitionLoop = () => {
     if (
-      context.fixture ||
+      !context.repositoryBackedMode ||
       !context.repositoryTransitionResultReader ||
       !context.readModel ||
       !context.workflowTransitionCommand?.recordRepositoryTransition ||
@@ -315,20 +321,20 @@ export function createWorkflowApiServer({
 }
 
 interface WorkflowApiRequestContext {
-  fixture?: Fixture;
+  compatibilityActions?: WorkflowApiCompatibilityActions;
   scheduler?: WorkflowScheduler;
   documentRepository?: DocumentRepository;
   jiraIssueReader?: JiraIssueReader;
   wikiFeedbackCollector?: WikiFeedbackCollector;
-  snapshotMirror?: PrdSnapshotMirror;
   readModel?: WorkflowApiReadModel;
-  prdIntakeCommand?: PrdIntakeCommand;
+  workflowIntakeCommand?: WorkflowIntakeCommand;
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
   repositoryTransitionResultReader?: RepositoryTransitionPendingResultReader;
   auth?: WorkflowApiAuthConfig;
   repositoryTransitionLoopEnabled: boolean;
+  repositoryBackedMode: boolean;
   enableTestControls: boolean;
   now: () => Date;
 }
@@ -336,7 +342,7 @@ interface WorkflowApiRequestContext {
 type ReadModelScheduledWork =
   | {
       status: "accepted";
-      job: AgentJob;
+      job: WorkflowCommandJob;
       taskId?: string;
       workflowTask?: WorkflowTask;
       shouldRecord: true;
@@ -358,21 +364,19 @@ async function routeRequest(
 
   authorizeEarlyRequest(context, request, method, path);
 
+  if (method === "POST" && path === "/workflow-runs/intake") {
+    const body = await readJsonBody<WorkflowIntakeBody>(request);
+    const result = await intakeWorkflowSource(context, body);
+
+    writeJson(response, 202, result);
+    return;
+  }
+
   if (method === "POST" && path === "/prd/intake") {
     const body = await readJsonBody<{ prdJiraKey?: string; requestedBy?: string }>(request);
     const prdJiraKey = requireString(body.prdJiraKey, "prdJiraKey");
     const requestedBy = optionalString(body.requestedBy, "requestedBy");
-
-    if (!context.fixture && context.jiraIssueReader && context.prdIntakeCommand) {
-      const result = await intakePrdTicketWithoutFixture(context, prdJiraKey, requestedBy);
-      writeJson(response, 202, result);
-      return;
-    }
-
-    const fixture = requireCompatibilityFixture(context);
-    const result = await fixture.workflow.intakePrdTicket(prdJiraKey);
-    await recordPrdIntakeCommand(context, prdJiraKey, requestedBy);
-    await persistFixtureSnapshot(context);
+    const result = await intakePrdWorkflowSource(context, prdJiraKey, requestedBy);
 
     writeJson(response, 202, result);
     return;
@@ -382,21 +386,7 @@ async function routeRequest(
     const body = await readJsonBody<PrdFeedbackRevisionBody>(request);
     const prdJiraKey = requireString(body.prdJiraKey, "prdJiraKey");
     const requestedAt = parseNow(body.now, context.now);
-
-    if (!context.fixture && context.readModel && context.feedbackRevisionCommand) {
-      const result = await requestPrdFeedbackRevisionWithoutFixture(context, prdJiraKey, body, requestedAt);
-      writeJson(response, 202, result);
-      return;
-    }
-
-    const fixture = requireCompatibilityFixture(context);
-    const result = await fixture.workflow.requestFeedbackRevision(prdJiraKey, {
-      requestedBy: requireString(body.requestedBy, "requestedBy"),
-      feedback: requireString(body.feedback, "feedback"),
-      now: requestedAt
-    });
-    await recordRevisionJobCommand(context, result.jobId, result.feedbackItemIds, requestedAt);
-    await persistFixtureSnapshot(context);
+    const result = await requestPrdSourceFeedbackRevision(context, prdJiraKey, body, requestedAt);
 
     writeJson(response, 202, result);
     return;
@@ -413,10 +403,8 @@ async function routeRequest(
   }
 
   if (context.enableTestControls && method === "POST" && path === "/test-controls/quality") {
-    const fixture = requireCompatibilityFixture(context);
     const body = await readJsonBody<{ qualityPasses?: boolean }>(request);
-    fixture.skills.qualityPasses = Boolean(body.qualityPasses);
-    writeJson(response, 200, { qualityPasses: fixture.skills.qualityPasses });
+    writeJson(response, 200, requireCompatibilityActions(context).setQuality(Boolean(body.qualityPasses)));
     return;
   }
 
@@ -619,7 +607,7 @@ async function routeRequest(
       requireRunnerAuthorization(context, request, runnerId);
       const completedAt = parseNow(body.now, context.now);
       const jobBeforeCompletion =
-        !context.fixture && context.workflowTransitionCommand?.recordRepositoryTransition
+        context.repositoryBackedMode && context.workflowTransitionCommand?.recordRepositoryTransition
           ? await scheduler.requireClaimedJob(decodedJobId, runnerId)
           : undefined;
       const result = await scheduler.completeJob({
@@ -711,15 +699,34 @@ async function routeRequest(
 
   if (method === "GET" && path.startsWith("/state/")) {
     const prdJiraKey = decodeURIComponent(path.slice("/state/".length));
+    const state = await requireWorkflowApiReadModel(context).summarizeState(prdJiraKey);
+    writeJson(response, state ? 200 : 404, state ?? { error: "PRD state not found" });
+    return;
+  }
 
-    if (context.readModel) {
-      const state = await context.readModel.summarizeState(prdJiraKey);
-      writeJson(response, state ? 200 : 404, state ?? { error: "PRD state not found" });
+  if (path.startsWith("/workflow-sources/")) {
+    const [sourceKey, child] = path.slice("/workflow-sources/".length).split("/");
+    const decodedSourceKey = decodeURIComponent(sourceKey);
+
+    if (child === "state") {
+      const state = await requireWorkflowApiReadModel(context).summarizeState(decodedSourceKey);
+      writeJson(response, state ? 200 : 404, state ?? { error: "Workflow source state not found" });
       return;
     }
 
-    const state = summarizeState(requireCompatibilityFixture(context), prdJiraKey);
-    writeJson(response, state ? 200 : 404, state ?? { error: "PRD state not found" });
+    if (method === "POST" && child === "feedback-revision") {
+      const body = await readJsonBody<WorkflowSourceFeedbackRevisionBody>(request);
+      const requestedAt = parseNow(body.now, context.now);
+      const result = await requestWorkflowSourceFeedbackRevision(context, decodedSourceKey, body, requestedAt);
+
+      writeJson(response, 202, result);
+      return;
+    }
+  }
+
+  if (method === "GET" && path === "/workflow-runs") {
+    const runs = await listWorkflowRuns(context, url);
+    writeJson(response, 200, { runs });
     return;
   }
 
@@ -734,12 +741,7 @@ async function routeRequest(
     }
 
     if (child === "tree") {
-      const tree = context.readModel
-        ? await context.readModel.summarizeWorkflowRunTree(decodedRunId)
-        : summarizeWorkflowRunTree(
-            createGenericPrdSnapshot(requireCompatibilityFixture(context).store),
-            decodedRunId
-          );
+      const tree = await requireWorkflowApiReadModel(context).summarizeWorkflowRunTree(decodedRunId);
       writeJson(response, tree ? 200 : 404, tree ?? { error: "Workflow run not found" });
       return;
     }
@@ -757,9 +759,7 @@ async function routeRequest(
       return;
     }
 
-    const run = context.readModel
-      ? await context.readModel.summarizeWorkflowRun(decodedRunId)
-      : summarizeWorkflowRun(createGenericPrdSnapshot(requireCompatibilityFixture(context).store), decodedRunId);
+    const run = await requireWorkflowApiReadModel(context).summarizeWorkflowRun(decodedRunId);
     writeJson(response, run ? 200 : 404, run ?? { error: "Workflow run not found" });
     return;
   }
@@ -769,36 +769,24 @@ async function routeRequest(
     const decodedDocumentId = decodeURIComponent(documentId);
 
     if (method === "GET" && child === "current") {
-      if (context.readModel) {
-        const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
-        writeJson(
-          response,
-          current ? 200 : 404,
-          current
-            ? { ...current, approvalGate: approvalGateForReadModelDocument(current.document) }
-            : { error: "Document not found" }
-        );
-        return;
-      }
-
-      const fixture = requireCompatibilityFixture(context);
-      const current = summarizeDocumentCurrent(fixture, createGenericPrdSnapshot(fixture.store), decodedDocumentId);
-      writeJson(response, current ? 200 : 404, current ?? { error: "Document not found" });
+      const current = await requireWorkflowApiReadModel(context).summarizeDocumentCurrent(decodedDocumentId);
+      writeJson(
+        response,
+        current ? 200 : 404,
+        current
+          ? { ...current, approvalGate: approvalGateForReadModelDocument(current.document) }
+          : { error: "Document not found" }
+      );
       return;
     }
 
     if (method === "GET" && child === "versions") {
-      const history = context.readModel
-        ? await context.readModel.summarizeDocumentHistory(decodedDocumentId)
-        : summarizeDocumentHistory(
-            createGenericPrdSnapshot(requireCompatibilityFixture(context).store),
-            decodedDocumentId
-          );
+      const history = await requireWorkflowApiReadModel(context).summarizeDocumentHistory(decodedDocumentId);
       writeJson(response, history ? 200 : 404, history ?? { error: "Document not found" });
       return;
     }
 
-    if (method === "POST" && child === "feedback" && context.readModel && !context.fixture) {
+    if (method === "POST" && child === "feedback" && context.readModel && context.repositoryBackedMode) {
       const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
 
       if (!current) {
@@ -818,7 +806,7 @@ async function routeRequest(
       return;
     }
 
-    if (method === "POST" && child === "revisions" && context.readModel && !context.fixture) {
+    if (method === "POST" && child === "revisions" && context.readModel && context.repositoryBackedMode) {
       const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
 
       if (!current) {
@@ -855,7 +843,7 @@ async function routeRequest(
       return;
     }
 
-    if (method === "POST" && child === "wiki-feedback" && context.readModel && !context.fixture) {
+    if (method === "POST" && child === "wiki-feedback" && context.readModel && context.repositoryBackedMode) {
       const collector = requireWikiFeedbackCollector(context);
       const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
 
@@ -915,7 +903,7 @@ async function routeRequest(
       return;
     }
 
-    if (method === "POST" && child === "fan-out" && context.readModel && !context.fixture) {
+    if (method === "POST" && child === "fan-out" && context.readModel && context.repositoryBackedMode) {
       const current = await context.readModel.summarizeDocumentCurrent(decodedDocumentId);
 
       if (!current) {
@@ -944,118 +932,64 @@ async function routeRequest(
       return;
     }
 
-    const fixture = requireCompatibilityFixture(context);
-    const snapshot = createGenericPrdSnapshot(fixture.store);
-
     if (method === "POST" && child === "feedback") {
-      const document = requireGenericDocument(snapshot, decodedDocumentId);
       const body = await readJsonBody<DocumentFeedbackBody>(request);
       const feedbackCreatedAt = parseNow(body.now, context.now);
-      const feedback = fixture.workflow.recordFeedback(document.sourceKey, {
+      const result = await requireCompatibilityActions(context).recordDocumentFeedback({
+        documentId: decodedDocumentId,
         source: optionalFeedbackSource(body.source),
         author: optionalString(body.author ?? body.requestedBy, "author"),
         body: requireString(body.body ?? body.feedback, "body"),
         now: feedbackCreatedAt
       });
-      await recordFeedbackCommand(context, [feedback]);
-      await persistFixtureSnapshot(context);
 
-      writeJson(response, 201, { feedback });
+      writeJson(response, 201, result);
       return;
     }
 
     if (method === "POST" && child === "wiki-feedback") {
       const collector = requireWikiFeedbackCollector(context);
-      const document = requireGenericDocument(snapshot, decodedDocumentId);
       const body = await readJsonBody<DocumentWikiFeedbackBody>(request);
-      const currentWikiArtifact = document.currentWikiArtifactId
-        ? snapshot.artifacts.find((artifact) => artifact.id === document.currentWikiArtifactId)
-        : undefined;
       const fallbackNow = parseNow(body.now, context.now);
-      const collected = await collector.collectPageFeedback({
+      const result = await requireCompatibilityActions(context).recordWikiFeedback(collector, {
+        documentId: decodedDocumentId,
         pageId: optionalString(body.pageId, "pageId"),
-        pageUrl: optionalString(body.pageUrl, "pageUrl") ?? currentWikiArtifact?.uri,
+        pageUrl: optionalString(body.pageUrl, "pageUrl"),
         limit: optionalPositiveInteger(body.limit, "limit"),
-        includeResolved: optionalBoolean(body.includeResolved, "includeResolved")
+        includeResolved: optionalBoolean(body.includeResolved, "includeResolved"),
+        now: fallbackNow
       });
-      const knownFeedbackIds = new Set(fixture.store.feedbackItems.map((feedback) => feedback.id));
-      const feedbackItems: FeedbackItem[] = [];
-      let importedCount = 0;
-      let duplicateCount = 0;
 
-      for (const comment of collected.comments) {
-        const feedback = fixture.workflow.recordFeedback(document.sourceKey, {
-          source: "wiki",
-          author: comment.author,
-          body: comment.body,
-          now: dateFromIso(comment.createdAt) ?? fallbackNow,
-          externalId: comment.externalId,
-          externalUrl: comment.url,
-          metadata: {
-            ...(comment.metadata ?? {}),
-            confluencePageId: collected.pageId
-          }
-        });
-
-        if (knownFeedbackIds.has(feedback.id)) {
-          duplicateCount += 1;
-        } else {
-          importedCount += 1;
-          knownFeedbackIds.add(feedback.id);
-        }
-
-        feedbackItems.push(feedback);
-      }
-      await recordFeedbackCommand(context, feedbackItems);
-      await persistFixtureSnapshot(context);
-
-      writeJson(response, 201, {
-        pageId: collected.pageId,
-        importedCount,
-        duplicateCount,
-        feedbackItems
-      });
+      writeJson(response, 201, result);
       return;
     }
 
     if (method === "POST" && child === "revisions") {
-      const document = requireGenericDocument(snapshot, decodedDocumentId);
       const body = await readJsonBody<DocumentRevisionBody>(request);
       const requestedAt = parseNow(body.now, context.now);
-      const result = await fixture.workflow.requestDocumentRevision(document.sourceKey, {
+      const result = await requireCompatibilityActions(context).requestDocumentRevision({
+        documentId: decodedDocumentId,
         requestedBy: requireString(body.requestedBy, "requestedBy"),
         feedbackItemIds: optionalStringArrayOrUndefined(body.feedbackItemIds, "feedbackItemIds"),
-        now: requestedAt
+        requestedAt
       });
-      await recordRevisionJobCommand(context, result.jobId, result.feedbackItemIds, requestedAt);
-      await persistFixtureSnapshot(context);
 
-      writeJson(response, 202, {
-        status: result.status,
-        revisionJob: snapshotJobAfterAction(fixture, result.jobId),
-        feedbackItemIds: result.feedbackItemIds
-      });
+      writeJson(response, 202, result);
       return;
     }
 
     if (method === "POST" && child === "fan-out") {
-      const document = requireGenericDocument(snapshot, decodedDocumentId);
       const body = await readJsonBody<DocumentFanOutBody>(request);
       const requestedAt = parseNow(body.now, context.now);
-      const result = await fixture.workflow.requestDocumentFanOut(document.sourceKey, {
+      const result = await requireCompatibilityActions(context).requestDocumentFanOut({
+        documentId: decodedDocumentId,
         requestedBy: optionalString(body.requestedBy, "requestedBy"),
         includeAdr: optionalBoolean(body.includeAdr, "includeAdr") === true,
         adrTitle: optionalString(body.adrTitle, "adrTitle"),
-        now: requestedAt
+        requestedAt
       });
-      await recordWorkflowJobCommand(context, result.jobId, requestedAt);
-      await persistFixtureSnapshot(context);
 
-      writeJson(response, 202, {
-        status: result.status,
-        fanOutJob: snapshotJobAfterAction(fixture, result.jobId),
-        fanOutStatus: result.status
-      });
+      writeJson(response, 202, result);
       return;
     }
   }
@@ -1077,7 +1011,12 @@ async function routeRequest(
       return;
     }
 
-    if ((method === "POST" && (action === "refresh" || action === "approve" || action === "reject")) && context.readModel && !context.fixture) {
+    if (
+      method === "POST" &&
+      (action === "refresh" || action === "approve" || action === "reject") &&
+      context.readModel &&
+      context.repositoryBackedMode
+    ) {
       const current = await context.readModel.summarizeDocumentCurrent(documentId);
 
       if (!current) {
@@ -1147,66 +1086,45 @@ async function routeRequest(
       return;
     }
 
-    const fixture = requireCompatibilityFixture(context);
-    const snapshot = createGenericPrdSnapshot(fixture.store);
-    const document = requireGenericDocument(snapshot, documentId);
-
     if (method === "GET" && action === undefined) {
-      writeJson(response, 200, { approvalGate: approvalGateForDocument(fixture, document) });
+      writeJson(response, 200, requireCompatibilityActions(context).approvalGateForDocument(documentId));
       return;
     }
 
     if (method === "POST" && action === "refresh") {
       const refreshedAt = context.now();
-      const { approvalGate, downstreamJob } = refreshApprovalGate(fixture, document);
-      await recordDocumentStateCommand(context, documentId, refreshedAt);
-      await recordWorkflowJobCommand(context, downstreamJob?.jobId, refreshedAt);
-      await persistFixtureSnapshot(context);
-      writeJson(response, 200, { approvalGate });
+      writeJson(response, 200, await requireCompatibilityActions(context).refreshApprovalGate({
+        documentId,
+        refreshedAt
+      }));
       return;
     }
 
     if (method === "POST" && action === "approve") {
       const body = await readJsonBody<ApprovalActionBody>(request);
       const approvedAt = parseNow(body.now, context.now);
-      const approvalGate = transitionApprovalGate(fixture, document, "approved", {
-        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
-        reason: optionalString(body.reason, "reason")
-      });
-      const downstreamJob = scheduleDownstreamAfterApproval(fixture, document, {
+      const result = await requireCompatibilityActions(context).approveApprovalGate({
+        documentId,
         requestedBy: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
         includeAdr: optionalBoolean(body.includeAdr, "includeAdr") === true,
         adrTitle: optionalString(body.adrTitle, "adrTitle"),
-        now: approvedAt
+        approvedAt
       });
-      await recordDocumentStateCommand(context, documentId, approvedAt, {
-        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
-        reason: optionalString(body.reason, "reason")
-      });
-      await recordWorkflowJobCommand(context, downstreamJob?.jobId, approvedAt);
-      await persistFixtureSnapshot(context);
 
-      writeJson(response, 200, {
-        approvalGate,
-        routingJob: downstreamJob ? snapshotJobAfterAction(fixture, downstreamJob.jobId) : undefined,
-        routingStatus: downstreamJob?.status
-      });
+      writeJson(response, 200, result);
       return;
     }
 
     if (method === "POST" && action === "reject") {
       const body = await readJsonBody<ApprovalActionBody>(request);
       const rejectedAt = parseNow(body.now, context.now);
-      const approvalGate = transitionApprovalGate(fixture, document, "needs_revision", {
-        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
-        reason: optionalString(body.reason, "reason")
-      });
-      await recordDocumentStateCommand(context, documentId, rejectedAt, {
-        actor: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
-        reason: optionalString(body.reason, "reason")
-      });
-      await persistFixtureSnapshot(context);
-      writeJson(response, 200, { approvalGate });
+      writeJson(response, 200, await requireCompatibilityActions(context).rejectApprovalGate({
+        documentId,
+        requestedBy: optionalString(body.requestedBy ?? body.actor, "requestedBy"),
+        reason: optionalString(body.reason, "reason"),
+        rejectedAt
+      }));
       return;
     }
   }
@@ -1464,18 +1382,7 @@ function safeTokenEquals(actual: string, expected: string): boolean {
 async function runCompatibilityWorkflowTick(
   context: WorkflowApiRequestContext
 ): Promise<{ progressed: boolean }> {
-  const fixture = requireCompatibilityFixture(context);
-  const schedulerProgressed = await runSchedulerOnce(fixture.store);
-  const runnerProgressed = await runRunnerWorkerOnce(fixture.store, fixture.skills);
-  const engineStep = await runEngineStep(fixture.store);
-  const progressed = schedulerProgressed || runnerProgressed || engineStep.progressed;
-  await recordEngineTransitionCommands(context, engineStep, context.now());
-  await recordWorkflowResultProjectionCommand(context, engineStep);
-  if (progressed) {
-    await persistFixtureSnapshot(context);
-  }
-
-  return { progressed };
+  return requireCompatibilityActions(context).runTick();
 }
 
 async function recordRepositoryTransitionCommand(
@@ -1485,7 +1392,7 @@ async function recordRepositoryTransitionCommand(
   now: Date
 ): Promise<void> {
   if (
-    context.fixture ||
+    !context.repositoryBackedMode ||
     context.repositoryTransitionLoopEnabled ||
     !job ||
     !context.readModel ||
@@ -1508,7 +1415,7 @@ async function processNextRepositoryTransitionResult(
   context: WorkflowApiRequestContext
 ): Promise<{ processed: boolean; transitionType?: string }> {
   if (
-    context.fixture ||
+    !context.repositoryBackedMode ||
     !context.repositoryTransitionResultReader ||
     !context.readModel ||
     !context.workflowTransitionCommand?.recordRepositoryTransition
@@ -1524,94 +1431,35 @@ async function processNextRepositoryTransitionResult(
   });
 }
 
-async function recordPrdIntakeCommand(
-  context: WorkflowApiRequestContext,
-  prdJiraKey: string,
-  requestedBy?: string
-): Promise<void> {
-  if (!context.prdIntakeCommand) {
-    return;
-  }
-
-  const fixture = requireCompatibilityFixture(context);
-  const workItem = fixture.store.workItems.find((candidate) => candidate.primaryJiraKey === prdJiraKey);
-  const draftJob = workItem
-    ? fixture.store.agentJobs.find(
-        (candidate) => candidate.workItemId === workItem.id && candidate.jobType === "prd.generate_draft"
-      )
-    : undefined;
-
-  if (!workItem || !draftJob) {
-    throw new Error(`PRD intake command could not find fixture intake state: ${prdJiraKey}`);
-  }
-
-  await context.prdIntakeCommand.recordIntake({
-    runId: workItem.runId,
-    workItemId: workItem.id,
-    jobId: draftJob.id,
-    prdJiraKey,
-    title: workItem.title ?? fixture.store.externalIssues.get(prdJiraKey)?.summary,
-    requestedBy,
-    now: context.now()
-  });
-}
-
 async function summarizeWorkflowRunDashboard(
   context: WorkflowApiRequestContext,
   request: IncomingMessage,
   url: URL,
   runId: string
 ): Promise<Record<string, unknown> | undefined> {
-  const readModel = context.readModel;
-
-  if (readModel) {
-    const summary = await readModel.summarizeWorkflowRun(runId);
-
-    if (!summary) {
-      return undefined;
-    }
-
-    const documents = documentsFromReadModelSummary(summary);
-    const [tree, currentViews, histories, events, runners] = await Promise.all([
-      readModel.summarizeWorkflowRunTree(runId),
-      Promise.all(documents.map((document) => readModel.summarizeDocumentCurrent(document.id))),
-      Promise.all(documents.map((document) => readModel.summarizeDocumentHistory(document.id))),
-      dashboardRunEvents(context, runId),
-      dashboardRunners(context)
-    ]);
-
-    return {
-      ...summary,
-      tree,
-      currentViews: currentViews.filter((current): current is DocumentCurrentReadModel => Boolean(current)),
-      histories: histories.filter((history): history is Record<string, unknown> => Boolean(history)),
-      events,
-      runners,
-      runnerOnboarding: runnerOnboardingForRequest(request, url)
-    };
-  }
-
-  const fixture = requireCompatibilityFixture(context);
-  const snapshot = createGenericPrdSnapshot(fixture.store);
-  const summary = summarizeWorkflowRun(snapshot, runId);
+  const readModel = requireWorkflowApiReadModel(context);
+  const summary = await readModel.summarizeWorkflowRun(runId);
 
   if (!summary) {
     return undefined;
   }
 
-  const documents = (summary.documents as Document[] | undefined) ?? [];
+  const documents = documentsFromReadModelSummary(summary);
+  const [tree, currentViews, histories, events, runners] = await Promise.all([
+    readModel.summarizeWorkflowRunTree(runId),
+    Promise.all(documents.map((document) => readModel.summarizeDocumentCurrent(document.id))),
+    Promise.all(documents.map((document) => readModel.summarizeDocumentHistory(document.id))),
+    dashboardRunEvents(context, runId),
+    dashboardRunners(context)
+  ]);
 
   return {
     ...summary,
-    tree: summarizeWorkflowRunTree(snapshot, runId),
-    currentViews: documents
-      .map((document) => summarizeDocumentCurrent(fixture, snapshot, document.id))
-      .filter((current): current is Record<string, unknown> => Boolean(current)),
-    histories: documents
-      .map((document) => summarizeDocumentHistory(snapshot, document.id))
-      .filter((history): history is Record<string, unknown> => Boolean(history)),
-    events: await dashboardRunEvents(context, runId),
-    runners: await dashboardRunners(context),
+    tree,
+    currentViews: currentViews.filter((current): current is DocumentCurrentReadModel => Boolean(current)),
+    histories: histories.filter((history): history is Record<string, unknown> => Boolean(history)),
+    events,
+    runners,
     runnerOnboarding: runnerOnboardingForRequest(request, url)
   };
 }
@@ -1640,6 +1488,16 @@ async function dashboardRunners(context: WorkflowApiRequestContext): Promise<Run
   return listRunnersWithDiagnostics(context.scheduler, context.now());
 }
 
+async function listWorkflowRuns(
+  context: WorkflowApiRequestContext,
+  url: URL
+): Promise<WorkflowRun[]> {
+  const readModel = requireWorkflowApiReadModel(context);
+  const limit = optionalLimit(url.searchParams.get("limit")) ?? 25;
+
+  return readModel.listWorkflowRuns?.({ limit }) ?? [];
+}
+
 async function intakePrdTicketWithoutFixture(
   context: WorkflowApiRequestContext,
   prdJiraKey: string,
@@ -1656,7 +1514,7 @@ async function intakePrdTicketWithoutFixture(
   }
 
   const jiraIssueReader = requireJiraIssueReader(context);
-  const command = requirePrdIntakeCommand(context);
+  const command = requireWorkflowIntakeCommand(context);
   const loaded = await jiraIssueReader.loadPrdWithSources(prdJiraKey);
 
   validatePrdIntakeIssue(loaded.prd, prdJiraKey, loaded.sources);
@@ -1674,6 +1532,150 @@ async function intakePrdTicketWithoutFixture(
   });
 
   return { status: "accepted", ...result };
+}
+
+async function intakeWorkflowSource(
+  context: WorkflowApiRequestContext,
+  body: WorkflowIntakeBody
+): Promise<{ status: "accepted"; runId?: string; documentId?: string; jobId?: string }> {
+  const input = workflowIntakeInputFromBody(body);
+
+  if (context.repositoryBackedMode && context.workflowIntakeCommand) {
+    return intakeWorkflowSourceWithoutFixture(context, input);
+  }
+
+  if (isLegacyPrdWorkflowIntake(input)) {
+    return requireCompatibilityActions(context).intakeTicket({
+      prdJiraKey: input.sourceKey,
+      requestedBy: input.requestedBy
+    });
+  }
+
+  throw new HttpError(
+    501,
+    "Repository-backed workflow intake is required for non-legacy workflow sources"
+  );
+}
+
+async function intakePrdWorkflowSource(
+  context: WorkflowApiRequestContext,
+  prdJiraKey: string,
+  requestedBy?: string
+): Promise<{ status: "accepted"; runId?: string; documentId?: string; jobId?: string }> {
+  if (context.repositoryBackedMode && context.jiraIssueReader && context.workflowIntakeCommand) {
+    return intakePrdTicketWithoutFixture(context, prdJiraKey, requestedBy);
+  }
+
+  return requireCompatibilityActions(context).intakeTicket({ prdJiraKey, requestedBy });
+}
+
+interface NormalizedWorkflowIntakeInput {
+  sourceType: WorkflowRun["sourceType"];
+  sourceKey: string;
+  documentType: DocumentType;
+  workflowDefinitionId: string;
+  outputLanguage?: string;
+  title?: string;
+  requestedBy?: string;
+}
+
+async function intakeWorkflowSourceWithoutFixture(
+  context: WorkflowApiRequestContext,
+  input: NormalizedWorkflowIntakeInput
+): Promise<{ status: "accepted"; runId?: string; documentId?: string; jobId?: string }> {
+  const existingState = await context.readModel?.summarizeState(input.sourceKey);
+
+  if (existingState) {
+    return {
+      status: "accepted",
+      runId: stringOrUndefined(existingState.runId),
+      documentId: stringOrUndefined(existingState.documentId)
+    };
+  }
+
+  const command = requireWorkflowIntakeCommand(context);
+  const jiraPrd = input.sourceType === "jira" && input.documentType === "prd"
+    ? await loadValidatedPrdIntakeIssue(context, input.sourceKey)
+    : undefined;
+  const workItemId = `wi_${randomUUID()}`;
+  const result = await command.recordIntake({
+    runId: `run_${randomUUID()}`,
+    workItemId,
+    jobId: `job_${randomUUID()}`,
+    sourceType: input.sourceType,
+    sourceKey: input.sourceKey,
+    documentType: input.documentType,
+    workflowDefinitionId: input.workflowDefinitionId,
+    outputLanguage: input.outputLanguage,
+    title: input.title ?? jiraPrd?.summary,
+    requestedBy: input.requestedBy,
+    now: context.now()
+  });
+
+  return { status: "accepted", ...result };
+}
+
+async function loadValidatedPrdIntakeIssue(
+  context: WorkflowApiRequestContext,
+  prdJiraKey: string
+): Promise<ExternalIssue> {
+  const loaded = await requireJiraIssueReader(context).loadPrdWithSources(prdJiraKey);
+
+  validatePrdIntakeIssue(loaded.prd, prdJiraKey, loaded.sources);
+
+  return loaded.prd;
+}
+
+function workflowIntakeInputFromBody(body: WorkflowIntakeBody): NormalizedWorkflowIntakeInput {
+  const sourceType = workflowSourceType(optionalString(body.sourceType, "sourceType") ?? "jira");
+  const documentType = workflowDocumentType(optionalString(body.documentType, "documentType") ?? "prd");
+
+  return {
+    sourceType,
+    sourceKey: requireString(body.sourceKey, "sourceKey"),
+    documentType,
+    workflowDefinitionId:
+      optionalString(body.workflowDefinitionId, "workflowDefinitionId") ?? defaultWorkflowDefinitionId(documentType),
+    outputLanguage: optionalString(body.outputLanguage, "outputLanguage"),
+    title: optionalString(body.title, "title"),
+    requestedBy: optionalString(body.requestedBy, "requestedBy")
+  };
+}
+
+function isLegacyPrdWorkflowIntake(input: NormalizedWorkflowIntakeInput): boolean {
+  return (
+    input.sourceType === "jira" &&
+    input.documentType === "prd" &&
+    (input.workflowDefinitionId === "prd_to_spec" || input.workflowDefinitionId === "prd_confirmation")
+  );
+}
+
+function workflowSourceType(value: string): WorkflowRun["sourceType"] {
+  if (value === "jira" || value === "app" || value === "github") {
+    return value;
+  }
+
+  throw new HttpError(400, `Unsupported workflow sourceType: ${value}`);
+}
+
+function workflowDocumentType(value: string): DocumentType {
+  if (value === "prd" || value === "hld" || value === "lld" || value === "adr" || value === "spec") {
+    return value;
+  }
+
+  throw new HttpError(400, `Unsupported intake documentType: ${value}`);
+}
+
+function defaultWorkflowDefinitionId(documentType: DocumentType): string {
+  if (documentType === "prd") {
+    return "prd_to_spec";
+  }
+
+  if (documentType === "spec") {
+    return "spec_to_code";
+  }
+
+  return `${documentType}_to_spec`;
 }
 
 function validatePrdIntakeIssue(prd: ExternalIssue, prdJiraKey: string, sources: ExternalIssue[]): void {
@@ -1702,23 +1704,10 @@ function isPrdIntakeRequestedStatus(status: string): boolean {
   return status === "prd_requested" || status === "PRD 요청";
 }
 
-async function recordFeedbackCommand(
-  context: WorkflowApiRequestContext,
-  feedbackItems: FeedbackItem[]
-): Promise<void> {
-  if (!context.feedbackRevisionCommand) {
-    return;
-  }
-
-  for (const feedback of feedbackItems) {
-    await context.feedbackRevisionCommand.recordFeedback({ feedback });
-  }
-}
-
 async function requestPrdFeedbackRevisionWithoutFixture(
   context: WorkflowApiRequestContext,
   prdJiraKey: string,
-  body: PrdFeedbackRevisionBody,
+  body: Pick<PrdFeedbackRevisionBody, "requestedBy" | "feedback">,
   requestedAt: Date
 ): Promise<{ status: "accepted"; jobId: string; feedbackItemIds: string[] }> {
   const readModel = context.readModel;
@@ -1774,192 +1763,42 @@ async function requestPrdFeedbackRevisionWithoutFixture(
   };
 }
 
-async function recordRevisionJobCommand(
+async function requestWorkflowSourceFeedbackRevision(
   context: WorkflowApiRequestContext,
-  jobId: string,
-  feedbackItemIds: string[],
-  now: Date
-): Promise<void> {
-  if (!context.feedbackRevisionCommand) {
-    return;
+  sourceKey: string,
+  body: WorkflowSourceFeedbackRevisionBody,
+  requestedAt: Date
+): Promise<{ status: "accepted"; jobId: string; feedbackItemIds: string[] }> {
+  const sourceType = optionalString(body.sourceType, "sourceType") ?? "jira";
+  const documentType = optionalString(body.documentType, "documentType") ?? "prd";
+
+  if (sourceType !== "jira") {
+    throw new HttpError(400, `Unsupported workflow sourceType: ${sourceType}`);
   }
 
-  const fixture = requireCompatibilityFixture(context);
-  const job = fixture.store.agentJobs.find((candidate) => candidate.id === jobId);
-
-  if (!job) {
-    throw new Error(`Feedback revision command could not find fixture job state: ${jobId}`);
+  if (documentType !== "prd") {
+    throw new HttpError(400, `Unsupported feedback revision documentType: ${documentType}`);
   }
 
-  const workItem = fixture.store.workItems.find((candidate) => candidate.id === job.workItemId);
+  return requestPrdSourceFeedbackRevision(context, sourceKey, body, requestedAt);
+}
 
-  if (!workItem) {
-    throw new Error(`Feedback revision command could not find fixture work item state: ${job.workItemId}`);
+async function requestPrdSourceFeedbackRevision(
+  context: WorkflowApiRequestContext,
+  prdJiraKey: string,
+  body: Pick<PrdFeedbackRevisionBody, "requestedBy" | "feedback">,
+  requestedAt: Date
+): Promise<{ status: "accepted"; jobId: string; feedbackItemIds: string[] }> {
+  if (context.repositoryBackedMode && context.readModel && context.feedbackRevisionCommand) {
+    return requestPrdFeedbackRevisionWithoutFixture(context, prdJiraKey, body, requestedAt);
   }
 
-  await context.feedbackRevisionCommand.recordRevisionJob({
-    runId: workItem.runId,
-    job,
-    taskId: `task_${workItem.id}`,
-    feedbackItems: feedbackItemsForRevision(context, feedbackItemIds),
-    now
+  return requireCompatibilityActions(context).requestFeedbackRevision({
+    prdJiraKey,
+    requestedBy: requireString(body.requestedBy, "requestedBy"),
+    feedback: requireString(body.feedback, "feedback"),
+    requestedAt
   });
-}
-
-function feedbackItemsForRevision(context: WorkflowApiRequestContext, feedbackItemIds: string[]): FeedbackItem[] {
-  const fixture = requireCompatibilityFixture(context);
-  const feedbackById = new Map(fixture.store.feedbackItems.map((feedback) => [feedback.id, feedback]));
-  const feedbackItems: FeedbackItem[] = [];
-
-  for (const feedbackId of feedbackItemIds) {
-    const feedback = feedbackById.get(feedbackId);
-
-    if (!feedback) {
-      throw new Error(`Feedback revision command could not find fixture feedback state: ${feedbackId}`);
-    }
-
-    feedbackItems.push(feedback);
-  }
-
-  return feedbackItems;
-}
-
-async function recordDocumentStateCommand(
-  context: WorkflowApiRequestContext,
-  documentId: string,
-  now: Date,
-  metadata: { actor?: string; reason?: string } = {}
-): Promise<void> {
-  if (!context.workflowTransitionCommand) {
-    return;
-  }
-
-  const fixture = requireCompatibilityFixture(context);
-  const snapshot = createGenericPrdSnapshot(fixture.store);
-  const document = snapshot.documents.find((candidate) => candidate.id === documentId);
-
-  if (!document) {
-    throw new Error(`Workflow transition command could not find fixture document state: ${documentId}`);
-  }
-
-  await context.workflowTransitionCommand.recordDocumentState({
-    document,
-    workflowTask:
-      snapshot.workflowTasks.find((task) => task.id === document.workflowTaskId) ??
-      snapshot.workflowTasks.find((task) => task.currentDocumentId === documentId),
-    actor: metadata.actor,
-    reason: metadata.reason,
-    now
-  });
-}
-
-async function recordWorkflowJobCommand(
-  context: WorkflowApiRequestContext,
-  jobId: string | undefined,
-  now: Date
-): Promise<void> {
-  if (!context.workflowTransitionCommand || !jobId) {
-    return;
-  }
-
-  await context.workflowTransitionCommand.recordWorkflowJob({
-    ...workflowJobCommandInputForFixtureJob(requireCompatibilityFixture(context).store, jobId),
-    now
-  });
-}
-
-async function recordEngineTransitionCommands(
-  context: WorkflowApiRequestContext,
-  engineStep: WorkflowEngineStepResult,
-  now: Date
-): Promise<void> {
-  if (!context.workflowTransitionCommand || !engineStep.progressed) {
-    return;
-  }
-
-  const commandInput = createEngineTransitionCommandInput(requireCompatibilityFixture(context).store, engineStep, now);
-
-  if (!commandInput) {
-    return;
-  }
-
-  if (context.workflowTransitionCommand.recordEngineTransition) {
-    await context.workflowTransitionCommand.recordEngineTransition(commandInput);
-    return;
-  }
-
-  const taskByDocumentId = new Map(
-    (commandInput.workflowTasks ?? [])
-      .filter((task) => task.currentDocumentId)
-      .map((task) => [task.currentDocumentId as string, task])
-  );
-
-  for (const document of commandInput.documents) {
-    await context.workflowTransitionCommand.recordDocumentState({
-      document,
-      workflowTask: taskByDocumentId.get(document.id),
-      now
-    });
-  }
-
-  for (const job of commandInput.jobs) {
-    await context.workflowTransitionCommand.recordWorkflowJob({ ...job, now });
-  }
-}
-
-async function recordWorkflowResultProjectionCommand(
-  context: WorkflowApiRequestContext,
-  engineStep: WorkflowEngineStepResult
-): Promise<void> {
-  if (!context.workflowResultCommand) {
-    return;
-  }
-
-  if (!engineStep.processedResult) {
-    return;
-  }
-
-  const snapshot = createGenericPrdSnapshot(requireCompatibilityFixture(context).store);
-  const jobsById = new Map(snapshot.workflowJobs.map((job) => [job.id, job]));
-  const job = jobsById.get(engineStep.processedResult.jobId);
-
-  if (!job) {
-    throw new Error(`Workflow result command could not find fixture job state: ${engineStep.processedResult.jobId}`);
-  }
-
-  await context.workflowResultCommand.recordResultProjection({
-    jobId: engineStep.processedResult.jobId,
-    ...resultProjectionForRun(snapshot, job.runId)
-  });
-}
-
-function resultProjectionForRun(snapshot: GenericPrdSnapshot, runId: string) {
-  const jobs = snapshot.workflowJobs.filter((job) => job.runId === runId);
-  const jobIds = new Set(jobs.map((job) => job.id));
-  const documents = snapshot.documents.filter((document) => document.workflowRunId === runId);
-  const documentIds = new Set(documents.map((document) => document.id));
-
-  return {
-    jobs,
-    jobResults: snapshot.workflowJobResults.filter((result) => jobIds.has(result.jobId)),
-    workflowTasks: snapshot.workflowTasks.filter((task) => task.runId === runId),
-    documents,
-    documentVersions: snapshot.documentVersions.filter((version) => documentIds.has(version.documentId)),
-    artifacts: snapshot.artifacts.filter(
-      (artifact) =>
-        jobIds.has(artifact.producerJobId) ||
-        (artifact.documentId !== undefined && documentIds.has(artifact.documentId))
-    ),
-    qualityResults: snapshot.qualityResults.filter((result) => documentIds.has(result.documentId))
-  };
-}
-
-async function persistFixtureSnapshot(context: WorkflowApiRequestContext): Promise<void> {
-  if (!context.snapshotMirror) {
-    return;
-  }
-
-  await context.snapshotMirror.persist(createGenericPrdSnapshot(requireCompatibilityFixture(context).store));
 }
 
 interface RunnerRegistrationBody {
@@ -2049,6 +1888,24 @@ interface PrdFeedbackRevisionBody {
   now?: unknown;
 }
 
+interface WorkflowIntakeBody {
+  sourceType?: unknown;
+  sourceKey?: unknown;
+  documentType?: unknown;
+  workflowDefinitionId?: unknown;
+  outputLanguage?: unknown;
+  title?: unknown;
+  requestedBy?: unknown;
+}
+
+interface WorkflowSourceFeedbackRevisionBody {
+  sourceType?: unknown;
+  documentType?: unknown;
+  requestedBy?: unknown;
+  feedback?: unknown;
+  now?: unknown;
+}
+
 interface DocumentFeedbackBody {
   source?: unknown;
   author?: unknown;
@@ -2088,246 +1945,12 @@ interface ApprovalActionBody {
   now?: unknown;
 }
 
-function summarizeState(fixture: Fixture, prdJiraKey: string): Record<string, unknown> | undefined {
-  const workItemIds = fixture.store.workItems
-    .filter((workItem) => workItem.primaryJiraKey === prdJiraKey)
-    .map((workItem) => workItem.id);
-  const snapshot = createGenericPrdSnapshot(fixture.store);
-  const document = snapshot.documents.find((candidate) => candidate.sourceKey === prdJiraKey);
-  const externalIssue = fixture.store.externalIssues.get(prdJiraKey);
-
-  if (workItemIds.length === 0 && !document && !externalIssue) {
-    return undefined;
-  }
-
-  const currentVersion = document
-    ? snapshot.documentVersions.find((version) => version.id === document.currentVersionId)
-    : undefined;
-
-  const jobs = fixture.store.agentJobs
-    .filter((job) => workItemIds.includes(job.workItemId))
-    .map((job) => ({
-      id: job.id,
-      type: job.jobType,
-      jira: job.primaryJiraKey,
-      status: job.status
-    }));
-
-  return {
-    prdJiraKey,
-    prdStatus: externalIssue?.status,
-    policy: snapshot.policy,
-    jobs,
-    artifacts: latestArtifacts(fixture.store.artifacts).map((artifact) => ({
-      type: artifact.type,
-      location: artifact.location,
-      url: artifact.url
-    })),
-    latestQualityResult: document
-      ? snapshot.qualityResults
-          .filter((qualityResult) => qualityResult.documentId === document.id)
-          .at(-1) ?? null
-      : null,
-    latestRevisionSummary: currentVersion?.revisionSummary ?? null,
-    latestResult: fixture.store.agentJobResults.at(-1)?.output ?? null
-  };
-}
-
-function latestArtifacts<T extends { type: string; location: string; url?: string }>(artifacts: T[]): T[] {
-  const byTypeAndLocation = new Map<string, T>();
-
-  for (const artifact of artifacts) {
-    byTypeAndLocation.set(`${artifact.type}:${artifact.location}`, artifact);
-  }
-
-  return Array.from(byTypeAndLocation.values());
-}
-
-function summarizeWorkflowRun(snapshot: GenericPrdSnapshot, runId: string): Record<string, unknown> | undefined {
-  const run = snapshot.workflowRuns.find((candidate) => candidate.id === runId);
-
-  if (!run) {
-    return undefined;
-  }
-
-  return {
-    run,
-    policy: snapshot.policy,
-    tasks: snapshot.workflowTasks.filter((task) => task.runId === runId),
-    jobs: snapshot.workflowJobs.filter((job) => job.runId === runId),
-    documents: snapshot.documents.filter((document) => document.workflowRunId === runId)
-  };
-}
-
-function summarizeWorkflowRunTree(snapshot: GenericPrdSnapshot, runId: string): Record<string, unknown> | undefined {
-  const summary = summarizeWorkflowRun(snapshot, runId);
-
-  if (!summary) {
-    return undefined;
-  }
-
-  const jobs = snapshot.workflowJobs.filter((job) => job.runId === runId);
-  const documents = snapshot.documents.filter((document) => document.workflowRunId === runId);
-  const tasks = snapshot.workflowTasks.filter((task) => task.runId === runId);
-
-  return {
-    run: summary.run,
-    policy: snapshot.policy,
-    tasks,
-    nodes: [
-      ...tasks.map((task) => ({
-        id: task.id,
-        type: "workflow_task",
-        parentTaskId: task.parentTaskId,
-        taskType: task.taskType,
-        status: task.status,
-        currentDocumentId: task.currentDocumentId
-      })),
-      ...jobs.map((job) => ({
-        id: job.id,
-        type: "workflow_job",
-        jobType: job.jobType,
-        status: job.status,
-        taskId: taskIdForWorkflowJob(job),
-        primaryDocumentId: primaryDocumentIdForJob(job, documents, tasks, taskIdForWorkflowJob(job))
-      }))
-    ],
-    edges: workflowRunTreeEdges(tasks, jobs),
-    documents
-  };
-}
-
-function taskIdForWorkflowJob(job: WorkflowJob): string | undefined {
-  return job.taskId ?? stringOrUndefined(job.input.taskId);
-}
-
-type WorkflowRunTreeEdge = {
-  id: string;
-  type: "workflow_task_parent" | "workflow_task_job";
-  from: string;
-  to: string;
-};
-
-function workflowRunTreeEdges(tasks: WorkflowTask[], jobs: WorkflowJob[]): WorkflowRunTreeEdge[] {
-  const parentEdges = tasks.flatMap((task): WorkflowRunTreeEdge[] =>
-    task.parentTaskId
-      ? [
-          {
-            id: `edge_${task.parentTaskId}_${task.id}`,
-            type: "workflow_task_parent",
-            from: task.parentTaskId,
-            to: task.id
-          }
-        ]
-      : []
-  );
-  const jobEdges = jobs.flatMap((job): WorkflowRunTreeEdge[] => {
-    const taskId = taskIdForWorkflowJob(job);
-
-    return taskId
-      ? [
-          {
-            id: `edge_${taskId}_${job.id}`,
-            type: "workflow_task_job",
-            from: taskId,
-            to: job.id
-          }
-        ]
-      : [];
-  });
-
-  return [...parentEdges, ...jobEdges];
-}
-
-function summarizeDocumentCurrent(
-  fixture: Fixture,
-  snapshot: GenericPrdSnapshot,
-  documentId: string
-): Record<string, unknown> | undefined {
-  const document = snapshot.documents.find((candidate) => candidate.id === documentId);
-
-  if (!document) {
-    return undefined;
-  }
-
-  const currentArtifactIds = [document.currentMarkdownArtifactId, document.currentWikiArtifactId].filter(
-    (id): id is string => Boolean(id)
-  );
-
-  return {
-    document,
-    workflowTask:
-      snapshot.workflowTasks.find((task) => task.id === document.workflowTaskId) ??
-      snapshot.workflowTasks.find((task) => task.currentDocumentId === documentId) ??
-      null,
-    policy: snapshot.policy,
-    currentVersion:
-      snapshot.documentVersions.find((version) => version.id === document.currentVersionId) ?? null,
-    latestQualityResult:
-      snapshot.qualityResults
-        .filter((qualityResult) => qualityResult.documentId === documentId)
-        .at(-1) ?? null,
-    currentArtifacts: currentArtifactIds
-      .map((artifactId) => snapshot.artifacts.find((artifact) => artifact.id === artifactId))
-      .filter(Boolean),
-    approvalGate: approvalGateForDocument(fixture, document),
-    pendingFeedback: snapshot.feedbackItems.filter(
-      (feedback) => feedback.documentId === documentId && !feedback.revisionJobId
-    )
-  };
-}
-
-function summarizeDocumentHistory(
-  snapshot: GenericPrdSnapshot,
-  documentId: string
-): Record<string, unknown> | undefined {
-  const document = snapshot.documents.find((candidate) => candidate.id === documentId);
-
-  if (!document) {
-    return undefined;
-  }
-
-  return {
-    documentId,
-    policy: snapshot.policy,
-    versions: snapshot.documentVersions.filter((version) => version.documentId === documentId),
-    qualityResults: snapshot.qualityResults.filter((qualityResult) => qualityResult.documentId === documentId),
-    artifacts: snapshot.artifacts.filter((artifact) => artifact.documentId === documentId),
-    feedbackItems: snapshot.feedbackItems.filter((feedback) => feedback.documentId === documentId)
-  };
-}
-
-function requireGenericDocument(snapshot: GenericPrdSnapshot, documentId: string): Document {
-  const document = snapshot.documents.find((candidate) => candidate.id === documentId);
-
-  if (!document) {
-    throw new HttpError(404, `Document not found: ${documentId}`);
-  }
-
-  return document;
-}
-
-function snapshotJobAfterAction(fixture: Fixture, jobId: string): WorkflowJob | undefined {
-  return createGenericPrdSnapshot(fixture.store).workflowJobs.find((job) => job.id === jobId);
-}
-
 function documentIdForApprovalGateId(gateId: string): string {
   if (!gateId.startsWith("gate_")) {
     throw new HttpError(404, `Approval gate not found: ${gateId}`);
   }
 
   return gateId.slice("gate_".length);
-}
-
-function approvalGateForDocument(fixture: Fixture, document: Document): Record<string, unknown> {
-  const workItem = workItemForDocument(fixture, document);
-  const issue = fixture.store.externalIssues.get(document.sourceKey);
-
-  return approvalGateForDocumentState(
-    document,
-    issue?.status ?? null,
-    approvalStatusFor(workItem?.state, issue?.status)
-  );
 }
 
 function approvalGateForReadModelDocument(document: Document): Record<string, unknown> {
@@ -2404,129 +2027,6 @@ function approvalGateForReadModelAction(
   };
 }
 
-function refreshApprovalGate(
-  fixture: Fixture,
-  document: Document
-): {
-  approvalGate: Record<string, unknown>;
-  downstreamJob?: { status: "accepted" | "already_scheduled"; jobId: string };
-} {
-  const workItem = workItemForDocument(fixture, document);
-  const issue = fixture.store.externalIssues.get(document.sourceKey);
-  let downstreamJob: { status: "accepted" | "already_scheduled"; jobId: string } | undefined;
-
-  if (workItem && issue?.status === "approved") {
-    workItem.state = "approved";
-    downstreamJob = scheduleDownstreamAfterApproval(fixture, document);
-  }
-
-  if (workItem && (issue?.status === "rejected" || issue?.status === "needs_revision")) {
-    workItem.state = "needs_revision";
-  }
-
-  return {
-    approvalGate: approvalGateForDocument(fixture, document),
-    downstreamJob
-  };
-}
-
-function transitionApprovalGate(
-  fixture: Fixture,
-  document: Document,
-  targetStatus: "approved" | "needs_revision",
-  metadata: { actor?: string; reason?: string }
-): Record<string, unknown> {
-  const workItem = workItemForDocument(fixture, document);
-  const issue = fixture.store.externalIssues.get(document.sourceKey);
-  const fromExternalStatus = issue?.status ?? null;
-
-  if (workItem) {
-    workItem.state = targetStatus === "approved" ? "approved" : "needs_revision";
-  }
-
-  if (issue) {
-    issue.status = targetStatus;
-  }
-
-  return {
-    ...approvalGateForDocument(fixture, document),
-    lastAction: {
-      type: prdConfirmationWorkflowPolicy.approvalAction,
-      sourceOfTruth: prdConfirmationWorkflowPolicy.approvalSource,
-      actor: metadata.actor,
-      reason: metadata.reason,
-      fromExternalStatus,
-      toExternalStatus: issue?.status ?? targetStatus
-    }
-  };
-}
-
-function scheduleDownstreamAfterApproval(
-  fixture: Fixture,
-  document: Document,
-  request: { requestedBy?: string; includeAdr?: boolean; adrTitle?: string; now?: Date } = {}
-): { status: "accepted" | "already_scheduled"; jobId: string } | undefined {
-  if (document.type === "prd") {
-    return fixture.workflow.requestDownstreamRouting(document.sourceKey, request);
-  }
-
-  if (document.type === "hld" || document.type === "lld") {
-    return fixture.workflow.requestDocumentFanOut(document.sourceKey, request);
-  }
-
-  if (document.type === "spec") {
-    return fixture.workflow.requestImplementationStart(document.sourceKey, request);
-  }
-
-  return undefined;
-}
-
-function workItemForDocument(fixture: Fixture, document: Document) {
-  const workItemId = document.id.startsWith("doc_") ? document.id.slice("doc_".length) : undefined;
-
-  return fixture.store.workItems.find((candidate) => candidate.id === workItemId);
-}
-
-function primaryDocumentIdForJob(
-  job: { id: string; input: Record<string, unknown> },
-  documents: Document[],
-  tasks: WorkflowTask[] = [],
-  taskId?: string
-): string | undefined {
-  const documentIds = new Set(documents.map((document) => document.id));
-  const taskDocumentId = taskId ? tasks.find((task) => task.id === taskId)?.currentDocumentId : undefined;
-
-  if (taskDocumentId && documentIds.has(taskDocumentId)) {
-    return taskDocumentId;
-  }
-
-  const inputDocumentId = stringOrUndefined(job.input.documentId);
-
-  if (inputDocumentId && documentIds.has(inputDocumentId)) {
-    return inputDocumentId;
-  }
-
-  const sourceDocumentId = stringOrUndefined(job.input.sourceDocumentId);
-
-  if (sourceDocumentId && documentIds.has(sourceDocumentId)) {
-    return sourceDocumentId;
-  }
-
-  const producedDocument = documents.find((document) => document.currentVersionId && document.currentVersionId.endsWith(job.id));
-
-  if (producedDocument) {
-    return producedDocument.id;
-  }
-
-  const parentDocumentId = stringOrUndefined(job.input.parentDocumentId);
-
-  if (parentDocumentId && documentIds.has(parentDocumentId)) {
-    return parentDocumentId;
-  }
-
-  return undefined;
-}
-
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -2577,20 +2077,28 @@ function requireJiraIssueReader(context: WorkflowApiRequestContext): JiraIssueRe
   return context.jiraIssueReader;
 }
 
-function requirePrdIntakeCommand(context: WorkflowApiRequestContext): PrdIntakeCommand {
-  if (!context.prdIntakeCommand) {
-    throw new HttpError(503, "PRD intake command is not configured");
+function requireWorkflowIntakeCommand(context: WorkflowApiRequestContext): WorkflowIntakeCommand {
+  if (!context.workflowIntakeCommand) {
+    throw new HttpError(503, "Workflow intake command is not configured");
   }
 
-  return context.prdIntakeCommand;
+  return context.workflowIntakeCommand;
 }
 
-function requireCompatibilityFixture(context: WorkflowApiRequestContext): Fixture {
-  if (!context.fixture) {
-    throw new HttpError(501, "Compatibility fixture workflow is not configured");
+function requireWorkflowApiReadModel(context: WorkflowApiRequestContext): WorkflowApiReadModel {
+  if (!context.readModel) {
+    throw new HttpError(501, workflowCompatibilityDisabledMessage);
   }
 
-  return context.fixture;
+  return context.readModel;
+}
+
+function requireCompatibilityActions(context: WorkflowApiRequestContext): WorkflowApiCompatibilityActions {
+  if (!context.compatibilityActions) {
+    throw new HttpError(501, workflowCompatibilityDisabledMessage);
+  }
+
+  return context.compatibilityActions;
 }
 
 function requireDocumentRepository(context: WorkflowApiRequestContext): DocumentRepository {
@@ -2825,7 +2333,7 @@ function revisionJobForReadModelDocument(
   current: DocumentCurrentReadModel,
   body: DocumentRevisionBody,
   feedbackItems: FeedbackItem[]
-): AgentJob {
+): WorkflowCommandJob {
   return {
     id: `job_${randomUUID()}`,
     workItemId: workItemIdForDocumentId(current.document.id),
@@ -3101,7 +2609,7 @@ function implementationPrAuthorSkill(): Record<string, string> {
   };
 }
 
-function revisionJobTypeForDocument(document: Document): AgentJob["jobType"] {
+function revisionJobTypeForDocument(document: Document): WorkflowCommandJob["jobType"] {
   return document.type === "prd" ? "prd.apply_feedback_revision" : "document.revise";
 }
 
@@ -3293,6 +2801,10 @@ function statusCodeForError(error: unknown): number {
 
   if (error.message.startsWith("Confluence pageId or pageUrl is required")) {
     return 400;
+  }
+
+  if (error.message === workflowCompatibilityDisabledMessage) {
+    return 501;
   }
 
   return 500;

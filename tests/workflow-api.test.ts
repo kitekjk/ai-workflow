@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
-import { prdConfirmationWorkflowPolicy } from "../backend/src/prd-confirmation/domain";
-import type { JiraIssueReader, WikiFeedbackCollector } from "../backend/src/prd-confirmation/ports";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
+import type { JiraIssueReader, WikiFeedbackCollector } from "../backend/src/integrations/workflow-ports";
+import { prdConfirmationWorkflowPolicy } from "../backend/src/workflow-core/domain";
+import { createLegacyPrdCompatibility } from "../backend/src/workflow-api/legacy-prd-compatibility";
+import { createLegacyPrdServerActionFactory } from "../backend/src/workflow-api/legacy-prd-server-actions";
 import type {
   RecordFeedbackCommandInput,
   RecordRevisionJobCommandInput
@@ -14,7 +16,17 @@ import type {
   RecordDocumentStateCommandInput,
   RecordWorkflowJobCommandInput
 } from "../backend/src/workflow-api/workflow-transition-command";
-import type { RecordPrdIntakeInput } from "../backend/src/workflow-api/prd-intake-command";
+import type {
+  RecordPrdIntakeInput,
+  RecordWorkflowIntakeInput
+} from "../backend/src/workflow-api/prd-intake-command";
+
+type TestLegacyPrdFixture = ReturnType<typeof createPrdConfirmationFixture>;
+type TestLegacyPrdSnapshotMirror = NonNullable<Parameters<typeof createLegacyPrdCompatibility>[0]["snapshotMirror"]>;
+
+function legacyPrdActionsFactory(fixture: TestLegacyPrdFixture, snapshotMirror?: TestLegacyPrdSnapshotMirror) {
+  return createLegacyPrdServerActionFactory(createLegacyPrdCompatibility({ fixture, snapshotMirror }));
+}
 
 describe("Workflow API", () => {
   let server: WorkflowApiServer;
@@ -22,7 +34,10 @@ describe("Workflow API", () => {
 
   beforeEach(async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
-    server = await createWorkflowApiServer({ fixture, enableTestControls: true }).listen(0);
+    server = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
+      enableTestControls: true
+    }).listen(0);
     baseUrl = server.url;
   });
 
@@ -63,7 +78,9 @@ describe("Workflow API", () => {
   it("returns 409 when PRD intake is requested from a non-requested Jira status", async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     fixture.store.externalIssues.get("PRD-100")!.status = "drafting";
-    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture)
+    }).listen(0);
 
     try {
       const response = await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
@@ -80,7 +97,9 @@ describe("Workflow API", () => {
   it("returns validation errors for unreadable or incomplete PRD intake Jira data", async () => {
     const unreadableFixture = createPrdConfirmationFixture({ qualityPasses: false });
     unreadableFixture.store.externalIssues.delete("PRD-100");
-    const unreadableServer = await createWorkflowApiServer({ fixture: unreadableFixture }).listen(0);
+    const unreadableServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(unreadableFixture)
+    }).listen(0);
 
     try {
       const response = await postJson(`${unreadableServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
@@ -95,7 +114,9 @@ describe("Workflow API", () => {
 
     const incompleteFixture = createPrdConfirmationFixture({ qualityPasses: false });
     incompleteFixture.store.externalIssues.get("PRD-100")!.linkedSourceKeys = [];
-    const incompleteServer = await createWorkflowApiServer({ fixture: incompleteFixture }).listen(0);
+    const incompleteServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(incompleteFixture)
+    }).listen(0);
 
     try {
       const response = await postJson(`${incompleteServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
@@ -110,7 +131,9 @@ describe("Workflow API", () => {
 
     const missingSourceFixture = createPrdConfirmationFixture({ qualityPasses: false });
     missingSourceFixture.store.externalIssues.get("PRD-100")!.linkedSourceKeys = ["OPS-MISSING"];
-    const missingSourceServer = await createWorkflowApiServer({ fixture: missingSourceFixture }).listen(0);
+    const missingSourceServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(missingSourceFixture)
+    }).listen(0);
 
     try {
       const response = await postJson(`${missingSourceServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
@@ -126,7 +149,9 @@ describe("Workflow API", () => {
 
   it("does not expose fixture test controls unless explicitly enabled", async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
-    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture)
+    }).listen(0);
 
     try {
       const response = await postJson(`${localServer.url}/test-controls/quality`, { qualityPasses: true });
@@ -143,8 +168,7 @@ describe("Workflow API", () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const snapshots: Array<{ runs: number; jobs: number; documents: number }> = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
-      snapshotMirror: {
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture, {
         async persist(snapshot) {
           snapshots.push({
             runs: snapshot.workflowRuns.length,
@@ -152,7 +176,7 @@ describe("Workflow API", () => {
             documents: snapshot.documents.length
           });
         }
-      }
+      })
     }).listen(0);
 
     try {
@@ -172,12 +196,11 @@ describe("Workflow API", () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const snapshots: unknown[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
-      snapshotMirror: {
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture, {
         async persist(snapshot) {
           snapshots.push(snapshot);
         }
-      }
+      })
     }).listen(0);
 
     try {
@@ -195,10 +218,10 @@ describe("Workflow API", () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const commandInputs: unknown[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       prdIntakeCommand: {
         async recordIntake(input) {
-          commandInputs.push(input);
+          commandInputs.push(input as RecordPrdIntakeInput);
           return {
             runId: input.runId,
             documentId: `doc_${input.workItemId}`,
@@ -233,7 +256,7 @@ describe("Workflow API", () => {
     const feedbackInputs: RecordFeedbackCommandInput[] = [];
     const revisionInputs: RecordRevisionJobCommandInput[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       feedbackRevisionCommand: {
         async recordFeedback(input) {
           feedbackInputs.push(input);
@@ -311,7 +334,7 @@ describe("Workflow API", () => {
     const documentInputs: RecordDocumentStateCommandInput[] = [];
     const jobInputs: RecordWorkflowJobCommandInput[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       workflowTransitionCommand: {
         async recordDocumentState(input) {
           documentInputs.push(input);
@@ -380,7 +403,7 @@ describe("Workflow API", () => {
     const engineInputs: RecordEngineTransitionCommandInput[] = [];
     const jobInputs: RecordWorkflowJobCommandInput[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       workflowTransitionCommand: {
         async recordDocumentState(input) {
           documentInputs.push(input);
@@ -468,7 +491,7 @@ describe("Workflow API", () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const projections: RecordWorkflowResultProjectionInput[] = [];
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       workflowResultCommand: {
         async recordResultProjection(input) {
           projections.push(input);
@@ -689,7 +712,10 @@ describe("Workflow API", () => {
         };
       }
     };
-    const localServer = await createWorkflowApiServer({ fixture, readModel }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
+      readModel
+    }).listen(0);
 
     try {
       const run = await getJson(`${localServer.url}/workflow-runs/run_db_1`);
@@ -731,6 +757,20 @@ describe("Workflow API", () => {
 
   it("serves read-model GET views without a compatibility fixture", async () => {
     const readModel: WorkflowApiReadModel = {
+      async listWorkflowRuns() {
+        return [
+          {
+            id: "run_db_1",
+            workflowDefinitionId: "prd_to_spec",
+            status: "active",
+            sourceType: "jira",
+            sourceKey: "PRD-DB",
+            outputLanguage: "ko",
+            createdAt: "2026-05-20T00:00:00.000Z",
+            updatedAt: "2026-05-20T00:01:00.000Z"
+          }
+        ];
+      },
       async summarizeWorkflowRun(runId) {
         return {
           run: { id: runId, sourceKey: "PRD-DB" },
@@ -812,6 +852,12 @@ describe("Workflow API", () => {
     try {
       await expect(getJson(`${localServer.url}/state/PRD-DB`)).resolves.toMatchObject({
         prdJiraKey: "PRD-DB"
+      });
+      await expect(getJson(`${localServer.url}/workflow-sources/PRD-DB/state`)).resolves.toMatchObject({
+        prdJiraKey: "PRD-DB"
+      });
+      await expect(getJson(`${localServer.url}/workflow-runs?limit=10`)).resolves.toMatchObject({
+        runs: [{ id: "run_db_1", sourceKey: "PRD-DB" }]
       });
       await expect(getJson(`${localServer.url}/workflow-runs/run_db_1/tree`)).resolves.toMatchObject({
         run: { id: "run_db_1" }
@@ -1044,7 +1090,7 @@ describe("Workflow API", () => {
     }
   });
 
-  it("records PRD feedback revision without a compatibility fixture", async () => {
+  it("records source feedback revision without a compatibility fixture", async () => {
     const revisionInputs: RecordRevisionJobCommandInput[] = [];
     const readModel: WorkflowApiReadModel = {
       async summarizeWorkflowRun(runId) {
@@ -1114,8 +1160,9 @@ describe("Workflow API", () => {
     }).listen(0);
 
     try {
-      const response = await postJson(`${localServer.url}/prd/feedback-revision`, {
-        prdJiraKey: "PRD-DB",
+      const response = await postJson(`${localServer.url}/workflow-sources/PRD-DB/feedback-revision`, {
+        sourceType: "jira",
+        documentType: "prd",
         requestedBy: "planner@example.com",
         feedback: " Add success metric. "
       });
@@ -2051,7 +2098,7 @@ describe("Workflow API", () => {
       jiraIssueReader,
       prdIntakeCommand: {
         async recordIntake(input) {
-          commandInputs.push(input);
+          commandInputs.push(input as RecordPrdIntakeInput);
 
           return {
             runId: input.runId,
@@ -2092,6 +2139,128 @@ describe("Workflow API", () => {
     }
   });
 
+  it("intakes workflow sources through the product workflow-run endpoint", async () => {
+    const commandInputs: RecordWorkflowIntakeInput[] = [];
+    const jiraIssueReader: JiraIssueReader = {
+      async loadPrdWithSources(prdJiraKey) {
+        expect(prdJiraKey).toBe("PRD-DB");
+
+        return {
+          prd: {
+            key: "PRD-DB",
+            issueType: "prd",
+            status: "prd_requested",
+            summary: "Read model PRD",
+            linkedSourceKeys: ["OPS-1"]
+          },
+          sources: [
+            {
+              key: "OPS-1",
+              issueType: "operational_request",
+              status: "open",
+              summary: "Source request"
+            }
+          ]
+        };
+      }
+    };
+    const localServer = await createWorkflowApiServer({
+      jiraIssueReader,
+      prdIntakeCommand: {
+        async recordIntake(input) {
+          commandInputs.push(input as RecordWorkflowIntakeInput);
+
+          return {
+            runId: input.runId,
+            documentId: `doc_${input.workItemId}`,
+            jobId: input.jobId
+          };
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/workflow-runs/intake`, {
+        sourceType: "jira",
+        sourceKey: "PRD-DB",
+        documentType: "prd",
+        workflowDefinitionId: "prd_to_spec",
+        requestedBy: "planner@example.com"
+      });
+
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "accepted",
+        documentId: expect.stringMatching(/^doc_wi_/),
+        jobId: expect.stringMatching(/^job_/),
+        runId: expect.stringMatching(/^run_/)
+      });
+      expect(commandInputs).toMatchObject([
+        {
+          sourceType: "jira",
+          sourceKey: "PRD-DB",
+          documentType: "prd",
+          workflowDefinitionId: "prd_to_spec",
+          title: "Read model PRD",
+          requestedBy: "planner@example.com",
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  it("starts non-Jira document workflow sources without the legacy PRD fixture", async () => {
+    const commandInputs: RecordWorkflowIntakeInput[] = [];
+    const localServer = await createWorkflowApiServer({
+      prdIntakeCommand: {
+        async recordIntake(input) {
+          commandInputs.push(input as RecordWorkflowIntakeInput);
+
+          return {
+            runId: input.runId,
+            documentId: `doc_${input.workItemId}`,
+            jobId: input.jobId
+          };
+        }
+      },
+      now: () => new Date("2026-05-20T00:00:00.000Z")
+    }).listen(0);
+
+    try {
+      const response = await postJson(`${localServer.url}/workflow-runs/intake`, {
+        sourceType: "app",
+        sourceKey: "HLD-APP-1",
+        documentType: "hld",
+        title: "Manual HLD seed",
+        requestedBy: "developer@example.com"
+      });
+
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "accepted",
+        documentId: expect.stringMatching(/^doc_wi_/),
+        jobId: expect.stringMatching(/^job_/),
+        runId: expect.stringMatching(/^run_/)
+      });
+      expect(commandInputs).toMatchObject([
+        {
+          sourceType: "app",
+          sourceKey: "HLD-APP-1",
+          documentType: "hld",
+          workflowDefinitionId: "hld_to_spec",
+          title: "Manual HLD seed",
+          requestedBy: "developer@example.com",
+          now: new Date("2026-05-20T00:00:00.000Z")
+        }
+      ]);
+    } finally {
+      await localServer.close();
+    }
+  });
+
   it("fails compatibility transition routes closed when no fixture is configured", async () => {
     const localServer = await createWorkflowApiServer({}).listen(0);
 
@@ -2100,7 +2269,8 @@ describe("Workflow API", () => {
 
       expect(response.status).toBe(501);
       expect(await response.json()).toEqual({
-        error: "Compatibility fixture workflow is not configured"
+        error:
+          "Legacy PRD compatibility fixture is disabled; use the repository-backed workflow APIs or set WORKFLOW_COMPATIBILITY_FIXTURE=enabled for old fixture-only routes"
       });
     } finally {
       await localServer.close();
@@ -2127,7 +2297,10 @@ describe("Workflow API", () => {
         return undefined;
       }
     };
-    const localServer = await createWorkflowApiServer({ fixture, readModel }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
+      readModel
+    }).listen(0);
 
     try {
       const response = await fetch(`${localServer.url}/state/PRD-100`);
@@ -2176,7 +2349,7 @@ describe("Workflow API", () => {
   it("advances compatibility workflows through the internal tick loop when configured", async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const localServer = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       internalTickIntervalMs: 5
     }).listen(0);
 
@@ -2358,7 +2531,10 @@ describe("Workflow API", () => {
         };
       }
     };
-    const localServer = await createWorkflowApiServer({ fixture, wikiFeedbackCollector }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
+      wikiFeedbackCollector
+    }).listen(0);
 
     try {
       await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });
@@ -2797,7 +2973,9 @@ describe("Workflow API", () => {
 
   it("keeps artifact history internally with creation timestamps", async () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
-    const localServer = await createWorkflowApiServer({ fixture }).listen(0);
+    const localServer = await createWorkflowApiServer({
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture)
+    }).listen(0);
 
     try {
       await postJson(`${localServer.url}/prd/intake`, { prdJiraKey: "PRD-100" });

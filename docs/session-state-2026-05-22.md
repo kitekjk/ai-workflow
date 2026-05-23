@@ -22,6 +22,17 @@ PRD intake
 ## Implemented So Far
 
 - MySQL no-fixture runtime can intake PRDs without the compatibility fixture.
+- Workflow API now defaults to the MySQL no-fixture runtime; the old PRD
+  confirmation fixture is explicit legacy opt-in only.
+- Legacy PRD confirmation code has moved to
+  `backend/src/legacy/prd-confirmation`, while shared contracts such as Jira
+  issue shape, feedback items, workflow policy, and transition event types now
+  live in non-legacy core/integration modules.
+- Runtime wiring is split so product integration settings live in
+  `backend/src/runtime/integration-config.ts`, the old fixture factory lives in
+  `backend/src/runtime/legacy-prd-runtime.ts`, and the historical
+  `backend/src/runtime/create-runtime.ts` compatibility re-export has been
+  removed.
 - Local runner claim scope is email-first through `requestedBy` /
   `LOCAL_RUNNER_OWNER_EMAIL`.
 - Local runner drain mode exists via `LOCAL_RUNNER_MAX_JOBS`.
@@ -107,6 +118,53 @@ PRD intake
   `workflowTaskId`, and job `taskId`; snapshot mirroring and result
   projections persist those task links instead of recreating task hierarchy
   from documents at API read time.
+- Workflow API legacy fixture calls are now behind
+  `backend/src/workflow-api/legacy-prd-compatibility.ts`; server code no
+  longer imports `backend/src/legacy/prd-confirmation/*` directly. The old
+  engine transition projection implementation is isolated as
+  `legacy-prd-engine-transition-projection.ts`; the public
+  `engine-transition-projection.ts` compatibility export has been removed.
+- Legacy PRD MySQL snapshot loader/mirror wiring is now created through the
+  same compatibility module. `create-workflow-api-runtime.ts` no longer imports
+  legacy snapshot persistence directly and no longer exposes `snapshotLoader`;
+  callers only get `snapshotMirror` for the old server fixture path plus
+  `restorePrdSnapshot()` for startup restoration.
+- Legacy fixture command projection is isolated in
+  `backend/src/workflow-api/legacy-prd-command-projection.ts`, and legacy
+  write-route orchestration now lives in
+  `backend/src/workflow-api/legacy-prd-server-actions.ts`. The server no
+  longer imports command projection or route-action modules directly; old
+  fixture routes go through the server-action facade for route action,
+  repository-backed command projection, and snapshot persistence. `server.ts`
+  also no longer reads `legacyPrd.fixture` directly or scatters
+  `context.legacyPrd` mode checks through route handlers; repository-backed
+  behavior is gated by an explicit `repositoryBackedMode` flag, and legacy
+  operations are exposed to request handlers as a `legacyPrdActions` port.
+- Legacy fixture read projection is isolated in
+  `backend/src/workflow-api/legacy-prd-read-projection.ts`. Old fixture-backed
+  state/run/tree/document current/history views are exposed through
+  `LegacyPrdWorkflowApiReadModel`, and the server gets that adapter through
+  `legacy-prd-server-actions.ts` so legacy read internals stay behind the same
+  compatibility facade.
+- Legacy fixture route actions are isolated in
+  `backend/src/workflow-api/legacy-prd-route-actions.ts`. `server.ts` no longer
+  creates legacy snapshots directly and no longer reaches into `fixture.store`
+  or `fixture.workflow`; fixture-backed intake, feedback, wiki feedback,
+  revision, and fan-out actions go through compatibility helpers.
+- The Workflow API server now accepts legacy behavior only through an explicit
+  `LegacyPrdCompatibility` facade. Runtime/main/smoke wiring and legacy tests
+  pass `legacyPrd`; the old raw `fixture` and `snapshotMirror` server inputs
+  have been removed from the public server creation surface.
+- Workflow API runtime results also no longer expose raw legacy `fixture` or
+  `snapshotMirror` fields. Legacy runtime state is reachable only through
+  `runtime.legacyPrd`, while product no-fixture runtimes keep that field
+  undefined.
+- Fixture-backed read views now sit behind `LegacyPrdWorkflowApiReadModel`, so
+  server read routes use the same `WorkflowApiReadModel` surface for both
+  repository-backed and compatibility-backed views. The old public
+  `engine-transition-projection.ts` shim has also been removed; tests and
+  compatibility code import `legacy-prd-engine-transition-projection.ts`
+  directly when they need fixture projection internals.
 - MySQL no-fixture mode now handles the PRD feedback-revision shortcut and
   explicit HLD/LLD `POST /documents/:id/fan-out` requests without the
   compatibility fixture. These paths build jobs from the read model, attach
@@ -224,6 +282,43 @@ PRD intake
   frontend code moved from `ui-execution-dashboard-demo` to
   `apps/workflow-app`, while backend/domain/runner code moved from root `src`
   to `backend/src`.
+- Workflow API legacy read/write behavior now reaches the HTTP server through
+  `createLegacyPrdServerActions()` and a `LegacyPrdServerActions` port. Route
+  handlers use `legacyPrdActions` for old fixture-only actions and
+  `repositoryBackedMode` for product paths, so `server.ts` no longer imports
+  legacy command/read/route projection internals or reads `context.legacyPrd`
+  directly.
+- The server creation surface no longer accepts `legacyPrd` directly. HTTP
+  server wiring now takes a neutral `compatibilityActionsFactory` from
+  `backend/src/workflow-api/compatibility-actions.ts`; app entrypoints and
+  legacy tests assemble that factory through `legacy-prd-server-actions.ts`.
+  This keeps PRD fixture construction outside `server.ts` while preserving the
+  old compatibility opt-in path.
+- Product intake/state clients can now avoid PRD-specific route names:
+  `POST /workflow-runs/intake` accepts a Jira source key plus document/workflow
+  type metadata, and `GET /workflow-sources/:sourceKey/state` returns the
+  source state through the same read model. The dashboard Full API Slice,
+  MySQL no-fixture smoke, README, and deployment runbook now use the new
+  workflow/source routes. `/prd/intake` and `/state/:sourceKey` remain
+  compatibility aliases.
+- Source-scoped feedback revision now has a product route as well:
+  `POST /workflow-sources/:sourceKey/feedback-revision` accepts source type,
+  document type, actor, and feedback, then uses the same repository-backed or
+  compatibility action path as the old `/prd/feedback-revision` alias.
+- Workflow listing now has a product API and dashboard path:
+  `GET /workflow-runs?limit=N` returns recent workflow runs from the read
+  model, MySQL and legacy read models implement the list surface, and the
+  dashboard merges that list into the Workflow List. In API mode, selecting a
+  different listed run loads that run's detail/dashboard bundle.
+- Workflow intake command code now has a product-named
+  `backend/src/workflow-api/workflow-intake-command.ts`; the old
+  `prd-intake-command.ts` file is only a compatibility re-export. The product
+  `/workflow-runs/intake` route can now create repository-backed workflows from
+  `jira`, `app`, or `github` sources and can seed root `prd`, `hld`, `lld`,
+  `adr`, or `spec` tasks. Non-PRD roots start with a `document.generate` job.
+- The dashboard Workflow List now includes a compact create form wired to the
+  same product intake route, so operators can seed Jira PRD runs or app/GitHub
+  document-root runs without using the old PRD-specific action.
 
 ## Next Work
 
@@ -238,11 +333,26 @@ Continue in large feature slices:
 Current good after the full slice:
 
 - `npm run typecheck`
-- `npm test` passed: 43 files / 305 tests
+- `npm test` passed: 44 files / 310 tests
 - `npm run smoke:mysql:no-fixture` passed through PRD/HLD/LLD/Spec approval,
   implementation PR creation/status collection, final workflow-run completion,
   4 completed Code tasks, and 8 pull request artifacts with 28 processed jobs
 - `npm --prefix apps/workflow-app run build`
+- `git diff --check` passed with only existing line-ending normalization
+  warnings.
+- `npm test -- tests/workflow-api-legacy-boundary.test.ts tests/workflow-api.test.ts tests/runtime/create-runtime.test.ts`
+  passed after the legacy server-action facade boundary was tightened.
+- `npm test -- tests/workflow-api-legacy-boundary.test.ts tests/workflow-api.test.ts tests/runner-api.test.ts tests/local-runner.test.ts tests/local-runner-github-implementation.test.ts tests/runtime/create-runtime.test.ts`
+  passed after replacing direct server `legacyPrd` input with the compatibility
+  action factory.
+- `npm test -- tests/workflow-api.test.ts tests/smoke-mysql-no-fixture.test.ts`
+  passed after adding product workflow/source intake-state routes and moving
+  dashboard/smoke clients to them.
+- `npm test -- tests/workflow-api.test.ts` passed after adding
+  `/workflow-sources/:sourceKey/feedback-revision`.
+- `npm test -- tests/workflow-api.test.ts tests/workflow-api-read-model.test.ts tests/runtime/create-runtime.test.ts`
+  and `npm --prefix apps/workflow-app run build` passed after adding workflow
+  run listing and dashboard list/detail loading.
 - `npx vitest run tests/local-runner-preflight.test.ts tests/local-runner-github-implementation.test.ts tests/local-runner.test.ts`
 - `npm test -- tests/local-runner-github-implementation.test.ts tests/repository-transition-planner.test.ts`
 - `npm test -- tests/runner-api.test.ts`

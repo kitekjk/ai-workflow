@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryDocumentRepository } from "../backend/src/document-core/in-memory-repository";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
 import { InMemoryWorkflowRepository } from "../backend/src/workflow-core/in-memory-repository";
 import { WorkflowScheduler } from "../backend/src/workflow-core/scheduler";
+import { createLegacyPrdCompatibility } from "../backend/src/workflow-api/legacy-prd-compatibility";
+import { createLegacyPrdServerActionFactory } from "../backend/src/workflow-api/legacy-prd-server-actions";
 import { createWorkflowApiServer, type WorkflowApiServer } from "../backend/src/workflow-api/server";
 
 const now = "2026-05-20T00:00:00.000Z";
+
+type TestLegacyPrdFixture = ReturnType<typeof createPrdConfirmationFixture>;
+
+function legacyPrdActionsFactory(fixture: TestLegacyPrdFixture) {
+  return createLegacyPrdServerActionFactory(createLegacyPrdCompatibility({ fixture }));
+}
 
 describe("Runner API", () => {
   let repository: InMemoryWorkflowRepository;
@@ -19,7 +27,7 @@ describe("Runner API", () => {
     const fixture = createPrdConfirmationFixture({ qualityPasses: false });
     const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });
     server = await createWorkflowApiServer({
-      fixture,
+      compatibilityActionsFactory: legacyPrdActionsFactory(fixture),
       scheduler,
       documentRepository: documents
     }).listen(0);
@@ -530,7 +538,7 @@ describe("Runner API", () => {
 
   it("requires the configured app token for control-plane API calls", async () => {
     const protectedServer = await createWorkflowApiServer({
-      fixture: createPrdConfirmationFixture(),
+      compatibilityActionsFactory: legacyPrdActionsFactory(createPrdConfirmationFixture()),
       auth: {
         appToken: "app-secret"
       }

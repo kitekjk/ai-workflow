@@ -46,7 +46,7 @@ function requireRepositoryTransitionWorkerDependencies(runtime: WorkflowApiRunti
     !runtime.repositoryTransitionResultReader
   ) {
     throw new Error(
-      "Repository transition worker requires WORKFLOW_RUNTIME_STORE=mysql and WORKFLOW_COMPATIBILITY_FIXTURE=disabled"
+      "Repository transition worker requires the MySQL no-fixture runtime, which is the default when WORKFLOW_RUNTIME_STORE is unset or set to mysql"
     );
   }
 

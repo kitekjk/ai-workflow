@@ -1,5 +1,5 @@
-import type { CliEngine } from "../runner-engines/cli-engine";
-import { createJobPromptContractPayload } from "../document-core/prompt-contracts";
+import type { CliEngine } from "../../runner-engines/cli-engine";
+import { createJobPromptContractPayload } from "../../document-core/prompt-contracts";
 import type { AgentJob, Artifact, ExternalIssue, PrdConfirmationStore } from "./domain";
 import type { PrdRepository, PrdSkillExecutor, WikiPublisher } from "./ports";
 

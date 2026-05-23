@@ -1,13 +1,7 @@
 import { MysqlDocumentRepository } from "../document-core/mysql-repository";
 import type { DocumentRepository } from "../document-core/repository";
 import { createWorkflowMysqlPoolFromEnv, type MysqlPoolEnv } from "../mysql/create-mysql-pool";
-import {
-  MysqlPrdSnapshotLoader,
-  type PrdSnapshotLoader,
-  type PrdSnapshotLoadResult
-} from "../prd-confirmation/mysql-snapshot-loader";
-import { MysqlPrdSnapshotMirror, type PrdSnapshotMirror } from "../prd-confirmation/mysql-snapshot-mirror";
-import type { JiraIssueReader, WikiFeedbackCollector } from "../prd-confirmation/ports";
+import type { JiraIssueReader, WikiFeedbackCollector } from "../integrations/workflow-ports";
 import { WorkflowScheduler } from "../workflow-core/scheduler";
 import { MysqlWorkflowRepository, type MysqlDatabase } from "../workflow-core/mysql-repository";
 import {
@@ -15,7 +9,10 @@ import {
   type FeedbackRevisionCommand
 } from "../workflow-api/feedback-revision-command";
 import { MysqlWorkflowApiReadModel, type WorkflowApiReadModel } from "../workflow-api/mysql-read-model";
-import { MysqlPrdIntakeCommand, type PrdIntakeCommand } from "../workflow-api/prd-intake-command";
+import {
+  MysqlWorkflowIntakeCommand,
+  type WorkflowIntakeCommand
+} from "../workflow-api/workflow-intake-command";
 import { MysqlWorkflowResultCommand, type WorkflowResultCommand } from "../workflow-api/workflow-result-command";
 import {
   MysqlWorkflowTransitionCommand,
@@ -25,23 +22,27 @@ import { MysqlRepositoryTransitionWorkReader } from "../workflow-api/repository-
 import type { RepositoryTransitionPendingResultReader } from "../workflow-api/repository-transition-processor";
 import type { WorkflowApiAuthConfig } from "../workflow-api/server";
 import {
+  createLegacyPrdCompatibility,
+  createLegacyPrdSnapshotPersistence,
+  type LegacyPrdCompatibility,
+  type LegacyPrdSnapshotLoadResult
+} from "../workflow-api/legacy-prd-compatibility";
+import {
   createJiraIssueReaderFromEnv,
-  createRuntimeFromEnv,
-  createStubJiraIssueReader,
-  type RuntimeFixture
-} from "./create-runtime";
+  createStubJiraIssueReader
+} from "./integration-config";
+import { createLegacyPrdRuntimeFromEnv } from "./legacy-prd-runtime";
 
 export interface WorkflowApiRuntime {
-  fixture?: RuntimeFixture;
+  legacyPrd?: LegacyPrdCompatibility;
   scheduler?: WorkflowScheduler;
   documentRepository?: DocumentRepository;
   jiraIssueReader?: JiraIssueReader;
   wikiFeedbackCollector?: WikiFeedbackCollector;
-  snapshotMirror?: PrdSnapshotMirror;
-  snapshotLoader?: PrdSnapshotLoader;
-  restorePrdSnapshot?: () => Promise<PrdSnapshotLoadResult>;
+  restorePrdSnapshot?: () => Promise<LegacyPrdSnapshotLoadResult>;
   readModel?: WorkflowApiReadModel;
-  prdIntakeCommand?: PrdIntakeCommand;
+  workflowIntakeCommand?: WorkflowIntakeCommand;
+  prdIntakeCommand?: WorkflowIntakeCommand;
   feedbackRevisionCommand?: FeedbackRevisionCommand;
   workflowResultCommand?: WorkflowResultCommand;
   workflowTransitionCommand?: WorkflowTransitionCommand;
@@ -73,7 +74,7 @@ export interface WorkflowApiRuntimeEnv extends NodeJS.ProcessEnv, MysqlPoolEnv {
 export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): WorkflowApiRuntime {
   const runtimeStore = parseWorkflowRuntimeStore(env.WORKFLOW_RUNTIME_STORE);
   const useCompatibilityFixture = parseCompatibilityFixtureMode(env.WORKFLOW_COMPATIBILITY_FIXTURE, runtimeStore);
-  const fixture = useCompatibilityFixture ? createRuntimeFromEnv(env) : undefined;
+  const fixture = useCompatibilityFixture ? createLegacyPrdRuntimeFromEnv(env) : undefined;
   const internalTickIntervalMs = fixture ? parseInternalTickIntervalMs(env.WORKFLOW_INTERNAL_TICK_MS) : undefined;
   const auth = parseWorkflowApiAuthConfig(env);
 
@@ -83,7 +84,7 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     }
 
     return {
-      fixture,
+      legacyPrd: createLegacyPrdCompatibility({ fixture }),
       wikiFeedbackCollector: fixture.wikiFeedbackCollector,
       internalTickIntervalMs,
       auth,
@@ -101,10 +102,13 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
     runnerOfflineAfterMs: parseRunnerOfflineAfterMs(env.WORKFLOW_RUNNER_OFFLINE_AFTER_MS, leaseMs)
   });
   const schedulerRecoveryIntervalMs = parseSchedulerRecoveryIntervalMs(env.WORKFLOW_SCHEDULER_RECOVERY_MS);
-  const snapshotMirror = fixture ? new MysqlPrdSnapshotMirror(database) : undefined;
-  const snapshotLoader = fixture ? new MysqlPrdSnapshotLoader(database) : undefined;
+  const legacyPrdSnapshotPersistence = fixture ? createLegacyPrdSnapshotPersistence(database, fixture) : undefined;
+  const legacyPrd = createLegacyPrdCompatibility({
+    fixture,
+    snapshotMirror: legacyPrdSnapshotPersistence?.snapshotMirror
+  });
   const readModel = new MysqlWorkflowApiReadModel(database);
-  const prdIntakeCommand = new MysqlPrdIntakeCommand(database);
+  const workflowIntakeCommand = new MysqlWorkflowIntakeCommand(database);
   const feedbackRevisionCommand = new MysqlFeedbackRevisionCommand(database);
   const workflowResultCommand = new MysqlWorkflowResultCommand(database);
   const workflowTransitionCommand = new MysqlWorkflowTransitionCommand(database);
@@ -120,16 +124,15 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
   const jiraIssueReader = !fixture ? createNoFixtureJiraIssueReader(env) : undefined;
 
   return {
-    fixture,
+    legacyPrd,
     scheduler,
     documentRepository,
     jiraIssueReader,
     wikiFeedbackCollector: fixture?.wikiFeedbackCollector,
-    snapshotMirror,
-    snapshotLoader,
-    restorePrdSnapshot: fixture && snapshotLoader ? () => snapshotLoader.loadInto(fixture.store) : undefined,
+    restorePrdSnapshot: legacyPrdSnapshotPersistence?.restorePrdSnapshot,
     readModel,
-    prdIntakeCommand,
+    workflowIntakeCommand,
+    prdIntakeCommand: workflowIntakeCommand,
     feedbackRevisionCommand,
     workflowResultCommand,
     workflowTransitionCommand,
@@ -144,7 +147,11 @@ export function createWorkflowApiRuntimeFromEnv(env: WorkflowApiRuntimeEnv): Wor
 }
 
 function parseCompatibilityFixtureMode(value: string | undefined, runtimeStore: WorkflowRuntimeStore): boolean {
-  if (!value || value === "enabled") {
+  if (!value) {
+    return runtimeStore === "memory";
+  }
+
+  if (value === "enabled") {
     return true;
   }
 
@@ -160,12 +167,12 @@ function parseCompatibilityFixtureMode(value: string | undefined, runtimeStore: 
 }
 
 export function parseWorkflowRuntimeStore(value: string | undefined): WorkflowRuntimeStore {
-  if (!value || value === "memory") {
-    return "memory";
+  if (!value || value === "mysql") {
+    return "mysql";
   }
 
-  if (value === "mysql") {
-    return "mysql";
+  if (value === "memory") {
+    return "memory";
   }
 
   throw new Error(`WORKFLOW_RUNTIME_STORE must be "memory" or "mysql", got: ${value}`);

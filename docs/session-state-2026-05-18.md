@@ -32,7 +32,7 @@ Runner Skill
 - `backend/src/workflow-api/main.ts`: runtime entrypoint.
 - `backend/src/runtime/create-runtime.ts`: creates stub or real integration runtime
   from environment variables.
-- `backend/src/prd-confirmation/*`: in-memory workflow state, engine, scheduler,
+- `backend/src/legacy/prd-confirmation/*`: in-memory workflow state, engine, scheduler,
   runner worker, stub skill, adapter-backed PRD skill, and ports.
 - `backend/src/integrations/jira-client.ts`: Jira REST reader for PRD ticket plus linked
   source requests.

@@ -1,7 +1,7 @@
-import type { Artifact as DocumentArtifact, Document, DocumentVersion } from "../document-core/domain";
-import { rowToArtifact, rowToDocument, rowToDocumentVersion } from "../document-core/mysql-repository";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun } from "../workflow-core/domain";
-import { rowToWorkflowJob, type MysqlDatabase } from "../workflow-core/mysql-repository";
+import type { Artifact as DocumentArtifact, Document, DocumentVersion } from "../../document-core/domain";
+import { rowToArtifact, rowToDocument, rowToDocumentVersion } from "../../document-core/mysql-repository";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun } from "../../workflow-core/domain";
+import { rowToWorkflowJob, type MysqlDatabase } from "../../workflow-core/mysql-repository";
 import type {
   AgentJob,
   AgentJobResult,

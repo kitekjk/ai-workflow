@@ -13,6 +13,7 @@ export type RunnerMode = "managed" | "local";
 export type RunnerStatus = "online" | "offline" | "busy" | "disabled";
 export type ExecutionPolicy = "managed_only" | "local_allowed" | "local_required" | "assigned_runner_only";
 export type WorkflowTaskType = "prd" | "hld" | "lld" | "adr" | "spec" | "code" | (string & {});
+export type WorkflowDocumentType = "prd" | "hld" | "lld" | "adr" | "spec";
 export type WorkflowTaskStatus =
   | "draft"
   | "quality_review"
@@ -24,6 +25,109 @@ export type WorkflowTaskStatus =
   | "completed"
   | "failed"
   | "canceled";
+
+export type WorkflowCommandJobStatus = "pending" | "claimed" | "running" | "succeeded" | "failed";
+export type WorkflowCommandJobType =
+  | "prd.generate_draft"
+  | "prd.evaluate_quality"
+  | "prd.apply_feedback_revision"
+  | "prd.route_downstream"
+  | "document.generate"
+  | "document.evaluate"
+  | "document.revise"
+  | "document.fan_out"
+  | "implementation.open_pr"
+  | "implementation.update_pr"
+  | "implementation.collect_pr_status";
+
+export interface WorkflowCommandJob {
+  id: string;
+  workItemId?: string;
+  jobType: WorkflowCommandJobType;
+  primaryJiraKey: string;
+  status: WorkflowCommandJobStatus;
+  input: Record<string, unknown>;
+}
+
+export type ApprovalSource = "jira_status";
+export type ApprovalAction = "jira_transition";
+export type RevisionTrigger = "explicit_request";
+export type ApprovalRole = "planner" | "developer" | "decision_owner";
+
+export interface WorkflowApprovalTransitionPolicy {
+  pendingStatus: string;
+  approvedStatus: string;
+  rejectedStatus: string;
+  needsRevisionStatus: string;
+}
+
+export interface WorkflowPolicy {
+  version: "prd-confirmation-policy-v1";
+  approvalSource: ApprovalSource;
+  approvalAction: ApprovalAction;
+  approvalRoles: Record<WorkflowDocumentType, ApprovalRole>;
+  approvalTransition: WorkflowApprovalTransitionPolicy;
+  downstreamStart: "after_jira_approved_status";
+  qualityFailureAction: "human_clarification" | "auto_rewrite" | "manual_or_auto";
+  revisionTrigger: RevisionTrigger;
+  feedbackSources: Array<"app" | "jira" | "wiki" | "github">;
+}
+
+export const prdConfirmationWorkflowPolicy: WorkflowPolicy = {
+  version: "prd-confirmation-policy-v1",
+  approvalSource: "jira_status",
+  approvalAction: "jira_transition",
+  approvalRoles: {
+    prd: "planner",
+    hld: "developer",
+    lld: "developer",
+    adr: "decision_owner",
+    spec: "developer"
+  },
+  approvalTransition: {
+    pendingStatus: "awaiting_approval",
+    approvedStatus: "approved",
+    rejectedStatus: "rejected",
+    needsRevisionStatus: "needs_revision"
+  },
+  downstreamStart: "after_jira_approved_status",
+  qualityFailureAction: "human_clarification",
+  revisionTrigger: "explicit_request",
+  feedbackSources: ["app", "jira", "wiki", "github"]
+};
+
+export interface WorkflowEngineWorkItemState {
+  workItemId: string;
+  before: string;
+  after: string;
+}
+
+export interface WorkflowEngineExternalIssueStatus {
+  issueKey: string;
+  before?: string;
+  after?: string;
+}
+
+export type WorkflowEngineTransitionType =
+  | "job_failed"
+  | "prd_draft_generated"
+  | "prd_quality_passed"
+  | "prd_quality_needs_revision"
+  | "prd_feedback_revision_applied"
+  | "prd_downstream_scope_confirmation_required"
+  | "prd_downstream_documents_created"
+  | "document_fan_out_created"
+  | "document_generated"
+  | "document_quality_passed"
+  | "document_quality_needs_revision"
+  | "document_revision_applied"
+  | "implementation_pr_opened"
+  | "implementation_pr_updated"
+  | "implementation_pr_reviewed"
+  | "implementation_pr_merged"
+  | "implementation_pr_in_review"
+  | "implementation_rework_requested"
+  | "implementation_revision_requested";
 
 export interface WorkflowRun {
   id: string;

@@ -1,67 +1,11 @@
-import { createEmptyStore, type ExternalIssue } from "../prd-confirmation/domain";
-import { createPrdConfirmationFixture } from "../prd-confirmation/fixture";
-import { PrdConfirmationWorkflow } from "../prd-confirmation/workflow";
-import { AdapterBackedPrdSkills } from "../prd-confirmation/adapter-backed-skills";
-import { CliPrdSkills } from "../prd-confirmation/cli-prd-skills";
-import type { JiraIssueReader, PrdSkillExecutor } from "../prd-confirmation/ports";
-import { StubPrdSkills } from "../prd-confirmation/runner-skills";
+import type { ExternalIssue } from "../integrations/external-issue";
 import { ConfluenceWikiPublisher } from "../integrations/confluence-wiki";
 import type { GitHubRestClientOptions } from "../integrations/github-client";
 import { JiraRestClient } from "../integrations/jira-client";
-import { LocalGitPrdRepository } from "../integrations/local-git-prd-repository";
-import { runRunnerWorkerOnce } from "../prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../prd-confirmation/scheduler";
-import { runEngineOnce } from "../prd-confirmation/workflow-engine";
-import { CliEngine } from "../runner-engines/cli-engine";
-import { createCliEngineConfig } from "../runner-engines/engine-config";
-import type { WikiFeedbackCollector, WikiPublisher } from "../prd-confirmation/ports";
-
-export interface RuntimeFixture {
-  store: ReturnType<typeof createPrdConfirmationFixture>["store"];
-  skills: StubPrdSkills | PrdSkillExecutor;
-  workflow: PrdConfirmationWorkflow;
-  wikiFeedbackCollector?: WikiFeedbackCollector;
-  runUntilIdle: () => Promise<void>;
-}
+import type { JiraIssueReader } from "../integrations/workflow-ports";
 
 export interface GitHubRuntimeConfig extends GitHubRestClientOptions {
   defaultBaseBranch: string;
-}
-
-export function createRuntimeFromEnv(env: NodeJS.ProcessEnv): RuntimeFixture {
-  if (env.INTEGRATION_MODE !== "real") {
-    return createPrdConfirmationFixture({
-      qualityPasses: env.STUB_QUALITY_PASSES !== "false"
-    });
-  }
-
-  const store = createEmptyStore();
-  const jiraReader = createJiraIssueReaderFromEnv(env);
-  const wikiPublisher = maybeCreateConfluenceWikiPublisher(env);
-  const skills = createPrdSkills(env, wikiPublisher);
-  const workflow = new PrdConfirmationWorkflow(store, { jiraReader });
-
-  return {
-    store,
-    skills,
-    workflow,
-    wikiFeedbackCollector: wikiPublisher,
-    runUntilIdle: async () => {
-      for (let i = 0; i < 20; i += 1) {
-        const progressed = [
-          await runSchedulerOnce(store),
-          await runRunnerWorkerOnce(store, skills),
-          await runEngineOnce(store)
-        ].some(Boolean);
-
-        if (!progressed) {
-          return;
-        }
-      }
-
-      throw new Error("Runtime did not become idle");
-    }
-  };
 }
 
 export function createJiraIssueReaderFromEnv(env: NodeJS.ProcessEnv): JiraIssueReader {
@@ -105,48 +49,13 @@ export function createStubJiraIssueReader(): JiraIssueReader {
   };
 }
 
-function createPrdSkills(env: NodeJS.ProcessEnv, wikiPublisher?: WikiPublisher): StubPrdSkills | PrdSkillExecutor {
-  const mode = parseRunnerSkillMode(env.RUNNER_SKILL_MODE);
-
-  if (mode === "stub") {
-    return new StubPrdSkills(env.STUB_QUALITY_PASSES !== "false");
-  }
-
-  const prdRepository = new LocalGitPrdRepository({
-    repoPath: requireEnv(env, "PRD_REPO_PATH"),
-    publicBaseUrl: env.PRD_REPO_PUBLIC_BASE_URL
-  });
-  const publisher = wikiPublisher ?? createConfluenceWikiPublisher(env);
-
-  if (mode === "cli") {
-    const config = createCliEngineConfig(env);
-    return new CliPrdSkills({
-      engine: new CliEngine({
-        command: config.command,
-        args: config.args,
-        timeoutMs: config.timeoutMs,
-        cwd: config.cwd
-      }),
-      prdRepository,
-      wikiPublisher: publisher,
-      outputLanguage: env.RUNNER_OUTPUT_LANGUAGE ?? "ko"
-    });
-  }
-
-  return new AdapterBackedPrdSkills({
-    qualityPasses: env.STUB_QUALITY_PASSES !== "false",
-    prdRepository,
-    wikiPublisher: publisher
-  });
-}
-
-function maybeCreateConfluenceWikiPublisher(env: NodeJS.ProcessEnv): ConfluenceWikiPublisher | undefined {
+export function maybeCreateConfluenceWikiPublisher(env: NodeJS.ProcessEnv): ConfluenceWikiPublisher | undefined {
   const hasConfig = Boolean(env.CONFLUENCE_BASE_URL || env.CONFLUENCE_EMAIL || env.CONFLUENCE_API_TOKEN);
 
   return hasConfig ? createConfluenceWikiPublisher(env) : undefined;
 }
 
-function createConfluenceWikiPublisher(env: NodeJS.ProcessEnv): ConfluenceWikiPublisher {
+export function createConfluenceWikiPublisher(env: NodeJS.ProcessEnv): ConfluenceWikiPublisher {
   return new ConfluenceWikiPublisher({
     baseUrl: requireEnv(env, "CONFLUENCE_BASE_URL"),
     email: requireEnv(env, "CONFLUENCE_EMAIL"),
@@ -155,34 +64,6 @@ function createConfluenceWikiPublisher(env: NodeJS.ProcessEnv): ConfluenceWikiPu
     parentPageId: requireEnv(env, "CONFLUENCE_PARENT_PAGE_ID"),
     parentPageIdByDocumentType: confluenceParentPageIdsByDocumentType(env)
   });
-}
-
-function parseRunnerSkillMode(value: string | undefined): "stub" | "adapter" | "cli" {
-  if (!value || value === "adapter") {
-    return "adapter";
-  }
-
-  if (value === "stub" || value === "cli") {
-    return value;
-  }
-
-  throw new Error(`RUNNER_SKILL_MODE must be "stub", "adapter", or "cli", got: ${value}`);
-}
-
-function parseJiraAuthMode(value: string | undefined): "basic" | "bearer" {
-  if (value === "bearer") {
-    return "bearer";
-  }
-
-  return "basic";
-}
-
-function parseJiraApiVersion(value: string | undefined): "2" | "3" {
-  if (value === "2") {
-    return "2";
-  }
-
-  return "3";
 }
 
 export function confluenceParentPageIdsByDocumentType(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -230,6 +111,32 @@ export function githubRuntimeConfig(env: NodeJS.ProcessEnv): GitHubRuntimeConfig
   };
 }
 
+export function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+
+  if (!value) {
+    throw new Error(`${key} is required when INTEGRATION_MODE=real`);
+  }
+
+  return value;
+}
+
+function parseJiraAuthMode(value: string | undefined): "basic" | "bearer" {
+  if (value === "bearer") {
+    return "bearer";
+  }
+
+  return "basic";
+}
+
+function parseJiraApiVersion(value: string | undefined): "2" | "3" {
+  if (value === "2") {
+    return "2";
+  }
+
+  return "3";
+}
+
 function optionalParentPageId(env: NodeJS.ProcessEnv, documentType: string, key: string): Record<string, string> {
   return optionalEnvValue(env, documentType, key);
 }
@@ -238,16 +145,6 @@ function optionalEnvValue(env: NodeJS.ProcessEnv, outputKey: string, key: string
   const value = env[key]?.trim();
 
   return value ? { [outputKey]: value } : {};
-}
-
-function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
-  const value = env[key];
-
-  if (!value) {
-    throw new Error(`${key} is required when INTEGRATION_MODE=real`);
-  }
-
-  return value;
 }
 
 function requireTrimmedEnv(env: NodeJS.ProcessEnv, key: string): string {

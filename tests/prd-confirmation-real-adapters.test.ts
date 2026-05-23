@@ -3,13 +3,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ExternalIssue } from "../backend/src/prd-confirmation/domain";
-import { createEmptyStore } from "../backend/src/prd-confirmation/domain";
-import { AdapterBackedPrdSkills } from "../backend/src/prd-confirmation/adapter-backed-skills";
-import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
-import { PrdConfirmationWorkflow } from "../backend/src/prd-confirmation/workflow";
-import { runEngineOnce } from "../backend/src/prd-confirmation/workflow-engine";
+import type { ExternalIssue } from "../backend/src/legacy/prd-confirmation/domain";
+import { createEmptyStore } from "../backend/src/legacy/prd-confirmation/domain";
+import { AdapterBackedPrdSkills } from "../backend/src/legacy/prd-confirmation/adapter-backed-skills";
+import { runRunnerWorkerOnce } from "../backend/src/legacy/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/legacy/prd-confirmation/scheduler";
+import { PrdConfirmationWorkflow } from "../backend/src/legacy/prd-confirmation/workflow";
+import { runEngineOnce } from "../backend/src/legacy/prd-confirmation/workflow-engine";
 import { LocalGitPrdRepository } from "../backend/src/integrations/local-git-prd-repository";
 
 describe("PRD confirmation with real adapter boundaries", () => {

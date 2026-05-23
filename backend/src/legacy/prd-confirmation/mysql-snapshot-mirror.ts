@@ -1,6 +1,6 @@
-import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
-import type { MysqlDatabase } from "../workflow-core/mysql-repository";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
+import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../../document-core/domain";
+import type { MysqlDatabase } from "../../workflow-core/mysql-repository";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../../workflow-core/domain";
 import type { FeedbackItem } from "./domain";
 import type { GenericPrdSnapshot } from "./generic-adapter";
 

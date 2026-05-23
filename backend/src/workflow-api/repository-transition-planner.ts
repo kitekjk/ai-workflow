@@ -8,8 +8,13 @@ import type {
   DocumentType,
   DocumentVersion
 } from "../document-core/domain";
-import type { WorkflowEngineTransitionType } from "../prd-confirmation/workflow-engine";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask } from "../workflow-core/domain";
+import type {
+  WorkflowEngineTransitionType,
+  WorkflowJob,
+  WorkflowJobResult,
+  WorkflowRun,
+  WorkflowTask
+} from "../workflow-core/domain";
 import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
 import type {
   WorkflowDocumentMutationEvent,

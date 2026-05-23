@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createPrdConfirmationFixture } from "../backend/src/prd-confirmation/fixture";
-import { runRunnerWorkerOnce } from "../backend/src/prd-confirmation/runner-worker";
-import { runSchedulerOnce } from "../backend/src/prd-confirmation/scheduler";
-import { runEngineStep } from "../backend/src/prd-confirmation/workflow-engine";
-import { createEngineTransitionCommandInput } from "../backend/src/workflow-api/engine-transition-projection";
+import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
+import { runRunnerWorkerOnce } from "../backend/src/legacy/prd-confirmation/runner-worker";
+import { runSchedulerOnce } from "../backend/src/legacy/prd-confirmation/scheduler";
+import { runEngineStep } from "../backend/src/legacy/prd-confirmation/workflow-engine";
+import { createLegacyPrdEngineTransitionCommandInput } from "../backend/src/workflow-api/legacy-prd-engine-transition-projection";
 
 describe("engine transition projection", () => {
   it("projects engine step metadata into one transition command input", async () => {
@@ -15,7 +15,7 @@ describe("engine transition projection", () => {
     await runRunnerWorkerOnce(fixture.store, fixture.skills);
     const engineStep = await runEngineStep(fixture.store);
 
-    expect(createEngineTransitionCommandInput(fixture.store, engineStep, now)).toMatchObject({
+    expect(createLegacyPrdEngineTransitionCommandInput(fixture.store, engineStep, now)).toMatchObject({
       transitionType: "prd_draft_generated",
       affectedWorkItemIds: ["wi_1"],
       affectedDocumentIds: ["doc_wi_1"],
@@ -57,7 +57,7 @@ describe("engine transition projection", () => {
 
   it("returns undefined for an idle engine step", () => {
     expect(
-      createEngineTransitionCommandInput(
+      createLegacyPrdEngineTransitionCommandInput(
         createPrdConfirmationFixture().store,
         {
           progressed: false,

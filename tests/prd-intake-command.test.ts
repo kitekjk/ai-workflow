@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { MysqlPrdIntakeCommand } from "../backend/src/workflow-api/prd-intake-command";
+import {
+  MysqlPrdIntakeCommand,
+  MysqlWorkflowIntakeCommand
+} from "../backend/src/workflow-api/prd-intake-command";
 import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
 
 describe("MysqlPrdIntakeCommand", () => {
@@ -83,6 +86,65 @@ describe("MysqlPrdIntakeCommand", () => {
     ).rejects.toThrow("forced database failure");
 
     expect(database.events).toEqual(["begin", "rollback", "release"]);
+  });
+
+  it("records non-PRD workflow intake as a generic document generate task", async () => {
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlWorkflowIntakeCommand(database, { idGenerator: fixedIds("event_1") });
+
+    const result = await command.recordIntake({
+      runId: "run_hld_1",
+      workItemId: "wi_hld_1",
+      jobId: "job_hld_1",
+      sourceType: "app",
+      sourceKey: "HLD-APP-1",
+      documentType: "hld",
+      workflowDefinitionId: "hld_to_spec",
+      title: "Manual HLD seed",
+      requestedBy: "developer@example.com",
+      now: new Date("2026-05-20T00:00:00.000Z")
+    });
+
+    expect(result).toEqual({
+      runId: "run_hld_1",
+      documentId: "doc_wi_hld_1",
+      jobId: "job_hld_1"
+    });
+    expect(database.statements[0].params).toEqual(
+      expect.arrayContaining(["run_hld_1", "hld_to_spec", "active", "app", "HLD-APP-1", "ko"])
+    );
+    expect(database.statements[1].params).toEqual(
+      expect.arrayContaining(["task_wi_hld_1", "run_hld_1", "hld", "HLD-APP-1", "Manual HLD seed"])
+    );
+    expect(database.statements[3].params).toEqual(
+      expect.arrayContaining([
+        "job_hld_1",
+        "run_hld_1",
+        "task_wi_hld_1",
+        "document.generate",
+        "pending",
+        "developer@example.com",
+        "developer",
+        "local_allowed"
+      ])
+    );
+    expect(JSON.parse(String(database.statements[3].params[5]))).toMatchObject({
+      sourceType: "app",
+      sourceKey: "HLD-APP-1",
+      documentType: "hld",
+      workflowDefinitionId: "hld_to_spec",
+      title: "Manual HLD seed",
+      requestedBy: "developer@example.com"
+    });
+    expect(database.statements[4].params).toEqual(
+      expect.arrayContaining([
+        "event_1",
+        "run_hld_1",
+        "job_hld_1",
+        "workflow.source_intake",
+        "Workflow source intake recorded: HLD-APP-1"
+      ])
+    );
   });
 });
 

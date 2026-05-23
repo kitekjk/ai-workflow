@@ -8,9 +8,9 @@ import {
   type PrdConfirmationWorkflowPolicy,
   type WorkItem
 } from "./domain";
-import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../document-core/domain";
-import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask, WorkflowTaskStatus } from "../workflow-core/domain";
-import { createWorkflowJobRecord } from "../workflow-core/job-metadata";
+import type { Artifact, Document, DocumentQualityResult, DocumentVersion } from "../../document-core/domain";
+import type { WorkflowJob, WorkflowJobResult, WorkflowRun, WorkflowTask, WorkflowTaskStatus } from "../../workflow-core/domain";
+import { createWorkflowJobRecord } from "../../workflow-core/job-metadata";
 
 export interface GenericPrdSnapshot {
   workflowRuns: WorkflowRun[];

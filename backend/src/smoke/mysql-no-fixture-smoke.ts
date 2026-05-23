@@ -9,7 +9,7 @@ import {
   type WorkflowApiRuntimeEnv
 } from "../runtime/create-workflow-api-runtime";
 import { GitHubRestClient } from "../integrations/github-client";
-import { githubRuntimeConfig } from "../runtime/create-runtime";
+import { githubRuntimeConfig } from "../runtime/integration-config";
 import { JobTemplateCliLocalRunnerEngine } from "../local-runner/cli-engine-adapter";
 import {
   GitHubImplementationLocalRunnerEngine,
@@ -20,6 +20,7 @@ import {
 import { runLocalRunnerDrain, type LocalRunnerDrainResult, type LocalRunnerEngine } from "../local-runner/local-runner";
 import { WorkflowApiRunnerClient } from "../local-runner/runner-client";
 import type { LocalRunnerWorkspaceOptions } from "../local-runner/workspace";
+import { createLegacyPrdServerActionFactory } from "../workflow-api/legacy-prd-server-actions";
 import { createWorkflowApiServer, type WorkflowApiServer } from "../workflow-api/server";
 
 interface MysqlNoFixtureSmokeSummary {
@@ -104,13 +105,13 @@ export async function runMysqlNoFixtureSmoke(
 
   try {
     server = await createWorkflowApiServer({
-      fixture: runtime.fixture,
+      compatibilityActionsFactory: createLegacyPrdServerActionFactory(runtime.legacyPrd),
       scheduler: runtime.scheduler,
       documentRepository: runtime.documentRepository,
       jiraIssueReader: runtime.jiraIssueReader,
       wikiFeedbackCollector: runtime.wikiFeedbackCollector,
-      snapshotMirror: runtime.snapshotMirror,
       readModel: runtime.readModel,
+      workflowIntakeCommand: runtime.workflowIntakeCommand,
       prdIntakeCommand: runtime.prdIntakeCommand,
       feedbackRevisionCommand: runtime.feedbackRevisionCommand,
       workflowResultCommand: runtime.workflowResultCommand,
@@ -124,9 +125,12 @@ export async function runMysqlNoFixtureSmoke(
     const intake = await postJson<{ status: string; runId?: string; documentId?: string; jobId?: string }>(
       fetchImpl,
       server.url,
-      "/prd/intake",
+      "/workflow-runs/intake",
       {
-        prdJiraKey: config.prdJiraKey,
+        sourceType: "jira",
+        sourceKey: config.prdJiraKey,
+        documentType: "prd",
+        workflowDefinitionId: "prd_to_spec",
         requestedBy: config.actorEmail
       },
       config.appToken
@@ -176,7 +180,7 @@ export async function runMysqlNoFixtureSmoke(
     const finalState = await getJson<Record<string, unknown>>(
       fetchImpl,
       server.url,
-      `/state/${encodeURIComponent(config.prdJiraKey)}`,
+      `/workflow-sources/${encodeURIComponent(config.prdJiraKey)}/state`,
       config.appToken
     );
 
@@ -243,7 +247,7 @@ export async function runMysqlNoFixtureSmoke(
     const approvedState = await getJson<Record<string, unknown>>(
       fetchImpl,
       server.url,
-      `/state/${encodeURIComponent(config.prdJiraKey)}`,
+      `/workflow-sources/${encodeURIComponent(config.prdJiraKey)}/state`,
       config.appToken
     );
     const pullRequestArtifactCount = await countPullRequestArtifacts(

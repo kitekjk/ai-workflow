@@ -23,6 +23,7 @@ historical experiments and reference material.
 ai-workflow/
   apps/workflow-app/            Workflow App frontend
   backend/src/                  Workflow API, scheduler, runner, domain code
+  backend/src/legacy/           Legacy compatibility slices kept out of the product path
   docs/                         Requirements, notes, and design decisions
   scripts/                      Local runner demos and helper scripts
   skills/                       Versioned skill package experiments
@@ -51,8 +52,8 @@ operations.
   control-plane actions.
 - `scripts/agent-runner-demo.mjs`: local demo runner that executes the
   `skills/prd.simple` package through Claude CLI.
-- `npm run demo:prd`: TypeScript vertical slice for PRD confirmation workflow
-  orchestration with stubbed Jira, Git, Wiki, scheduler, and runner behavior.
+- `npm run demo:legacy-prd`: legacy TypeScript vertical slice for the old PRD
+  confirmation workflow, kept only as migration/reference material.
 
 ## Local Checks
 
@@ -62,16 +63,16 @@ Install root dependencies:
 npm install
 ```
 
-Run the PRD confirmation tests:
+Run the main verification suite:
 
 ```bash
-npm test -- tests/prd-confirmation.test.ts
+npm run verify
 ```
 
-Run the PRD confirmation demo:
+Run the legacy PRD confirmation demo only when comparing old fixture behavior:
 
 ```bash
-npm run demo:prd
+npm run demo:legacy-prd
 ```
 
 Run the local Workflow API:
@@ -100,10 +101,11 @@ WORKFLOW_RUNNER_TOKENS=runner-yourname-laptop:runner-secret
 LOCAL_RUNNER_TOKEN=runner-secret
 ```
 
-Use the MySQL-backed scheduler/document runtime for runner APIs:
+The API now defaults to the MySQL-backed scheduler/document runtime without the
+legacy PRD fixture:
 
 ```bash
-WORKFLOW_RUNTIME_STORE=mysql npm run start:api
+npm run start:api
 ```
 
 In MySQL mode, `WORKFLOW_RUNNER_OFFLINE_AFTER_MS` controls when a runner is
@@ -157,43 +159,27 @@ owner email, capability/engine scope, required Claude/Codex CLI command,
 GitHub implementation settings, and workspace writability without registering
 or claiming work. It exits non-zero when a required setup item is missing.
 
-In MySQL mode, PRD compatibility workflow actions are also mirrored into the
-workflow/document read-model tables after state-changing API calls. API startup
-then hydrates the PRD compatibility fixture from those MySQL read-model rows
-before routes are served. Generic workflow and document GET views read directly
-from the MySQL read model when `WORKFLOW_RUNTIME_STORE=mysql`. Set
-`WORKFLOW_COMPATIBILITY_FIXTURE=disabled` with MySQL mode to run the
-read-model-backed GET views and runner APIs without the legacy PRD fixture;
-local stub mode can still intake the seeded `PRD-100` issue through a stub Jira
-reader for smoke checks, while real mode reads Jira through the configured Jira
-client. Remaining PRD transition endpoints return `501` until the
-repository-backed transition engine replaces them. PRD intake is also written
-through a MySQL command path for the initial run, document, and draft job.
-Workflow/App, Jira, and Wiki feedback plus explicit revision
-requests are also written through a MySQL command path for `feedback_item` and
-revision `workflow_job` rows. Approval state changes and downstream
-routing/fan-out/implementation job scheduling have a MySQL command path for the
-affected `document` and `workflow_job` rows. Engine-created document state
-changes and follow-up jobs are recorded through one command transaction during
-the internal compatibility workflow tick loop, including an explicit engine
-transition type plus work item and external issue before/after state metadata
-and affected work item/document ids for later repository-backed engine
-migration. The loop defaults to `WORKFLOW_INTERNAL_TICK_MS=1000` while the
-compatibility fixture is enabled; set it to `0` or `disabled` to keep only the
-manual dev/test `POST /tick` trigger. Runner result processing also records the
-run projection for
-`workflow_job_result`, `document_version`, `artifact`, `quality_gate_result`,
-and current document pointers. With the compatibility fixture disabled,
-repository-backed result transitions also run from an internal repository loop
-controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS` so completed runner results
-can advance workflow state without a manual `/tick`. When that loop is enabled,
-runner result requests only persist the result; the loop owns the workflow
-state transition to avoid duplicate processing. If the loop is disabled, the
-API keeps the request-time transition path as a fallback. Operators and the
+The normal runtime path reads and writes through the MySQL read model and
+repository transition processor. Local stub mode can still intake the seeded
+`PRD-100` issue through a stub Jira reader for smoke checks, while real mode
+reads Jira through the configured Jira client. PRD intake, document feedback,
+explicit revision requests, approval state changes, downstream scheduling, and
+runner result processing all have MySQL command paths. Repository-backed result
+transitions run from an internal loop controlled by
+`WORKFLOW_REPOSITORY_TRANSITION_MS` so completed runner results can advance
+workflow state without a manual `/tick`. When that loop is enabled, runner
+result requests only persist the result; the loop owns the workflow state
+transition to avoid duplicate processing. If the loop is disabled, the API
+keeps the request-time transition path as a fallback. Operators and the
 dashboard can also trigger one repository transition explicitly with
 `POST /repository-transitions/process-next`; this is useful for local
 development when a bounded runner drain wants the next follow-up job to become
 claimable immediately.
+
+The old PRD confirmation fixture is now an explicit legacy mode for tests and
+historical demos only. Enable it with `WORKFLOW_COMPATIBILITY_FIXTURE=enabled`
+or `WORKFLOW_RUNTIME_STORE=memory`; otherwise the product runtime starts
+without it.
 
 To run that transition loop outside the API process, set
 `WORKFLOW_REPOSITORY_TRANSITION_MS=0` on the API and run:
@@ -211,16 +197,26 @@ same polling wave so later visible results can still be claimed.
 Example API calls:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/prd/intake \
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
   -H 'content-type: application/json' \
-  -d '{"prdJiraKey":"PRD-100"}'
+  -d '{"sourceType":"jira","sourceKey":"PRD-100","documentType":"prd","workflowDefinitionId":"prd_to_spec"}'
 
-curl http://127.0.0.1:3000/state/PRD-100
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
+  -H 'content-type: application/json' \
+  -d '{"sourceType":"app","sourceKey":"HLD-APP-1","documentType":"hld","title":"Manual HLD seed","requestedBy":"developer@example.com"}'
+
+curl http://127.0.0.1:3000/workflow-sources/PRD-100/state
+
+curl http://127.0.0.1:3000/workflow-runs?limit=25
 ```
 
-`POST /tick` remains available as a manual development/test trigger, but the
-normal fixture-backed API process advances the workflow through its internal
-tick loop.
+`POST /tick` is only useful when the legacy compatibility fixture is enabled.
+In the default runtime, repository transitions replace that engine tick.
+The old `/prd/intake` and `/state/:sourceKey` routes remain compatibility
+aliases while clients move to the workflow/source endpoints.
+In repository-backed mode, `sourceType` can be `jira`, `app`, or `github`.
+The initial `documentType` can be `prd`, `hld`, `lld`, `adr`, or `spec`;
+non-PRD roots start with a generic `document.generate` task.
 
 Run with real Jira, PRD repo, and Confluence adapters:
 
@@ -233,9 +229,9 @@ INTEGRATION_MODE=real npm run start:api
 In real mode, Jira is still manually triggered:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/prd/intake \
+curl -X POST http://127.0.0.1:3000/workflow-runs/intake \
   -H 'content-type: application/json' \
-  -d '{"prdJiraKey":"YOUR-PRD-KEY"}'
+  -d '{"sourceType":"jira","sourceKey":"YOUR-PRD-KEY","documentType":"prd","workflowDefinitionId":"prd_to_spec"}'
 ```
 
 Choose the PRD runner skill with `RUNNER_SKILL_MODE`:

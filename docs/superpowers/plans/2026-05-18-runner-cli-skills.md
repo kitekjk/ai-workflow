@@ -4,7 +4,7 @@
 
 **Goal:** Replace the stub PRD generation and quality evaluation logic with runner skills that execute Claude CLI or Codex CLI and return standardized PRD artifacts and gate results.
 
-**Architecture:** Keep the existing Workflow API, Engine, Scheduler, and Runner Worker unchanged. Add engine adapters under `backend/src/runner-engines`, job adapters under `backend/src/prd-confirmation`, and tests that execute deterministic fake CLI binaries before wiring real `claude` or `codex` commands through environment configuration.
+**Architecture:** Keep the existing Workflow API, Engine, Scheduler, and Runner Worker unchanged. Add engine adapters under `backend/src/runner-engines`, job adapters under `backend/src/legacy/prd-confirmation`, and tests that execute deterministic fake CLI binaries before wiring real `claude` or `codex` commands through environment configuration.
 
 **Tech Stack:** TypeScript, Node.js child_process, Vitest, existing in-memory workflow slice, existing Jira/Git/Confluence adapters.
 
@@ -17,7 +17,7 @@
   errors.
 - Create `backend/src/runner-engines/engine-config.ts`: reads `RUNNER_ENGINE`,
   `CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, timeout, and model/prompt settings.
-- Create `backend/src/prd-confirmation/cli-prd-skills.ts`: PRD skill executor that uses
+- Create `backend/src/legacy/prd-confirmation/cli-prd-skills.ts`: PRD skill executor that uses
   the CLI engine for `prd.generate_draft`, `prd.evaluate_quality`, and
   `prd.apply_feedback_revision`.
 - Modify `backend/src/runtime/create-runtime.ts`: choose stub, adapter-backed, or CLI
@@ -128,7 +128,7 @@ Expected: all CLI engine tests pass.
 ## Task 2: CLI PRD Skill Executor
 
 **Files:**
-- Create: `backend/src/prd-confirmation/cli-prd-skills.ts`
+- Create: `backend/src/legacy/prd-confirmation/cli-prd-skills.ts`
 - Test: `tests/prd-confirmation-cli-skills.test.ts`
 
 - [ ] **Step 1: Write the failing PRD draft test**

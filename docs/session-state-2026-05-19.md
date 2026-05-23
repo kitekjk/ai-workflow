@@ -76,7 +76,7 @@ PRD 요청
 - `workflow_event`에 기록할 event type 범위
 - `document_version`과 artifact current pointer 갱신 규칙
 - MySQL migration 방식과 local dev DB 실행 방식
-- 기존 `backend/src/prd-confirmation/*` vertical slice를 generic repository adapter로 감싸는 순서
+- 기존 `backend/src/legacy/prd-confirmation/*` vertical slice를 generic repository adapter로 감싸는 순서
 
 ## Notes
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Document } from "../backend/src/document-core/domain";
-import type { AgentJob } from "../backend/src/prd-confirmation/domain";
+import type { WorkflowCommandJob } from "../backend/src/workflow-core/domain";
 import { MysqlWorkflowTransitionCommand } from "../backend/src/workflow-api/workflow-transition-command";
 import type { WorkflowTask } from "../backend/src/workflow-core/domain";
 import type { MysqlConnection, MysqlDatabase } from "../backend/src/workflow-core/mysql-repository";
@@ -118,7 +118,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
   it("records routing jobs with scheduler claim metadata", async () => {
     const database = new FakeMysqlDatabase();
     const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
-    const job: AgentJob = {
+    const job: WorkflowCommandJob = {
       id: "job_3",
       workItemId: "wi_1",
       jobType: "prd.route_downstream",
@@ -221,7 +221,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
   it("records engine document states and follow-up jobs in one transaction", async () => {
     const database = new FakeMysqlDatabase();
     const command = new MysqlWorkflowTransitionCommand(database, { idGenerator: fixedIds("event_1") });
-    const job: AgentJob = {
+    const job: WorkflowCommandJob = {
       id: "job_2",
       workItemId: "wi_1",
       jobType: "prd.evaluate_quality",

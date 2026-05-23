@@ -6,7 +6,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm test",
-    "demo:prd": "tsx backend/src/demo/prd-confirmation-demo.ts",
+    "demo:legacy-prd": "tsx backend/src/legacy/prd-confirmation/demo.ts",
     "start:api": "tsx backend/src/workflow-api/main.ts",
     "start:repository-transition-worker": "tsx backend/src/workflow-api/repository-transition-worker-main.ts",
     "start:local-runner": "tsx backend/src/local-runner/main.ts",

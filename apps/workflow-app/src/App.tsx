@@ -36,6 +36,7 @@ import {
   defaultRunId,
   defaultActorEmail,
   fetchApiDashboard,
+  intakeApiWorkflow,
   recordApiFeedback,
   requestApiRevision,
   requestApiTaskRevision,
@@ -48,6 +49,8 @@ import {
   tickApiRun,
   type ApiActionResult,
   type DashboardProjectSummary,
+  type WorkflowIntakeDocumentType,
+  type WorkflowSourceType,
 } from './data/workflowApi'
 
 const stateLabels: Record<WorkState, string> = {
@@ -62,6 +65,8 @@ const stateLabels: Record<WorkState, string> = {
 const visibleStates: WorkState[] = ['running', 'failed', 'waiting_approval', 'completed']
 const retryableJobStatuses = new Set(['failed', 'canceled', 'skipped'])
 const actorEmailStorageKey = 'workflow-dashboard-actor-email'
+const intakeSourceTypes: WorkflowSourceType[] = ['app', 'jira', 'github']
+const intakeDocumentTypes: WorkflowIntakeDocumentType[] = ['prd', 'hld', 'lld', 'adr', 'spec']
 
 function initialActorEmail() {
   try {
@@ -86,6 +91,10 @@ function App() {
   const [apiRunId, setApiRunId] = useState(defaultRunId)
   const [actorEmail, setActorEmail] = useState(initialActorEmail)
   const [revisionTargetId, setRevisionTargetId] = useState('')
+  const [newWorkflowSourceType, setNewWorkflowSourceType] = useState<WorkflowSourceType>('app')
+  const [newWorkflowDocumentType, setNewWorkflowDocumentType] = useState<WorkflowIntakeDocumentType>('hld')
+  const [newWorkflowSourceKey, setNewWorkflowSourceKey] = useState('')
+  const [newWorkflowTitle, setNewWorkflowTitle] = useState('')
 
   const selectedWorkflow =
     workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? workflows[0] ?? mockWorkflowCatalog[0]
@@ -153,8 +162,13 @@ function App() {
   }
 
   function selectWorkflow(workflow: WorkflowRunSummary) {
+    if (apiMode && workflow.runId !== apiRunId) {
+      void runApiAction('Load Workflow', async () => ({ runId: workflow.runId }))
+      return
+    }
+
     setSelectedWorkflowId(workflow.id)
-    setSelectedId(workflow.itemIds[0])
+    setSelectedId(workflow.itemIds[0] ?? selectedId)
   }
 
   function advanceStep() {
@@ -272,6 +286,24 @@ function App() {
 
   function seedFromApi() {
     void runApiAction('Seed API', () => seedApiRun(currentActorEmail))
+  }
+
+  function createWorkflowFromApi() {
+    const sourceKey = newWorkflowSourceKey.trim()
+
+    if (!sourceKey) return
+
+    void runApiAction('Create Workflow', () =>
+      intakeApiWorkflow(
+        {
+          sourceType: newWorkflowSourceType,
+          sourceKey,
+          documentType: newWorkflowDocumentType,
+          title: newWorkflowTitle.trim() || undefined,
+        },
+        currentActorEmail,
+      ),
+    )
   }
 
   function tickFromApi() {
@@ -507,6 +539,62 @@ function App() {
       <section className="workflow-browser" aria-label="Workflow list and connected execution map">
         <aside className="panel workflow-list-panel">
           <PanelTitle icon={<GitBranch size={18} />} title="Workflow List" detail={`${workflows.length} ${apiMode ? 'API' : 'mock'} runs`} />
+          <div className="workflow-create-form">
+            <div className="workflow-create-row">
+              <label>
+                <span>Source</span>
+                <select
+                  value={newWorkflowSourceType}
+                  onChange={(event) => setNewWorkflowSourceType(event.target.value as WorkflowSourceType)}
+                  disabled={apiBusy}
+                >
+                  {intakeSourceTypes.map((sourceType) => (
+                    <option key={sourceType} value={sourceType}>
+                      {sourceType}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Type</span>
+                <select
+                  value={newWorkflowDocumentType}
+                  onChange={(event) => setNewWorkflowDocumentType(event.target.value as WorkflowIntakeDocumentType)}
+                  disabled={apiBusy}
+                >
+                  {intakeDocumentTypes.map((documentType) => (
+                    <option key={documentType} value={documentType}>
+                      {documentType.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>Key</span>
+              <input
+                type="text"
+                value={newWorkflowSourceKey}
+                onChange={(event) => setNewWorkflowSourceKey(event.target.value)}
+                placeholder="HLD-APP-1"
+                disabled={apiBusy}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              <span>Title</span>
+              <input
+                type="text"
+                value={newWorkflowTitle}
+                onChange={(event) => setNewWorkflowTitle(event.target.value)}
+                placeholder="Manual HLD seed"
+                disabled={apiBusy}
+              />
+            </label>
+            <button type="button" onClick={createWorkflowFromApi} disabled={apiBusy || !newWorkflowSourceKey.trim()}>
+              <Play size={16} /> Create Workflow
+            </button>
+          </div>
           <div className="workflow-list">
             {workflows.map((workflow) => (
               <button

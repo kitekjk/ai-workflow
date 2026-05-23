@@ -1,18 +1,19 @@
 import "dotenv/config";
 import { createWorkflowApiRuntimeFromEnv } from "../runtime/create-workflow-api-runtime";
+import { createLegacyPrdServerActionFactory } from "./legacy-prd-server-actions";
 import { createWorkflowApiServer } from "./server";
 
 const port = Number(process.env.WORKFLOW_API_PORT ?? 3000);
 const runtime = createWorkflowApiRuntimeFromEnv(process.env);
 const restoreResult = await runtime.restorePrdSnapshot?.();
 const server = await createWorkflowApiServer({
-  fixture: runtime.fixture,
+  compatibilityActionsFactory: createLegacyPrdServerActionFactory(runtime.legacyPrd),
   scheduler: runtime.scheduler,
   documentRepository: runtime.documentRepository,
   jiraIssueReader: runtime.jiraIssueReader,
   wikiFeedbackCollector: runtime.wikiFeedbackCollector,
-  snapshotMirror: runtime.snapshotMirror,
   readModel: runtime.readModel,
+  workflowIntakeCommand: runtime.workflowIntakeCommand,
   prdIntakeCommand: runtime.prdIntakeCommand,
   feedbackRevisionCommand: runtime.feedbackRevisionCommand,
   workflowResultCommand: runtime.workflowResultCommand,

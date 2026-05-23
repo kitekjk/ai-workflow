@@ -1,7 +1,7 @@
 import type { Document } from "../document-core/domain";
-import { createGenericPrdSnapshot } from "../prd-confirmation/generic-adapter";
-import type { AgentJob, AgentJobResult, PrdConfirmationStore } from "../prd-confirmation/domain";
-import type { WorkflowEngineStepResult } from "../prd-confirmation/workflow-engine";
+import { createGenericPrdSnapshot } from "../legacy/prd-confirmation/generic-adapter";
+import type { AgentJob, AgentJobResult, PrdConfirmationStore } from "../legacy/prd-confirmation/domain";
+import type { WorkflowEngineStepResult } from "../legacy/prd-confirmation/workflow-engine";
 import type { WorkflowTask } from "../workflow-core/domain";
 import type {
   RecordEngineTransitionCommandInput,
@@ -9,7 +9,7 @@ import type {
   WorkflowEngineProcessedResultSummary
 } from "./workflow-transition-command";
 
-export function createEngineTransitionCommandInput(
+export function createLegacyPrdEngineTransitionCommandInput(
   store: PrdConfirmationStore,
   engineStep: WorkflowEngineStepResult,
   now: Date
@@ -21,7 +21,7 @@ export function createEngineTransitionCommandInput(
   const snapshot = createGenericPrdSnapshot(store);
   const documents = documentsForEngineStep(snapshot.documents, engineStep);
   const workflowTasks = workflowTasksForEngineStep(snapshot.workflowTasks, engineStep);
-  const jobs = engineStep.createdJobIds.map((jobId) => workflowJobCommandInputForFixtureJob(store, jobId));
+  const jobs = engineStep.createdJobIds.map((jobId) => legacyPrdWorkflowJobCommandInputForFixtureJob(store, jobId));
 
   return {
     transitionType: engineStep.transitionType,
@@ -38,7 +38,7 @@ export function createEngineTransitionCommandInput(
   };
 }
 
-export function workflowJobCommandInputForFixtureJob(
+export function legacyPrdWorkflowJobCommandInputForFixtureJob(
   store: PrdConfirmationStore,
   jobId: string
 ): RecordWorkflowJobCommandInput {

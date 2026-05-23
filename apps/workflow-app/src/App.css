@@ -248,6 +248,53 @@ button:disabled {
   overflow: hidden;
 }
 
+.workflow-create-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+}
+
+.workflow-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.workflow-create-form label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.workflow-create-form input,
+.workflow-create-form select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text-strong);
+  font: 700 12px/1 var(--sans);
+  outline: none;
+  padding: 0 8px;
+}
+
+.workflow-create-form input::placeholder {
+  color: #94a3b8;
+}
+
+.workflow-create-form button {
+  width: 100%;
+}
+
 .workflow-list {
   display: grid;
   gap: 8px;
