@@ -1252,6 +1252,48 @@ describe("repository transition planner", () => {
     expect(routePlan.transitionType).toBe("prd_downstream_scope_confirmation_required");
     expect(routePlan.mutation.documentStates[0].status).toBe("needs_revision");
   });
+
+  it("prd.route_downstream with operator-supplied route creates downstream HLD document after scope clarification", () => {
+    // Codifies the success path of prd.route_downstream when the operator has
+    // resolved scope clarification. After scope clarification the operator
+    // re-triggers route_downstream with an explicit route value (which may be
+    // uppercase from operator input). The planner must normalize the route to a
+    // known document type via the fallback path and produce
+    // prd_downstream_documents_created with at least one downstream document.
+    // The upcoming definition-driven interpreter must preserve this behavior exactly.
+    const routePlan = planRepositoryWorkflowTransition({
+      document: document({
+        id: "doc_prd",
+        status: "approved"
+      }),
+      job: workflowJob({
+        id: "job_route",
+        jobType: "prd.route_downstream",
+        input: { sourceDocumentId: "doc_prd" }
+      }),
+      result: workflowJobResult({
+        id: "result_route",
+        jobId: "job_route",
+        output: { status: "succeeded", route: "HLD", rationale: "single domain change" }
+      }),
+      now: new Date("2026-05-21T00:03:30.000Z"),
+      idGenerator: sequenceGenerator()
+    });
+    expect(routePlan.transitionType).toBe("prd_downstream_documents_created");
+    expect(routePlan.mutation.documents.length).toBeGreaterThan(0);
+    expect(routePlan.mutation.documents[0]).toMatchObject({
+      workflowRunId: "run_1",
+      parentDocumentId: "doc_prd",
+      type: "hld",
+      status: "draft"
+    });
+    expect(routePlan.mutation.workflowJobs).toMatchObject([
+      {
+        jobType: "document.generate",
+        input: expect.objectContaining({ documentType: "hld", parentDocumentId: "doc_prd" })
+      }
+    ]);
+  });
 });
 
 function document(overrides: Partial<Document> = {}): Document {
