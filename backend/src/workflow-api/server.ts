@@ -1194,10 +1194,9 @@ async function routeRequest(
   }
 
   if (method === "GET" && path.startsWith("/workflow-definitions/")) {
-    const tail = path.slice("/workflow-definitions/".length);
-    const [id, queryString] = tail.split("?");
-    const versionMatch = queryString?.match(/version=(\d+)/);
-    const version = versionMatch ? Number(versionMatch[1]) : undefined;
+    const id = path.slice("/workflow-definitions/".length);
+    const versionParam = url.searchParams.get("version");
+    const version = versionParam ? Number(versionParam) : undefined;
     const record = version
       ? await context.definitionRepository?.findByIdAndVersion(id, version)
       : await context.definitionRepository?.findActiveById(id);
