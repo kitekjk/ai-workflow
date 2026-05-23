@@ -168,8 +168,9 @@ async function upsertWorkflowTask(executor: MysqlQueryExecutor, task: WorkflowTa
   await executor.execute(
     `INSERT INTO workflow_task (
       id, run_id, parent_task_id, task_type, source_key, title, status,
-      current_document_id, metadata_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      current_document_id, definition_id, definition_version, current_stage_id,
+      stage_attempt_counts_json, metadata_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
       parent_task_id = COALESCE(VALUES(parent_task_id), parent_task_id),
       task_type = VALUES(task_type),
@@ -177,6 +178,10 @@ async function upsertWorkflowTask(executor: MysqlQueryExecutor, task: WorkflowTa
       title = VALUES(title),
       status = VALUES(status),
       current_document_id = VALUES(current_document_id),
+      definition_id = VALUES(definition_id),
+      definition_version = VALUES(definition_version),
+      current_stage_id = VALUES(current_stage_id),
+      stage_attempt_counts_json = VALUES(stage_attempt_counts_json),
       metadata_json = VALUES(metadata_json),
       updated_at = VALUES(updated_at)`,
     [
@@ -188,6 +193,10 @@ async function upsertWorkflowTask(executor: MysqlQueryExecutor, task: WorkflowTa
       task.title,
       task.status,
       task.currentDocumentId ?? null,
+      task.definitionId ?? null,
+      task.definitionVersion ?? null,
+      task.currentStageId ?? null,
+      task.stageAttemptCounts !== undefined ? JSON.stringify(task.stageAttemptCounts) : null,
       JSON.stringify(task.metadata),
       toMysqlDateTime(task.createdAt),
       toMysqlDateTime(task.updatedAt)

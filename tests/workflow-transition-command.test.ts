@@ -94,7 +94,7 @@ describe("MysqlWorkflowTransitionCommand", () => {
         "doc_wi_1"
       ])
     );
-    expect(JSON.parse(String(database.statements[0].params[8]))).toEqual({
+    expect(JSON.parse(String(database.statements[0].params[12]))).toEqual({
       documentId: "doc_wi_1",
       source: "read-model"
     });

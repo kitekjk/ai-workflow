@@ -47,6 +47,10 @@ export interface CreateWorkflowTaskInput {
   title: string;
   status?: WorkflowTask["status"];
   currentDocumentId?: string;
+  definitionId?: string;
+  definitionVersion?: number;
+  currentStageId?: string;
+  stageAttemptCounts?: Record<string, number>;
   metadata?: Record<string, unknown>;
   now?: Date;
 }
