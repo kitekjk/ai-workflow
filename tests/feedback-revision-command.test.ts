@@ -128,6 +128,63 @@ describe("MysqlFeedbackRevisionCommand", () => {
     });
   });
 
+  it("two consecutive recordRevisionJob calls each unconditionally schedule a prd.apply_feedback_revision job", async () => {
+    // Codifies the current behavior of feedback-revision-command. The upcoming
+    // definition-driven interpreter must preserve this exact behavior — whether
+    // it later evolves to a no-op-without-new-feedback rule is out of scope
+    // for this slice. This test pins TODAY's behavior.
+    const database = new FakeMysqlDatabase();
+    const command = new MysqlFeedbackRevisionCommand(database, {
+      idGenerator: fixedIds("event_1", "event_2", "event_3", "event_4")
+    });
+
+    const prdJob = (id: string): WorkflowCommandJob => ({
+      id,
+      workItemId: "wi_1",
+      jobType: "prd.apply_feedback_revision",
+      primaryJiraKey: "PRD-100",
+      status: "pending",
+      input: {}
+    });
+
+    // First call — should write a workflow_job row.
+    await command.recordRevisionJob({
+      runId: "run_1",
+      job: prdJob("job_1"),
+      feedbackItems: [feedbackItem({ revisionJobId: "job_1" })],
+      now: new Date("2026-05-20T00:00:00.000Z")
+    });
+
+    const statementsAfterFirst = database.statements.length;
+    expect(database.statements.map((s) => s.sql)).toContainEqual(
+      expect.stringContaining("INSERT INTO workflow_job")
+    );
+
+    // Second call with no new feedback — current code has no guard, so it
+    // unconditionally schedules another job.
+    await command.recordRevisionJob({
+      runId: "run_1",
+      job: prdJob("job_2"),
+      feedbackItems: [feedbackItem({ revisionJobId: "job_2" })],
+      now: new Date("2026-05-20T00:00:00.000Z")
+    });
+
+    const statementsAfterSecond = database.statements.length;
+
+    // Both calls must have produced DB writes — the second call is NOT a no-op.
+    expect(statementsAfterSecond).toBeGreaterThan(statementsAfterFirst);
+
+    // Two separate workflow_job inserts must exist (one per call).
+    const jobInserts = database.statements.filter((s) =>
+      s.sql.includes("INSERT INTO workflow_job")
+    );
+    expect(jobInserts).toHaveLength(2);
+
+    // Each insert targets a different job id.
+    expect(jobInserts[0].params).toContain("job_1");
+    expect(jobInserts[1].params).toContain("job_2");
+  });
+
   it("rolls back and releases the connection when revision recording fails", async () => {
     const database = new FakeMysqlDatabase({ failOnStatement: 2 });
     const command = new MysqlFeedbackRevisionCommand(database);
