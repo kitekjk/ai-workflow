@@ -6,6 +6,7 @@ import type {
   WorkflowEvent,
   WorkflowJob,
   WorkflowJobResult,
+  RunnerFailureCategory,
   WorkflowTask
 } from "./domain";
 import { runnerStatusAt } from "./domain";
@@ -137,6 +138,15 @@ export class WorkflowScheduler {
     return this.repository.startClaimedJob(jobId, runnerId, now);
   }
 
+  async renewJobLease(jobId: string, runnerId: string, now: Date): Promise<WorkflowJob> {
+    return this.repository.renewJobLease({
+      jobId,
+      runnerId,
+      leaseExpiresAt: new Date(now.getTime() + this.options.leaseMs),
+      now
+    });
+  }
+
   async getJob(jobId: string): Promise<WorkflowJob | undefined> {
     return this.repository.getWorkflowJob(jobId);
   }
@@ -154,6 +164,7 @@ export class WorkflowScheduler {
     jobId: string;
     runnerId: string;
     output: Record<string, unknown>;
+    errorCategory?: RunnerFailureCategory;
     errorCode: string;
     errorMessage: string;
     retryable?: boolean;
@@ -174,6 +185,7 @@ export class WorkflowScheduler {
           alert: !retryScheduled,
           runnerId: input.runnerId,
           attemptNo: result.attemptNo,
+          errorCategory: input.errorCategory,
           errorCode: input.errorCode,
           errorMessage: input.errorMessage,
           retryable: Boolean(input.retryable),

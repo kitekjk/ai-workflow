@@ -19,6 +19,10 @@ describe("MySQL core workflow migration", () => {
     join(process.cwd(), "migrations", "mysql", "004_workflow_task_hierarchy.sql"),
     "utf8"
   );
+  const jobFailureCategoryMigration = readFileSync(
+    join(process.cwd(), "migrations", "mysql", "005_workflow_job_failure_category.sql"),
+    "utf8"
+  );
 
   it("creates the core workflow, runner, document, and artifact tables", () => {
     for (const table of [
@@ -102,6 +106,11 @@ describe("MySQL core workflow migration", () => {
     expect(taskHierarchyMigration).toContain("fk_document_workflow_task");
     expect(taskHierarchyMigration).toContain("fk_workflow_job_task");
     expect(taskHierarchyMigration).toContain("backfilledFromDocumentId");
+  });
+
+  it("adds normalized job failure categories to job results", () => {
+    expect(jobFailureCategoryMigration).toContain("ADD COLUMN error_category");
+    expect(jobFailureCategoryMigration).toContain("idx_workflow_job_result_error_category");
   });
 });
 

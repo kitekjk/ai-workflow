@@ -600,6 +600,54 @@ describe("WorkflowScheduler", () => {
     });
   });
 
+  it("renews active job leases so healthy runners are not recovered as stale", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const scheduler = new WorkflowScheduler(repository, { leaseMs: 10_000 });
+    const run = repository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    repository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.implement",
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["spec.implement"],
+      requiredEngine: "codex",
+      now
+    });
+    await scheduler.registerRunner({
+      id: "runner-dev-a",
+      ownerUserId: "dev-a",
+      mode: "local",
+      capabilities: ["spec.implement"],
+      engines: ["codex"],
+      now
+    });
+
+    await scheduler.claim("runner-dev-a", now);
+    await scheduler.startJob("job_1", "runner-dev-a", new Date("2026-05-20T00:00:01.000Z"));
+    const renewed = await scheduler.renewJobLease(
+      "job_1",
+      "runner-dev-a",
+      new Date("2026-05-20T00:00:20.000Z")
+    );
+    const recovered = await scheduler.recoverExpiredLeases(new Date("2026-05-20T00:00:11.000Z"));
+
+    expect(renewed).toMatchObject({
+      id: "job_1",
+      status: "running",
+      leaseExpiresAt: "2026-05-20T00:00:30.000Z"
+    });
+    expect(recovered).toEqual([]);
+    expect(repository.workflowJobs[0]).toMatchObject({
+      status: "running",
+      claimedByRunnerId: "runner-dev-a",
+      leaseExpiresAt: "2026-05-20T00:00:30.000Z"
+    });
+  });
+
   it("requests cancellation and lets the claimed runner acknowledge it", async () => {
     const repository = new InMemoryWorkflowRepository();
     const scheduler = new WorkflowScheduler(repository, { leaseMs: 30_000 });

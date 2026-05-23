@@ -590,6 +590,7 @@ function rowToWorkflowJobResult(row: MysqlRow): WorkflowJobResult {
     attemptNo: numberValue(row.attempt_no),
     status: stringValue(row.status) as WorkflowJobResult["status"],
     output: parseJsonRecord(row.output_json),
+    errorCategory: optionalString(row.error_category) as WorkflowJobResult["errorCategory"],
     errorCode: optionalString(row.error_code),
     errorMessage: optionalString(row.error_message),
     createdAt: isoValue(row.created_at)

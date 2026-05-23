@@ -22,6 +22,7 @@ import type {
   FailWorkflowJobInput,
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
+  RenewWorkflowJobLeaseInput,
   RequestWorkflowJobCancellationInput,
   RequestWorkflowJobRetryInput,
   UpdateWorkflowTaskInput,
@@ -423,6 +424,31 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
     return this.requireJob(jobId);
   }
 
+  async renewJobLease(input: RenewWorkflowJobLeaseInput): Promise<WorkflowJob> {
+    return this.withTransaction(async (connection) => {
+      const job = await this.requireClaimedJob(connection, input.jobId, input.runnerId);
+
+      if (!isRenewableJobStatus(job.status)) {
+        throw new Error(`Job lease cannot be renewed while status is ${job.status}: ${input.jobId}`);
+      }
+
+      const leaseExpiresAt = input.leaseExpiresAt.toISOString();
+
+      await connection.execute(
+        `UPDATE workflow_job
+         SET lease_expires_at = ?, updated_at = ?
+         WHERE id = ?`,
+        [toMysqlDateTime(input.leaseExpiresAt), toMysqlDateTime(input.now), input.jobId]
+      );
+
+      return {
+        ...job,
+        leaseExpiresAt,
+        updatedAt: input.now.toISOString()
+      };
+    });
+  }
+
   async completeJob(input: CompleteWorkflowJobInput): Promise<WorkflowJobResult> {
     return this.withTransaction(async (connection) => {
       const job = await this.requireClaimedJob(connection, input.jobId, input.runnerId);
@@ -461,6 +487,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         runnerId: input.runnerId,
         status: "failed",
         output: input.output,
+        errorCategory: input.errorCategory,
         errorCode: input.errorCode,
         errorMessage: input.errorMessage,
         now: input.now
@@ -789,6 +816,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
       attemptNo: Number(attemptRows[0]?.next_attempt_no ?? 1),
       status: input.status,
       output: input.output,
+      errorCategory: input.errorCategory,
       errorCode: input.errorCode,
       errorMessage: input.errorMessage,
       createdAt: toIso(input.now)
@@ -796,8 +824,8 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
 
     await connection.execute(
       `INSERT INTO workflow_job_result (
-        id, job_id, runner_id, attempt_no, status, output_json, error_code, error_message, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, job_id, runner_id, attempt_no, status, output_json, error_category, error_code, error_message, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         result.id,
         result.jobId,
@@ -805,6 +833,7 @@ export class MysqlWorkflowRepository implements WorkflowRepository {
         result.attemptNo,
         result.status,
         JSON.stringify(result.output),
+        result.errorCategory ?? null,
         result.errorCode ?? null,
         result.errorMessage ?? null,
         toMysqlDateTime(result.createdAt)
@@ -1016,6 +1045,10 @@ function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
 
 function isRetryableTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function isRenewableJobStatus(status: WorkflowJob["status"]): boolean {
+  return status === "claimed" || status === "running" || status === "cancel_requested";
 }
 
 function claimDiagnostics(

@@ -89,6 +89,19 @@ process.exit(42);
       /fake-cli.*timed out after 50ms/
     );
   });
+
+  it("cancels a running CLI process when the abort signal fires", async () => {
+    const bin = createFakeCli("setTimeout(() => console.log(JSON.stringify({ status: 'late' })), 10000);");
+    const engine = new CliEngine({ command: bin, timeoutMs: 5000 });
+    const controller = new AbortController();
+    const promise = engine.runJson({ prompt: "generate PRD" }, { signal: controller.signal });
+
+    setTimeout(() => {
+      controller.abort(new Error("Job cancellation requested: job_1"));
+    }, 25);
+
+    await expect(promise).rejects.toThrow(/fake-cli.*canceled.*Job cancellation requested: job_1/);
+  });
 });
 
 function createFakeCli(source: string): string {

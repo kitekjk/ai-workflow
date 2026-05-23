@@ -3,6 +3,7 @@ import type {
   ClaimJobResult,
   Runner,
   RunnerClaimDiagnostics,
+  RunnerFailureCategory,
   WorkflowEvent,
   WorkflowJob,
   WorkflowJobResult
@@ -82,6 +83,18 @@ export class WorkflowApiRunnerClient {
     });
   }
 
+  async renewJobLease(jobId: string, runnerId: string, now?: Date): Promise<WorkflowJob> {
+    const response = await this.postJson<{ job: WorkflowJob }>(
+      `/runner-jobs/${encodeURIComponent(jobId)}/renew-lease`,
+      {
+        runnerId,
+        now: now?.toISOString()
+      }
+    );
+
+    return response.job;
+  }
+
   async getJob(jobId: string): Promise<WorkflowJob> {
     const response = await this.getJson<{ job: WorkflowJob }>(`/runner-jobs/${encodeURIComponent(jobId)}`);
     return response.job;
@@ -109,6 +122,7 @@ export class WorkflowApiRunnerClient {
     jobId: string;
     runnerId: string;
     output?: Record<string, unknown>;
+    errorCategory?: RunnerFailureCategory;
     errorCode: string;
     errorMessage: string;
     retryable?: boolean;
@@ -119,6 +133,7 @@ export class WorkflowApiRunnerClient {
       {
         runnerId: input.runnerId,
         output: input.output ?? {},
+        errorCategory: input.errorCategory,
         errorCode: input.errorCode,
         errorMessage: input.errorMessage,
         retryable: input.retryable,

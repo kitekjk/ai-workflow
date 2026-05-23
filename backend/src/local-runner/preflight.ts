@@ -1,6 +1,10 @@
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { constants } from "node:fs";
+import {
+  createFileSystemRunnerPackageResolver,
+  defaultRunnerPackageRequirementsForCapabilities
+} from "./package-resolver";
 
 export type LocalRunnerPreflightStatus = "passed" | "warning" | "failed";
 
@@ -41,6 +45,10 @@ export async function runLocalRunnerPreflight(
   checks.push(checkRunnerScope({ capabilities, runnerEngines, selectedEngine }));
   checks.push(await checkCliEngine(env, { capabilities, selectedEngine }));
   checks.push(checkGitHubIntegration(env, capabilities));
+  const packageRequirements = defaultRunnerPackageRequirementsForCapabilities(capabilities);
+  if (packageRequirements.length > 0) {
+    checks.push(await checkRunnerPackages(env, packageRequirements));
+  }
   if (requiresGitWorkspace(capabilities)) {
     checks.push(await checkGitCli(env));
   }
@@ -201,6 +209,34 @@ function checkGitHubIntegration(env: NodeJS.ProcessEnv, capabilities: string[]):
   });
 }
 
+async function checkRunnerPackages(
+  env: NodeJS.ProcessEnv,
+  requirements: ReturnType<typeof defaultRunnerPackageRequirementsForCapabilities>
+): Promise<LocalRunnerPreflightCheck> {
+  const resolver = createFileSystemRunnerPackageResolver(env);
+  const resolution = await resolver.resolveRequirements(requirements);
+
+  if (resolution.missing.length > 0) {
+    return failed("runner_packages", "Required runner skill/plugin packages are not installed.", {
+      missing: resolution.missing.map((requirement) => ({
+        type: requirement.type,
+        id: requirement.id,
+        version: requirement.version,
+        reason: requirement.reason
+      }))
+    });
+  }
+
+  return passed("runner_packages", "Required runner skill/plugin packages are installed.", {
+    installed: resolution.installed.map((requirement) => ({
+      type: requirement.type,
+      id: requirement.id,
+      version: requirement.installedVersion,
+      path: requirement.path
+    }))
+  });
+}
+
 async function checkWorkspaceRoot(value: string | undefined): Promise<LocalRunnerPreflightCheck> {
   const root = trimmed(value);
 
@@ -238,7 +274,7 @@ function requiresGitWorkspace(capabilities: string[]): boolean {
   return capabilities.includes("implementation.update_pr");
 }
 
-async function resolveCommand(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+export async function resolveCommand(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
     return (await canExecute(command)) ? command : undefined;
   }

@@ -67,6 +67,7 @@ export class MysqlRepositoryTransitionWorkReader
          result.attempt_no AS result_attempt_no,
          result.status AS result_status,
          result.output_json AS result_output_json,
+         result.error_category AS result_error_category,
          result.error_code AS result_error_code,
          result.error_message AS result_error_message,
          result.created_at AS result_created_at
@@ -146,6 +147,7 @@ function rowToWorkflowJobResult(row: MysqlRow): WorkflowJobResult {
     attemptNo: numberValue(row.result_attempt_no),
     status: stringValue(row.result_status) as WorkflowJobResult["status"],
     output: parseJsonRecord(row.result_output_json),
+    errorCategory: optionalString(row.result_error_category) as WorkflowJobResult["errorCategory"],
     errorCode: optionalString(row.result_error_code),
     errorMessage: optionalString(row.result_error_message),
     createdAt: isoValue(row.result_created_at)

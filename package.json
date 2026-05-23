@@ -11,6 +11,7 @@
     "start:repository-transition-worker": "tsx backend/src/workflow-api/repository-transition-worker-main.ts",
     "start:local-runner": "tsx backend/src/local-runner/main.ts",
     "doctor:local-runner": "tsx backend/src/local-runner/preflight-main.ts",
+    "prepare:local-runner-packages": "tsx backend/src/local-runner/package-prepare-main.ts",
     "db:migrate:mysql": "tsx backend/src/mysql/apply-migrations.ts",
     "smoke:mysql:no-fixture": "tsx backend/src/smoke/mysql-no-fixture-smoke.ts"
   },

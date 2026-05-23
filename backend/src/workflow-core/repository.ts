@@ -64,6 +64,7 @@ export interface RecordWorkflowJobResultInput {
   runnerId?: string;
   status: WorkflowJobResult["status"];
   output: Record<string, unknown>;
+  errorCategory?: WorkflowJobResult["errorCategory"];
   errorCode?: string;
   errorMessage?: string;
   now?: Date;
@@ -80,9 +81,17 @@ export interface FailWorkflowJobInput {
   jobId: string;
   runnerId: string;
   output: Record<string, unknown>;
+  errorCategory?: WorkflowJobResult["errorCategory"];
   errorCode: string;
   errorMessage: string;
   retryable?: boolean;
+  now: Date;
+}
+
+export interface RenewWorkflowJobLeaseInput {
+  jobId: string;
+  runnerId: string;
+  leaseExpiresAt: Date;
   now: Date;
 }
 
@@ -145,6 +154,7 @@ export interface WorkflowRepository {
   claimNextJob(input: ClaimJobInput): Awaitable<ClaimJobResult | undefined>;
   diagnoseClaim(input: ClaimJobInput): Awaitable<RunnerClaimDiagnostics>;
   startClaimedJob(jobId: string, runnerId: string, now: Date): Awaitable<WorkflowJob>;
+  renewJobLease(input: RenewWorkflowJobLeaseInput): Awaitable<WorkflowJob>;
   completeJob(input: CompleteWorkflowJobInput): Awaitable<WorkflowJobResult>;
   failJob(input: FailWorkflowJobInput): Awaitable<WorkflowJobResult>;
   requestJobCancellation(input: RequestWorkflowJobCancellationInput): Awaitable<WorkflowJob>;

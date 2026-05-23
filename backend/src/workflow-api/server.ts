@@ -16,6 +16,7 @@ import { redactSecrets } from "../runtime/secrets";
 import type {
   Runner,
   RunnerClaimDiagnostics,
+  RunnerFailureCategory,
   RunnerMode,
   WorkflowCommandJob,
   WorkflowJob,
@@ -289,8 +290,18 @@ export function createWorkflowApiServer({
     },
 
     async listen(port: number) {
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        await listenServer(server, port);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const requestedPort = port === 0 ? randomFetchCompatiblePort() : port;
+
+        try {
+          await listenServer(server, requestedPort);
+        } catch (error) {
+          if (port === 0 && isAddressInUseError(error)) {
+            continue;
+          }
+
+          throw error;
+        }
 
         const address = server.address() as AddressInfo;
 
@@ -560,6 +571,16 @@ async function routeRequest(
       return;
     }
 
+    if (method === "POST" && action === "renew-lease") {
+      const body = await readJsonBody<RunnerJobActionBody>(request);
+      const runnerId = requireString(body.runnerId, "runnerId");
+      requireRunnerAuthorization(context, request, runnerId);
+      const job = await scheduler.renewJobLease(decodedJobId, runnerId, parseNow(body.now, context.now));
+
+      writeJson(response, 200, { job });
+      return;
+    }
+
     if (method === "POST" && action === "cancel") {
       const body = await readJsonBody<RunnerJobCancelBody>(request);
       const job = await scheduler.requestJobCancellation({
@@ -630,6 +651,7 @@ async function routeRequest(
         jobId: decodedJobId,
         runnerId,
         output: redactSecrets(optionalRecord(body.output, "output")),
+        errorCategory: optionalRunnerFailureCategory(body.errorCategory, "errorCategory"),
         errorCode: requireString(body.errorCode, "errorCode"),
         errorMessage: redactSecrets(requireString(body.errorMessage, "errorMessage")),
         retryable: Boolean(body.retryable),
@@ -1202,6 +1224,12 @@ function runnerOnboardingForRequest(request: IncomingMessage, url: URL): RunnerO
     RUNNER_ENGINE: defaultEngine,
     LOCAL_RUNNER_CONCURRENCY: "1",
     LOCAL_RUNNER_WORKSPACE_ROOT: ".runner-workspaces",
+    LOCAL_RUNNER_JOB_LEASE_RENEWAL_MS: "10000",
+    LOCAL_RUNNER_CANCELLATION_POLL_MS: "2000",
+    LOCAL_RUNNER_PACKAGE_AUTO_INSTALL: "false",
+    LOCAL_RUNNER_SKILL_ROOTS: "skills",
+    LOCAL_RUNNER_SKILL_REGISTRY_ROOTS: "skills",
+    LOCAL_RUNNER_SKILL_INSTALL_ROOT: "skills",
     LOCAL_RUNNER_MAX_JOBS: maxJobs
   };
   const requirements = [
@@ -1237,6 +1265,10 @@ function runnerOnboardingForRequest(request: IncomingMessage, url: URL): RunnerO
       {
         label: "Doctor",
         command: "npm run doctor:local-runner"
+      },
+      {
+        label: "Prepare Packages",
+        command: "npm run prepare:local-runner-packages"
       },
       {
         label: "Drain",
@@ -1312,6 +1344,7 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 function isRunnerJobCallbackAction(action: string | undefined): boolean {
   return (
     action === "start" ||
+    action === "renew-lease" ||
     action === "canceled" ||
     action === "results" ||
     action === "fail" ||
@@ -1832,6 +1865,7 @@ interface RunnerJobResultBody extends RunnerJobActionBody {
 }
 
 interface RunnerJobFailureBody extends RunnerJobResultBody {
+  errorCategory?: unknown;
   errorCode?: unknown;
   errorMessage?: unknown;
   retryable?: unknown;
@@ -2151,6 +2185,29 @@ function optionalString(value: unknown, name: string): string | undefined {
   }
 
   return value;
+}
+
+function optionalRunnerFailureCategory(value: unknown, name: string): RunnerFailureCategory | undefined {
+  const category = optionalString(value, name);
+
+  if (category === undefined) {
+    return undefined;
+  }
+
+  if (
+    category === "dependency" ||
+    category === "workspace" ||
+    category === "engine" ||
+    category === "result_contract" ||
+    category === "artifact" ||
+    category === "cancellation" ||
+    category === "github" ||
+    category === "unknown"
+  ) {
+    return category;
+  }
+
+  throw new HttpError(400, `${name} is unsupported: ${category}`);
 }
 
 function optionalRunnerOwner(body: { ownerUserId?: unknown; ownerEmail?: unknown }): string | undefined {
@@ -2811,8 +2868,23 @@ function statusCodeForError(error: unknown): number {
 }
 
 async function listenServer(server: Server, port: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    server.listen(port, "127.0.0.1", resolve);
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onListening = () => {
+      cleanup();
+      resolve();
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, "127.0.0.1");
   });
 }
 
@@ -2831,6 +2903,14 @@ async function closeServer(server: Server): Promise<void> {
 
 function isFetchBlockedPort(port: number): boolean {
   return fetchBlockedPorts.has(port);
+}
+
+function randomFetchCompatiblePort(): number {
+  return 49152 + Math.floor(Math.random() * (65535 - 49152 + 1));
+}
+
+function isAddressInUseError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EADDRINUSE";
 }
 
 const fetchBlockedPorts = new Set([

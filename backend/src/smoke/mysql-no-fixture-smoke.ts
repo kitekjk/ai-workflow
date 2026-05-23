@@ -18,6 +18,8 @@ import {
   RoutedLocalRunnerEngine
 } from "../local-runner/github-implementation-engine";
 import { runLocalRunnerDrain, type LocalRunnerDrainResult, type LocalRunnerEngine } from "../local-runner/local-runner";
+import { createFileSystemRunnerPackageResolver } from "../local-runner/package-resolver";
+import { resolveCommand } from "../local-runner/preflight";
 import { WorkflowApiRunnerClient } from "../local-runner/runner-client";
 import type { LocalRunnerWorkspaceOptions } from "../local-runner/workspace";
 import { createLegacyPrdServerActionFactory } from "../workflow-api/legacy-prd-server-actions";
@@ -27,6 +29,7 @@ interface MysqlNoFixtureSmokeSummary {
   prdJiraKey: string;
   actorEmail: string;
   runnerId: string;
+  documentMode: SmokeDocumentMode;
   implementationMode: SmokeImplementationMode;
   apiUrl: string;
   claims: Array<{
@@ -80,6 +83,7 @@ interface SmokeDocumentSummary {
 }
 
 type FetchImpl = typeof fetch;
+export type SmokeDocumentMode = "stub" | "cli";
 export type SmokeImplementationMode = "stub" | "github";
 
 export interface MysqlNoFixtureSmokeConfig {
@@ -87,6 +91,7 @@ export interface MysqlNoFixtureSmokeConfig {
   actorEmail: string;
   runnerId: string;
   engine: string;
+  documentMode: SmokeDocumentMode;
   implementationMode: SmokeImplementationMode;
   appToken?: string;
   runnerToken?: string;
@@ -98,6 +103,7 @@ export async function runMysqlNoFixtureSmoke(
 ): Promise<MysqlNoFixtureSmokeSummary> {
   const smokeEnv = createSmokeEnv(env);
   const config = smokeConfig(smokeEnv);
+  await validateMysqlNoFixtureSmokePrerequisites(smokeEnv);
   await maybeApplyMigrations(smokeEnv);
 
   const runtime = createWorkflowApiRuntimeFromEnv(smokeEnv);
@@ -167,11 +173,13 @@ export async function runMysqlNoFixtureSmoke(
     const runnerSetup = createSmokeLocalRunnerSetup(config, smokeEnv);
     const engine = runnerSetup.engine;
     const workspace = runnerSetup.workspace;
+    const packageResolver = createFileSystemRunnerPackageResolver(smokeEnv);
 
     const drain = await runLocalRunnerDrain({
       client: runnerClient,
       engine,
       runner,
+      packageResolver,
       workspace,
       maxJobs: 5
     });
@@ -194,6 +202,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      packageResolver,
       workspace,
       maxJobs: 6
     });
@@ -207,6 +216,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      packageResolver,
       workspace,
       maxJobs: 8
     });
@@ -222,6 +232,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      packageResolver,
       workspace,
       maxJobs: 14
     });
@@ -237,6 +248,7 @@ export async function runMysqlNoFixtureSmoke(
       client: runnerClient,
       engine,
       runner,
+      packageResolver,
       workspace,
       maxJobs: 12
     });
@@ -279,6 +291,7 @@ export async function runMysqlNoFixtureSmoke(
       prdJiraKey: config.prdJiraKey,
       actorEmail: config.actorEmail,
       runnerId: config.runnerId,
+      documentMode: config.documentMode,
       implementationMode: config.implementationMode,
       apiUrl: server.url,
       claims: [...claims, ...downstreamClaims, ...lldClaims, ...specClaims, ...implementationClaims],
@@ -465,74 +478,99 @@ export function createSmokeLocalRunnerSetup(
   config: MysqlNoFixtureSmokeConfig,
   env: WorkflowApiRuntimeEnv
 ): { engine: LocalRunnerEngine; workspace?: LocalRunnerWorkspaceOptions } {
-  if (config.implementationMode === "stub") {
+  if (config.documentMode === "stub" && config.implementationMode === "stub") {
     return {
       engine: createSmokeLocalRunnerEngine(config.prdJiraKey)
     };
   }
 
-  const githubConfig = githubRuntimeConfig(env);
+  const routes: Array<{ canRun(input: Parameters<LocalRunnerEngine["run"]>[0]): boolean; engine: LocalRunnerEngine }> = [];
+  let fallback = createSmokeLocalRunnerEngine(config.prdJiraKey, {
+    documentJobs: config.documentMode !== "cli",
+    implementationJobs: config.implementationMode !== "github"
+  });
+  let workspace: LocalRunnerWorkspaceOptions | undefined;
 
-  if (!githubConfig) {
-    throw new Error("SMOKE_IMPLEMENTATION_MODE=github requires GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO");
+  if (config.implementationMode === "github") {
+    const githubConfig = githubRuntimeConfig(env);
+
+    if (!githubConfig) {
+      throw new Error("SMOKE_IMPLEMENTATION_MODE=github requires GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO");
+    }
+
+    const repositoryCloneUrl = requireSmokeEnv(env, "GITHUB_CLONE_URL");
+    workspace = {
+      rootDir: requireSmokeEnv(env, "LOCAL_RUNNER_WORKSPACE_ROOT"),
+      clean: env.LOCAL_RUNNER_CLEAN_WORKSPACE !== "false"
+    };
+    const githubClient = new GitHubRestClient(githubConfig);
+    const cliEngine = new JobTemplateCliLocalRunnerEngine({
+      env,
+      outputLanguage: env.RUNNER_OUTPUT_LANGUAGE ?? "ko"
+    });
+    const openPrEngine = new ImplementationPullRequestLocalRunnerEngine({
+      client: githubClient,
+      cliEngine,
+      owner: githubConfig.owner,
+      repo: githubConfig.repo,
+      repositoryCloneUrl,
+      defaultBaseBranch: githubConfig.defaultBaseBranch
+    });
+    const updatePrEngine = new ImplementationUpdateLocalRunnerEngine({ cliEngine });
+    const statusEngine = new GitHubImplementationLocalRunnerEngine({
+      client: githubClient,
+      owner: githubConfig.owner,
+      repo: githubConfig.repo,
+      defaultBaseBranch: githubConfig.defaultBaseBranch
+    });
+
+    routes.push(
+      {
+        canRun: (input) => openPrEngine.canRun(input),
+        engine: openPrEngine
+      },
+      {
+        canRun: (input) => updatePrEngine.canRun(input),
+        engine: updatePrEngine
+      },
+      {
+        canRun: (input) => input.job.jobType === "implementation.collect_pr_status",
+        engine: statusEngine
+      }
+    );
   }
 
-  const repositoryCloneUrl = requireSmokeEnv(env, "GITHUB_CLONE_URL");
-  const workspace = {
-    rootDir: requireSmokeEnv(env, "LOCAL_RUNNER_WORKSPACE_ROOT"),
-    clean: env.LOCAL_RUNNER_CLEAN_WORKSPACE !== "false"
-  };
-  const githubClient = new GitHubRestClient(githubConfig);
-  const cliEngine = new JobTemplateCliLocalRunnerEngine({
-    env,
-    outputLanguage: env.RUNNER_OUTPUT_LANGUAGE ?? "ko"
-  });
-  const openPrEngine = new ImplementationPullRequestLocalRunnerEngine({
-    client: githubClient,
-    cliEngine,
-    owner: githubConfig.owner,
-    repo: githubConfig.repo,
-    repositoryCloneUrl,
-    defaultBaseBranch: githubConfig.defaultBaseBranch
-  });
-  const updatePrEngine = new ImplementationUpdateLocalRunnerEngine({ cliEngine });
-  const statusEngine = new GitHubImplementationLocalRunnerEngine({
-    client: githubClient,
-    owner: githubConfig.owner,
-    repo: githubConfig.repo,
-    defaultBaseBranch: githubConfig.defaultBaseBranch
-  });
+  if (config.documentMode === "cli") {
+    const cliDocumentEngine = new JobTemplateCliLocalRunnerEngine({
+      env,
+      outputLanguage: env.RUNNER_OUTPUT_LANGUAGE ?? "ko"
+    });
+
+    routes.push({
+      canRun: (input) => isSmokeDocumentJob(input.job.jobType),
+      engine: cliDocumentEngine
+    });
+  }
 
   return {
-    engine: new RoutedLocalRunnerEngine(
-      [
-        {
-          canRun: (input) => openPrEngine.canRun(input),
-          engine: openPrEngine
-        },
-        {
-          canRun: (input) => updatePrEngine.canRun(input),
-          engine: updatePrEngine
-        },
-        {
-          canRun: (input) => input.job.jobType === "implementation.collect_pr_status",
-          engine: statusEngine
-        }
-      ],
-      createSmokeLocalRunnerEngine(config.prdJiraKey, { implementationJobs: false })
-    ),
+    engine: new RoutedLocalRunnerEngine(routes, fallback),
     workspace
   };
 }
 
 function createSmokeLocalRunnerEngine(
   prdJiraKey: string,
-  options: { implementationJobs?: boolean } = {}
+  options: { documentJobs?: boolean; implementationJobs?: boolean } = {}
 ): LocalRunnerEngine {
+  const documentJobs = options.documentJobs ?? true;
   const implementationJobs = options.implementationJobs ?? true;
 
   return {
     async run({ job }) {
+      if (isSmokeDocumentJob(job.jobType) && !documentJobs) {
+        throw new Error(`Smoke document job ${job.jobType} requires SMOKE_DOCUMENT_MODE=stub or CLI runner prerequisites`);
+      }
+
       if (job.jobType === "prd.generate_draft") {
         return {
           output: {
@@ -773,6 +811,17 @@ function createSmokeEnv(env: WorkflowApiRuntimeEnv): WorkflowApiRuntimeEnv {
   };
 }
 
+export async function validateMysqlNoFixtureSmokePrerequisites(
+  env: WorkflowApiRuntimeEnv = process.env
+): Promise<void> {
+  const smokeEnv = createSmokeEnv(env);
+  const config = smokeConfig(smokeEnv);
+
+  if (config.documentMode === "cli") {
+    await validateSmokeDocumentCliPrerequisites(config, smokeEnv);
+  }
+}
+
 function smokeConfig(env: WorkflowApiRuntimeEnv): MysqlNoFixtureSmokeConfig {
   const actorEmail =
     optionalEnv(env, "SMOKE_ACTOR_EMAIL") ??
@@ -785,10 +834,43 @@ function smokeConfig(env: WorkflowApiRuntimeEnv): MysqlNoFixtureSmokeConfig {
     actorEmail,
     runnerId: optionalEnv(env, "SMOKE_RUNNER_ID") ?? optionalEnv(env, "LOCAL_RUNNER_ID") ?? "runner-smoke-local",
     engine: optionalEnv(env, "RUNNER_ENGINE") ?? "codex",
+    documentMode: smokeDocumentModeFor(env),
     implementationMode: smokeImplementationModeFor(env),
     appToken: optionalEnv(env, "WORKFLOW_APP_API_TOKEN"),
     runnerToken: optionalEnv(env, "SMOKE_RUNNER_TOKEN") ?? optionalEnv(env, "LOCAL_RUNNER_TOKEN")
   };
+}
+
+export function smokeDocumentModeFor(env: WorkflowApiRuntimeEnv): SmokeDocumentMode {
+  const value = optionalEnv(env, "SMOKE_DOCUMENT_MODE") ?? "stub";
+
+  if (value === "stub" || value === "cli") {
+    return value;
+  }
+
+  throw new Error(`SMOKE_DOCUMENT_MODE must be "stub" or "cli", got: ${value}`);
+}
+
+async function validateSmokeDocumentCliPrerequisites(
+  config: MysqlNoFixtureSmokeConfig,
+  env: WorkflowApiRuntimeEnv
+): Promise<void> {
+  if (config.engine !== "codex" && config.engine !== "claude") {
+    throw new Error(`RUNNER_ENGINE must be "claude" or "codex" when SMOKE_DOCUMENT_MODE=cli, got: ${config.engine}`);
+  }
+
+  const commandKey = config.engine === "codex" ? "CODEX_CLI_PATH" : "CLAUDE_CLI_PATH";
+  const command = optionalEnv(env, commandKey);
+
+  if (!command) {
+    throw new Error(`${commandKey} is required when SMOKE_DOCUMENT_MODE=cli.`);
+  }
+
+  const resolved = await resolveCommand(command, env);
+
+  if (!resolved) {
+    throw new Error(`${commandKey} does not resolve to an executable command for SMOKE_DOCUMENT_MODE=cli: ${command}`);
+  }
 }
 
 export function smokeImplementationModeFor(env: WorkflowApiRuntimeEnv): SmokeImplementationMode {
@@ -799,6 +881,18 @@ export function smokeImplementationModeFor(env: WorkflowApiRuntimeEnv): SmokeImp
   }
 
   throw new Error(`SMOKE_IMPLEMENTATION_MODE must be "stub" or "github", got: ${value}`);
+}
+
+function isSmokeDocumentJob(jobType: string): boolean {
+  return (
+    jobType === "prd.generate_draft" ||
+    jobType === "prd.evaluate_quality" ||
+    jobType === "prd.route_downstream" ||
+    jobType === "document.generate" ||
+    jobType === "document.revise" ||
+    jobType === "document.evaluate" ||
+    jobType === "document.fan_out"
+  );
 }
 
 async function maybeApplyMigrations(env: WorkflowApiRuntimeEnv): Promise<void> {

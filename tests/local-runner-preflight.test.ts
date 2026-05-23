@@ -111,6 +111,45 @@ describe("local runner preflight", () => {
     );
   });
 
+  it("reports missing implementation runner skill packages", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "ai-workflow-empty-skills-"));
+    cleanupRoots.push(skillRoot);
+
+    const report = await runLocalRunnerPreflight(
+      {
+        WORKFLOW_API_BASE_URL: "http://127.0.0.1:3000",
+        LOCAL_RUNNER_ID: "runner-dev-laptop",
+        LOCAL_RUNNER_OWNER_EMAIL: "dev@example.com",
+        LOCAL_RUNNER_MODE: "local",
+        LOCAL_RUNNER_CAPABILITIES: "implementation.open_pr",
+        RUNNER_ENGINE: "codex",
+        GITHUB_TOKEN: "ghp_secret",
+        GITHUB_OWNER: "acme",
+        GITHUB_REPO: "workflow-app",
+        LOCAL_RUNNER_SKILL_ROOTS: skillRoot
+      },
+      { checkWorkspace: false }
+    );
+
+    expect(report.status).toBe("failed");
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        id: "runner_packages",
+        status: "failed",
+        message: "Required runner skill/plugin packages are not installed.",
+        details: {
+          missing: [
+            expect.objectContaining({
+              type: "skill",
+              id: "implementation.pr-author",
+              version: "0.1.0"
+            })
+          ]
+        }
+      })
+    );
+  });
+
   it("reports workspace warning when no workspace root is configured", async () => {
     const report = await runLocalRunnerPreflight({
       WORKFLOW_API_BASE_URL: "http://127.0.0.1:3000",

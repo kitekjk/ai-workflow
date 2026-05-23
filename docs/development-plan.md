@@ -28,11 +28,26 @@ path should be usable for hands-on evaluation and later production hardening.
 The next work should optimize for actual execution over detailed UI polish:
 
 1. Runner runtime and local execution readiness
+   - renew or extend leases while long-running jobs are executing
+   - prevent expired running jobs from being reclaimed while the original
+     runner is still healthy
+   - keep shutdown, cancellation, logs, and normalized failure reporting
+     runner-owned and observable
 2. Skill/plugin resolution for runner jobs
+   - add explicit job requirements for skills/plugins, including id and version
+   - check installed local skills/plugins before execution
+   - install or prepare missing dependencies where allowed
+   - fail before execution with actionable job errors when requirements cannot
+     be satisfied
 3. Runnable workflow path across PRD/HLD/LLD/Spec/Code/pull request status
 4. Minimal control UI for operating the runnable path
-5. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
-6. Product cleanup: legacy compatibility removal, runner management screens,
+   - UI may observe or trigger real runner-backed work, but canned runner
+     output should be isolated as a development harness
+5. Generic source/read-model cleanup
+   - reduce `prdJiraKey`/`prdStatus` assumptions in product read models and
+     API responses
+6. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
+7. Product cleanup: legacy compatibility removal, runner management screens,
    advanced authorization, dashboard polish, and workflow editor depth
 
 Detailed design: `docs/superpowers/specs/2026-05-23-runnable-end-to-end-priority-design.md`.
@@ -1622,7 +1637,7 @@ Acceptance criteria:
 - Repository-backed transition planning now exists for no-fixture runner results for PRD/document generate, evaluate, revise, downstream routing, fan-out, and implementation PR status jobs. Generate/revise transitions now persist document versions, markdown/wiki artifacts, and current document pointers; evaluate transitions persist quality gate results, so MySQL no-fixture current/history views are backed by actual runner output rather than status-only projections. The API records the resulting mutation through the transition command after a runner result is accepted when the loop is disabled, and MySQL no-fixture mode also runs an internal repository transition loop controlled by `WORKFLOW_REPOSITORY_TRANSITION_MS`. The loop reads terminal job results without a matching `workflow.engine_transition` event for `processedResult.resultId` and processes them through the same `RepositoryTransitionProcessor`; when it is enabled, runner result requests only persist the result to avoid duplicate workflow transitions. `POST /repository-transitions/process-next` can process one pending transition on demand for local development and dashboard-driven bounded runner drains. The same worker core can now run as `npm run start:repository-transition-worker`, and multiple workers coordinate through the MySQL `workflow_transition_claim` lease table. Successful transitions close the claim as `processed`. The MySQL reader now retries after losing a claim race so parallel transition workers can claim distinct visible results in the same polling wave, and `tests/repository-transition-work-reader.test.ts` covers an 8-worker contention scenario.
 - Workflow job role/capability/default metadata now lives in `backend/src/workflow-core/job-metadata.ts` and is reused by PRD intake, generic snapshot conversion, transition commands, and repository transition planning.
 - Human identity remains email-first for the MVP: Workflow App actions use `requestedBy`/`actor`/`author`, and local runner scope uses `LOCAL_RUNNER_OWNER_EMAIL` with `LOCAL_RUNNER_OWNER_USER_ID` retained as a compatibility alias. The runner registration API accepts `ownerEmail` and stores it in the existing `ownerUserId` scheduler field so claim matching stays backward compatible. Local runners without an owner email are not eligible to claim jobs, and the local runner CLI fails fast when local mode has no owner email. Approval-created downstream jobs now inherit the requester email so the same local runner can continue through route/fan-out/document generation work without scope leakage. The dashboard now exposes an Actor email field and passes that email through intake, feedback, revision, and approval API actions; it also has a development `Run Local Runner` control that registers a scoped browser-side stub runner, drains eligible jobs, and triggers repository transition processing between claims. PRD intake jobs are assigned to the requester email, PRD intake events can store `requestedBy` in metadata, approval document-state events can store `actor`/`reason`, and the dashboard Status Events view now mixes in persisted workflow run events with actor/requester labels when available.
-- MySQL no-fixture local smoke can now use `INTEGRATION_MODE=stub` to read seeded `PRD-100` or synthetic `PRD-SMOKE-*` PRDs through a stub Jira reader without re-enabling the compatibility fixture. `npm run smoke:mysql:no-fixture` runs an in-process API smoke through intake, bounded local runner drain execution, PRD approval, HLD routing/generation/evaluation/approval, LLD fan-out/generation/evaluation/approval, Spec fan-out/generation/evaluation/approval, implementation PR creation/status collection, repository transitions, and final PRD/HLD/LLD/Spec approval plus `pull_request` artifact verification. It keeps deterministic stub implementation as the default, validates final workflow-run completion and completed Code task counts, and can opt into real GitHub-backed implementation jobs with `SMOKE_IMPLEMENTATION_MODE=github` plus GitHub clone/workspace settings.
+- MySQL no-fixture local smoke can now use `INTEGRATION_MODE=stub` to read seeded `PRD-100` or synthetic `PRD-SMOKE-*` PRDs through a stub Jira reader without re-enabling the compatibility fixture. `npm run smoke:mysql:no-fixture` runs an in-process API smoke through intake, bounded local runner drain execution, PRD approval, HLD routing/generation/evaluation/approval, LLD fan-out/generation/evaluation/approval, Spec fan-out/generation/evaluation/approval, implementation PR creation/status collection, repository transitions, and final PRD/HLD/LLD/Spec approval plus `pull_request` artifact verification. It keeps deterministic stub document and implementation jobs as the default, can route document jobs through the real Claude/Codex CLI bridge with `SMOKE_DOCUMENT_MODE=cli`, validates the selected CLI prerequisites before migrations/API startup, validates final workflow-run completion and completed Code task counts, and can opt into real GitHub-backed implementation jobs with `SMOKE_IMPLEMENTATION_MODE=github` plus GitHub clone/workspace settings.
 - Workflow API auth has an optional bearer-token slice for later exposure beyond localhost: `WORKFLOW_APP_API_TOKEN` protects control-plane endpoints, `WORKFLOW_RUNNER_TOKENS` maps runner ids to runner tokens, runner job callbacks validate the submitted `runnerId` against the bearer token, and `LOCAL_RUNNER_TOKEN` is sent by the local runner client only when configured. User/session RBAC and token rotation are not immediate priorities.
 - Runner visibility, local-PC concurrency, and operator pause/resume are now implemented in the scheduler/API slice: `GET /runners` returns the registered managed/local runner list for dashboard/operator views, the dashboard shows a Runner Status panel, and both in-memory and MySQL claim paths enforce `runner.concurrency` against active claimed/running/cancel-requested jobs before issuing another lease to the same runner. `POST /runners/{runnerId}/pause` stores the runner as `disabled`; heartbeat and repeated registration preserve that disabled state until `POST /runners/{runnerId}/resume` explicitly returns it to `online`.
 - Scheduler lease recovery now runs as an API-managed loop when a MySQL scheduler is configured. `WORKFLOW_SCHEDULER_RECOVERY_MS` defaults to `1000` ms and calls `recoverExpiredLeases()` so expired claimed/running jobs return to `retrying` with `job.lease_expired` events without requiring a manual test harness.
@@ -1646,17 +1661,29 @@ Acceptance criteria:
 - The API runtime now defaults to the MySQL no-fixture path when `WORKFLOW_RUNTIME_STORE` is unset or `mysql`. The old PRD confirmation fixture is an explicit legacy opt-in via `WORKFLOW_COMPATIBILITY_FIXTURE=enabled` or `WORKFLOW_RUNTIME_STORE=memory`, so the product path can continue without relying on the compatibility engine/tick loop.
 - Legacy fixture-only routes now fail closed with a `501` message that points operators to repository-backed APIs or explicit legacy opt-in. This makes remaining fixture usage discoverable and removable as soon as old tests have repository-backed replacements.
 - Product intake code now lives in `backend/src/workflow-api/workflow-intake-command.ts`; `prd-intake-command.ts` is a compatibility re-export for old tests and legacy wiring. Repository-backed `POST /workflow-runs/intake` accepts `jira`, `app`, or `github` sources and can seed root `prd`, `hld`, `lld`, `adr`, or `spec` tasks. Non-PRD roots start with `document.generate`, while Jira PRD roots still validate PRD readiness and source links before scheduling `prd.generate_draft`.
+- Local runner execution now renews claimed job leases while workspace preparation, CLI execution, artifact upload, and completion are in progress. The runner exposes `LOCAL_RUNNER_JOB_LEASE_RENEWAL_MS` and the API exposes `POST /runner-jobs/:id/renew-lease`, so healthy long-running local CLI work is not recovered as stale by the scheduler.
+- Local runner cancellation is now cooperative: the runner polls for `cancel_requested`, passes an `AbortSignal` into the active engine, and the CLI engine terminates its child process when cancellation is observed. `LOCAL_RUNNER_CANCELLATION_POLL_MS` controls the polling cadence.
+- Runner failure categories are now normalized through `workflow_job_result.error_category`, API failure callbacks, scheduler failure events, and local runner classification. Current categories are `dependency`, `workspace`, `engine`, `result_contract`, `artifact`, `cancellation`, `github`, and `unknown`.
+- Runner skill/plugin requirements now have a concrete resolver and prepare flow. Jobs can declare `runnerSkill`, `requiredSkills`, `runnerRequirements.skills`, `runnerPlugin`, `requiredPlugins`, or typed `requiredRunnerPackages`; the local runner checks installed skills/plugins before engine execution and fails with `runner_package_missing` instead of silently falling back. `LOCAL_RUNNER_PACKAGE_AUTO_INSTALL=true` lets the runner copy matching packages from `LOCAL_RUNNER_SKILL_REGISTRY_ROOTS` / `LOCAL_RUNNER_PLUGIN_REGISTRY_ROOTS` into the configured install roots, or install a package-specific `source` / `installSource` from local path, `file://`, git, or GitHub before execution. `npm run prepare:local-runner-packages` provides a no-job setup command. Preflight validates implementation PR author/updater skill packages for implementation capabilities.
 
 ## 13. 우선순위와 리스크
 
 ### 우선순위
 
 1. Runner runtime and local execution readiness
+   - running job lease renewal/extension
+   - long-running CLI duplicate-execution prevention
+   - shutdown, cancellation, logs, and normalized failure reporting
 2. Skill/plugin resolution for runner jobs
+   - explicit required skill/plugin metadata on jobs
+   - local install/availability checks before execution
+   - actionable missing-dependency failures
 3. Runnable workflow path across PRD/HLD/LLD/Spec/Code/pull request status
-4. Minimal control UI for operating the runnable path
-5. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
-6. Product cleanup: legacy compatibility removal, runner management screens,
+4. Minimal control UI for operating the runnable path, with canned runner
+   output isolated as a development harness
+5. Generic source/read-model cleanup away from PRD-only naming
+6. Recovery loops: retry, cancel, revision/send-back, and PR/CI feedback
+7. Product cleanup: legacy compatibility removal, runner management screens,
    advanced authorization, dashboard polish, and workflow editor depth
 
 ### 주요 리스크

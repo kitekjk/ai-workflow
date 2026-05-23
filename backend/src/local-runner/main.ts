@@ -11,6 +11,7 @@ import {
 } from "./github-implementation-engine";
 import { JobTemplateCliLocalRunnerEngine } from "./cli-engine-adapter";
 import { runLocalRunnerDrain, runLocalRunnerOnce } from "./local-runner";
+import { createFileSystemRunnerPackageResolver } from "./package-resolver";
 import { WorkflowApiRunnerClient } from "./runner-client";
 
 async function main(): Promise<void> {
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
     : cliEngine;
   const mode = parseRunnerMode(process.env.LOCAL_RUNNER_MODE);
   const ownerUserId = optionalEnv("LOCAL_RUNNER_OWNER_EMAIL", "LOCAL_RUNNER_OWNER_USER_ID");
+  const packageResolver = createFileSystemRunnerPackageResolver(process.env);
 
   if (mode === "local" && !ownerUserId) {
     throw new Error("LOCAL_RUNNER_OWNER_EMAIL is required for local runner mode");
@@ -83,11 +85,19 @@ async function main(): Promise<void> {
     engines: parseList(process.env.LOCAL_RUNNER_ENGINES, [selectedEngine]),
     defaultEngine: selectedEngine,
     concurrency: parsePositiveInteger(process.env.LOCAL_RUNNER_CONCURRENCY, 1),
-    retryableEngineErrors: process.env.LOCAL_RUNNER_RETRYABLE_ENGINE_ERRORS !== "false"
+    retryableEngineErrors: process.env.LOCAL_RUNNER_RETRYABLE_ENGINE_ERRORS !== "false",
+    jobLeaseRenewalIntervalMs: parsePositiveInteger(process.env.LOCAL_RUNNER_JOB_LEASE_RENEWAL_MS, 10_000),
+    jobCancellationPollIntervalMs: parsePositiveInteger(process.env.LOCAL_RUNNER_CANCELLATION_POLL_MS, 2_000)
   };
 
   if (process.env.LOCAL_RUNNER_ONCE === "true") {
-    const result = await runLocalRunnerOnce({ client, engine, runner, workspace: createWorkspaceOptions() });
+    const result = await runLocalRunnerOnce({
+      client,
+      engine,
+      runner,
+      packageResolver,
+      workspace: createWorkspaceOptions()
+    });
     console.log(JSON.stringify(summarizeResult(result)));
     return;
   }
@@ -99,6 +109,7 @@ async function main(): Promise<void> {
       client,
       engine,
       runner,
+      packageResolver,
       workspace: createWorkspaceOptions(),
       maxJobs
     });
@@ -109,7 +120,13 @@ async function main(): Promise<void> {
   const intervalMs = parsePositiveInteger(process.env.LOCAL_RUNNER_POLL_INTERVAL_MS, 5000);
 
   for (;;) {
-    const result = await runLocalRunnerOnce({ client, engine, runner, workspace: createWorkspaceOptions() });
+    const result = await runLocalRunnerOnce({
+      client,
+      engine,
+      runner,
+      packageResolver,
+      workspace: createWorkspaceOptions()
+    });
     console.log(JSON.stringify(summarizeResult(result)));
     await delay(intervalMs);
   }
@@ -145,6 +162,7 @@ function summarizeResult(result: Awaited<ReturnType<typeof runLocalRunnerOnce>>)
     jobId: result.job.id,
     jobType: result.job.jobType,
     resultStatus: result.result.status,
+    errorCategory: result.result.errorCategory,
     errorCode: result.result.errorCode
   };
 }

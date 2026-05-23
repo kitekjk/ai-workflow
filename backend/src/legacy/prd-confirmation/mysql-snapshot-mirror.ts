@@ -165,11 +165,12 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
   private async upsertWorkflowJobResult(result: WorkflowJobResult): Promise<void> {
     await this.database.execute(
       `INSERT INTO workflow_job_result (
-        id, job_id, runner_id, attempt_no, status, output_json, error_code, error_message, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, job_id, runner_id, attempt_no, status, output_json, error_category, error_code, error_message, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         status = VALUES(status),
         output_json = VALUES(output_json),
+        error_category = VALUES(error_category),
         error_code = VALUES(error_code),
         error_message = VALUES(error_message)`,
       [
@@ -179,6 +180,7 @@ export class MysqlPrdSnapshotMirror implements PrdSnapshotMirror {
         result.attemptNo,
         result.status,
         JSON.stringify(result.output),
+        result.errorCategory ?? null,
         result.errorCode ?? null,
         result.errorMessage ?? null,
         result.createdAt

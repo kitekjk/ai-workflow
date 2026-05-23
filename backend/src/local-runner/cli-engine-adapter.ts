@@ -58,21 +58,26 @@ export class CliLocalRunnerEngine implements LocalRunnerEngine {
     documentType: string | undefined
   ): Promise<Awaited<ReturnType<CliEngine["runJsonWithProcessOutput"]>>> {
     try {
-      return await this.engine.runJsonWithProcessOutput({
-        ...input.job.input,
-        jobId: input.job.id,
-        jobType: input.job.jobType,
-        runnerId: input.runner.id,
-        requiredCapabilities: input.job.requiredCapabilities,
-        preferredEngine: input.job.preferredEngine,
-        requiredEngine: input.job.requiredEngine,
-        workspaceDir: input.workspaceDir,
-        outputLanguage: this.options.outputLanguage,
-        promptContract: createJobPromptContractPayload({
+      return await this.engine.runJsonWithProcessOutput(
+        {
+          ...input.job.input,
+          jobId: input.job.id,
           jobType: input.job.jobType,
-          documentType
-        })
-      });
+          runnerId: input.runner.id,
+          requiredCapabilities: input.job.requiredCapabilities,
+          preferredEngine: input.job.preferredEngine,
+          requiredEngine: input.job.requiredEngine,
+          workspaceDir: input.workspaceDir,
+          outputLanguage: this.options.outputLanguage,
+          promptContract: createJobPromptContractPayload({
+            jobType: input.job.jobType,
+            documentType
+          })
+        },
+        {
+          signal: input.signal
+        }
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(redactSecrets(message, { env: this.options.secretEnv }));

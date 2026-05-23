@@ -15,6 +15,10 @@ export interface CliEngineJsonResult {
   stderr: string;
 }
 
+export interface CliEngineRunOptions {
+  signal?: AbortSignal;
+}
+
 export class CliEngineError extends Error {
   constructor(message: string) {
     super(message);
@@ -35,12 +39,15 @@ export class CliEngine {
     this.cwd = options.cwd;
   }
 
-  async runJson(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return (await this.runJsonWithProcessOutput(input)).output;
+  async runJson(input: Record<string, unknown>, options: CliEngineRunOptions = {}): Promise<Record<string, unknown>> {
+    return (await this.runJsonWithProcessOutput(input, options)).output;
   }
 
-  async runJsonWithProcessOutput(input: Record<string, unknown>): Promise<CliEngineJsonResult> {
-    const processOutput = await this.runProcess(input);
+  async runJsonWithProcessOutput(
+    input: Record<string, unknown>,
+    options: CliEngineRunOptions = {}
+  ): Promise<CliEngineJsonResult> {
+    const processOutput = await this.runProcess(input, options);
     const { stdout } = processOutput;
 
     try {
@@ -65,11 +72,16 @@ export class CliEngine {
     }
   }
 
-  private async runProcess(input: Record<string, unknown>): Promise<{
+  private async runProcess(input: Record<string, unknown>, options: CliEngineRunOptions): Promise<{
     stdout: string;
     stderr: string;
   }> {
     return new Promise((resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(new CliEngineError(`${this.commandName()} canceled: ${abortSignalReason(options.signal)}`));
+        return;
+      }
+
       const spawnCommand = resolveSpawnCommand(this.command, this.args);
       const child = spawn(spawnCommand.command, spawnCommand.args, {
         stdio: ["pipe", "pipe", "pipe"],
@@ -78,15 +90,29 @@ export class CliEngine {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      const timeout = setTimeout(() => {
+      const settle = (callback: () => void): void => {
         if (settled) {
           return;
         }
 
         settled = true;
-        child.kill("SIGTERM");
-        reject(new CliEngineError(`${this.commandName()} timed out after ${this.timeoutMs}ms`));
+        clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", abort);
+        callback();
+      };
+      const abort = (): void => {
+        settle(() => {
+          child.kill("SIGTERM");
+          reject(new CliEngineError(`${this.commandName()} canceled: ${abortSignalReason(options.signal)}`));
+        });
+      };
+      const timeout = setTimeout(() => {
+        settle(() => {
+          child.kill("SIGTERM");
+          reject(new CliEngineError(`${this.commandName()} timed out after ${this.timeoutMs}ms`));
+        });
       }, this.timeoutMs);
+      options.signal?.addEventListener("abort", abort, { once: true });
 
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
@@ -97,34 +123,26 @@ export class CliEngine {
         stderr += chunk;
       });
       child.on("error", (error) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        clearTimeout(timeout);
-        reject(new CliEngineError(`${this.commandName()} failed to start: ${error.message}`));
+        settle(() => {
+          reject(new CliEngineError(`${this.commandName()} failed to start: ${error.message}`));
+        });
       });
       child.on("close", (code, signal) => {
-        if (settled) {
-          return;
-        }
+        settle(() => {
+          if (code === 0) {
+            resolve({ stdout, stderr });
+            return;
+          }
 
-        settled = true;
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolve({ stdout, stderr });
-          return;
-        }
-
-        const reason = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-        reject(
-          new CliEngineError(
-            `${this.commandName()} exited with ${reason}. stderr: ${formatOutput(
-              stderr
-            )} stdout: ${formatOutput(stdout)}`
-          )
-        );
+          const reason = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+          reject(
+            new CliEngineError(
+              `${this.commandName()} exited with ${reason}. stderr: ${formatOutput(
+                stderr
+              )} stdout: ${formatOutput(stdout)}`
+            )
+          );
+        });
       });
 
       child.stdin.end(JSON.stringify(input));
@@ -143,6 +161,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function formatOutput(value: string): string {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : "<empty>";
+}
+
+function abortSignalReason(signal: AbortSignal | undefined): string {
+  if (!signal) {
+    return "canceled";
+  }
+
+  const reason = signal.reason;
+
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+
+  return typeof reason === "string" && reason.length > 0 ? reason : "canceled";
 }
 
 function resolveSpawnCommand(command: string, args: string[]): { command: string; args: string[] } {

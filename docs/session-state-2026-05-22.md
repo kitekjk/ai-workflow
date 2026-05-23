@@ -114,6 +114,14 @@ PRD intake
   `SMOKE_IMPLEMENTATION_MODE=github` plus GitHub clone/workspace settings. In
   stub mode, PR status collection now emits a merged terminal PR signal so the
   smoke verifies final workflow-run completion and completed Code task counts.
+- MySQL no-fixture smoke can now opt into real CLI-backed document jobs with
+  `SMOKE_DOCUMENT_MODE=cli` while keeping implementation jobs stubbed or
+  separately opting into `SMOKE_IMPLEMENTATION_MODE=github`. This lets PRD/HLD/
+  LLD/Spec generation, evaluation, routing, and fan-out exercise the same
+  `JobTemplateCliLocalRunnerEngine` used by developer PCs.
+- CLI document smoke mode now fails fast before migrations/API startup when the
+  selected `RUNNER_ENGINE` is unsupported or the matching `CODEX_CLI_PATH` /
+  `CLAUDE_CLI_PATH` cannot be resolved.
 - Compatibility snapshots now carry first-class `workflowTasks`, document
   `workflowTaskId`, and job `taskId`; snapshot mirroring and result
   projections persist those task links instead of recreating task hierarchy
@@ -323,29 +331,80 @@ PRD intake
   the real product workflow becoming executable across runner, skills/plugins,
   workflow/task/job state, artifacts, and pull request status. UI work should
   remain minimal until that execution path is stable.
+- Runner lease renewal is now implemented end-to-end. The scheduler/repository
+  exposes lease extension, the API has `POST /runner-jobs/:id/renew-lease`,
+  `WorkflowApiRunnerClient` calls it, and `runLocalRunnerOnce` renews the lease
+  while workspace preparation, CLI execution, artifact upload, and completion
+  are in flight.
+- Local runner cancellation is now cooperative during execution. The runner
+  polls claimed jobs for `cancel_requested`, passes an `AbortSignal` into local
+  engines, and the CLI engine terminates its child process when the signal
+  fires. `LOCAL_RUNNER_CANCELLATION_POLL_MS` controls the poll interval.
+- Runner failures now carry a normalized `errorCategory` across runner client,
+  API, scheduler events, in-memory/MySQL repositories, and
+  `workflow_job_result.error_category`. Local runner failures classify missing
+  packages as `dependency`, invalid runner output as `result_contract`,
+  workspace/artifact path issues as `workspace`, GitHub/PR issues as `github`,
+  and generic CLI/runtime failures as `engine`.
+- Runner skill/plugin dependency resolution and preparation now exist in
+  `backend/src/local-runner/package-resolver.ts`. Jobs can declare
+  `runnerSkill`, `requiredSkills`, `runnerRequirements.skills`,
+  `runnerPlugin`, `requiredPlugins`, or typed `requiredRunnerPackages`; the
+  local runner checks them before engine execution and fails non-retryably with
+  `runner_package_missing` when required packages are absent. With
+  `LOCAL_RUNNER_PACKAGE_AUTO_INSTALL=true`, the runner can copy matching
+  packages from configured skill/plugin registry roots into the local install
+  roots before execution. Requirements can now also include `source` or
+  `installSource`, letting the runner install a specific package from a local
+  path, `file://` URL, or git/GitHub source before resolving it from the local
+  roots. `npm run prepare:local-runner-packages` runs the same prepare flow
+  without claiming a job. Preflight also validates implementation PR
+  author/updater skill packages for implementation capabilities.
 
 ## Next Work
 
 Continue in large feature slices:
 
-- Build runner runtime completeness first: registration, scoped claiming by
-  owner email/project/capabilities/engine, heartbeat, execution logs, and
-  normalized completion/failure reporting.
-- Add runner skill/plugin dependency resolution so jobs can declare required
-  execution capabilities and fail with actionable errors when missing.
+- Build the real runnable workflow path across PRD/HLD/LLD/Spec/Code/pull
+  request status, using the actual local runner path rather than dashboard
+  canned output.
+- Tighten runner runtime completeness around observable logs and shutdown
+  behavior now that lease renewal, cooperative cancellation, package
+  resolution, and normalized failure categories are in place.
+- Harden remote package installation with allowlists, checksum/signature
+  verification, and marketplace-specific auth if package sources move beyond
+  trusted repo/local paths.
 - Wire the real workflow path across PRD/HLD/LLD/Spec/Code/pull request status
   using workflow -> task -> job, where repeated evaluation or revision creates
   more jobs under the same visible task.
 - Keep dashboard work to the minimum needed to operate and observe the real
   path: workflow create/select, task/job attempts, runner/job status, and
-  generated artifacts.
+  generated artifacts. Keep canned runner output separated as a development
+  harness rather than the product local runner path.
 
 ## Validation Baseline
 
 Current good after the full slice:
 
 - `npm run typecheck`
-- `npm test` passed: 44 files / 310 tests
+- `npm test` passed: 44 files / 325 tests
+- `npm test -- tests/smoke-mysql-no-fixture.test.ts tests/local-runner-preflight.test.ts`
+  passed after adding fail-fast CLI smoke prerequisite validation.
+- `npm test -- tests/local-runner.test.ts tests/runner-engines/cli-engine.test.ts`
+  passed after adding cooperative runner cancellation signaling.
+- `npm test -- tests/local-runner.test.ts tests/runner-api.test.ts tests/workflow-scheduler.test.ts tests/mysql-workflow-repository.test.ts tests/mysql-migration.test.ts tests/repository-transition-work-reader.test.ts tests/prd-snapshot-loader.test.ts tests/workflow-mutation-applier.test.ts`
+  passed after adding normalized runner failure categories.
+- `npm test -- tests/local-runner.test.ts tests/local-runner-preflight.test.ts`
+  passed after adding package-specific `source` / `installSource` package
+  preparation.
+- `LOCAL_RUNNER_CAPABILITIES=implementation.open_pr,implementation.update_pr
+  npm run prepare:local-runner-packages` passed and resolved the repository
+  `implementation.pr-author` / `implementation.pr-updater` packages.
+- PowerShell `$env:WORKFLOW_MYSQL_PORT='3307'; npm run smoke:mysql:no-fixture`
+  passed on the local workflow MySQL container at `127.0.0.1:3307`, completing
+  the PRD/HLD/LLD/Spec/Code stub implementation path with 28 processed jobs,
+  4 completed Code tasks, 8 pull request artifacts, and explicit
+  `documentMode: "stub"` / `implementationMode: "stub"` summary fields.
 - `npm run smoke:mysql:no-fixture` passed through PRD/HLD/LLD/Spec approval,
   implementation PR creation/status collection, final workflow-run completion,
   4 completed Code tasks, and 8 pull request artifacts with 28 processed jobs

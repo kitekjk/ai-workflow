@@ -10,6 +10,7 @@ import {
   normalizeLocalRunnerCliResult
 } from "../backend/src/local-runner/cli-engine-adapter";
 import { runLocalRunnerDrain, runLocalRunnerOnce, type LocalRunnerEngine } from "../backend/src/local-runner/local-runner";
+import { createFileSystemRunnerPackageResolver } from "../backend/src/local-runner/package-resolver";
 import { RunnerResultValidationError } from "../backend/src/local-runner/result-schema";
 import { WorkflowApiRunnerClient } from "../backend/src/local-runner/runner-client";
 import { createPrdConfirmationFixture } from "../backend/src/legacy/prd-confirmation/fixture";
@@ -170,6 +171,315 @@ describe("local runner loop", () => {
     ]);
   });
 
+  it("renews the claimed job lease while the local engine is still running", async () => {
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "document.generate",
+      assignedUserId: "planner-a",
+      requiredCapabilities: ["document.generate"],
+      requiredEngine: "claude",
+      now
+    });
+    const engine: LocalRunnerEngine = {
+      async run() {
+        await waitForCondition(() => {
+          const job = workflowRepository.workflowJobs[0];
+          return Boolean(
+            job.claimedAt &&
+              job.leaseExpiresAt &&
+              Date.parse(job.leaseExpiresAt) > Date.parse(job.claimedAt) + 30_000
+          );
+        });
+
+        return {
+          output: {
+            status: "drafted"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      runner: {
+        id: "runner-planner-a",
+        ownerUserId: "planner-a",
+        mode: "local",
+        capabilities: ["document.generate"],
+        engines: ["claude"],
+        defaultEngine: "claude",
+        jobLeaseRenewalIntervalMs: 5
+      }
+    });
+    const job = workflowRepository.workflowJobs[0];
+
+    expect(result.status).toBe("completed");
+    expect(job.status).toBe("succeeded");
+    expect(job.claimedAt).toBeDefined();
+    expect(job.leaseExpiresAt).toBeDefined();
+    expect(Date.parse(job.leaseExpiresAt!) - Date.parse(job.claimedAt!)).toBeGreaterThan(30_000);
+  });
+
+  it("fails before engine execution when a required runner skill package is missing", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "ai-workflow-empty-skills-"));
+    workspaceRoots.push(skillRoot);
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.open_pr",
+      input: {
+        runnerSkill: {
+          id: "implementation.pr-author",
+          version: "0.1.0"
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.open_pr"],
+      requiredEngine: "codex",
+      now
+    });
+    let engineRan = false;
+    const engine: LocalRunnerEngine = {
+      async run() {
+        engineRan = true;
+        return {
+          output: {
+            status: "implemented"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      packageResolver: createFileSystemRunnerPackageResolver({
+        LOCAL_RUNNER_SKILL_ROOTS: skillRoot
+      }),
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.open_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex",
+        retryableEngineErrors: true
+      },
+      now
+    });
+
+    expect(engineRan).toBe(false);
+    expect(result).toMatchObject({
+      status: "failed",
+      result: {
+        status: "failed",
+        errorCategory: "dependency",
+        errorCode: "runner_package_missing",
+        errorMessage: expect.stringContaining("implementation.pr-author")
+      }
+    });
+    expect(workflowRepository.workflowJobs[0]).toMatchObject({
+      status: "failed",
+      claimedByRunnerId: undefined,
+      leaseExpiresAt: undefined
+    });
+  });
+
+  it("auto-installs a required runner skill package from the configured registry when enabled", async () => {
+    const registryRoot = await mkdtemp(join(tmpdir(), "ai-workflow-skill-registry-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "ai-workflow-skill-install-"));
+    workspaceRoots.push(registryRoot, installRoot);
+    await mkdir(join(registryRoot, "implementation.pr-author"), { recursive: true });
+    await writeFile(
+      join(registryRoot, "implementation.pr-author", "skill.json"),
+      JSON.stringify({
+        id: "implementation.pr-author",
+        version: "0.1.0"
+      })
+    );
+    await writeFile(join(registryRoot, "implementation.pr-author", "prompt.md"), "Return implementation PR JSON.");
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.open_pr",
+      input: {
+        runnerSkill: {
+          id: "implementation.pr-author",
+          version: "0.1.0"
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.open_pr"],
+      requiredEngine: "codex",
+      now
+    });
+    const engine: LocalRunnerEngine = {
+      async run() {
+        return {
+          output: {
+            status: "implemented",
+            pullRequestTitle: "Implement PRD-100",
+            pullRequestBody: "Generated by test runner."
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine,
+      packageResolver: createFileSystemRunnerPackageResolver({
+        LOCAL_RUNNER_PACKAGE_AUTO_INSTALL: "true",
+        LOCAL_RUNNER_SKILL_ROOTS: installRoot,
+        LOCAL_RUNNER_SKILL_INSTALL_ROOT: installRoot,
+        LOCAL_RUNNER_SKILL_REGISTRY_ROOTS: registryRoot
+      }),
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.open_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      now
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      result: {
+        status: "succeeded"
+      }
+    });
+    expect(await readFile(join(installRoot, "implementation.pr-author", "prompt.md"), "utf8")).toBe(
+      "Return implementation PR JSON."
+    );
+  });
+
+  it("auto-installs a required runner skill package from an explicit source path", async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), "ai-workflow-skill-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "ai-workflow-skill-install-"));
+    workspaceRoots.push(sourceRoot, installRoot);
+    const sourcePackageDir = join(sourceRoot, "downloaded-skill");
+    await mkdir(sourcePackageDir, { recursive: true });
+    await writeFile(
+      join(sourcePackageDir, "skill.json"),
+      JSON.stringify({
+        id: "implementation.pr-author",
+        version: "0.1.0"
+      })
+    );
+    await writeFile(join(sourcePackageDir, "prompt.md"), "Install me from source.");
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "implementation.open_pr",
+      input: {
+        runnerSkill: {
+          id: "implementation.pr-author",
+          version: "0.1.0",
+          source: sourcePackageDir
+        }
+      },
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["implementation.open_pr"],
+      requiredEngine: "codex",
+      now
+    });
+
+    const result = await runLocalRunnerOnce({
+      client: new WorkflowApiRunnerClient({ baseUrl: server.url }),
+      engine: {
+        async run() {
+          return {
+            output: {
+              status: "implemented"
+            }
+          };
+        }
+      },
+      packageResolver: createFileSystemRunnerPackageResolver({
+        LOCAL_RUNNER_PACKAGE_AUTO_INSTALL: "true",
+        LOCAL_RUNNER_SKILL_ROOTS: installRoot,
+        LOCAL_RUNNER_SKILL_INSTALL_ROOT: installRoot
+      }),
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["implementation.open_pr"],
+        engines: ["codex"],
+        defaultEngine: "codex"
+      },
+      now
+    });
+
+    expect(result.status).toBe("completed");
+    expect(await readFile(join(installRoot, "implementation.pr-author", "prompt.md"), "utf8")).toBe(
+      "Install me from source."
+    );
+  });
+
+  it("prepares a required runner plugin package from an explicit source path", async () => {
+    const sourcePackageDir = await mkdtemp(join(tmpdir(), "ai-workflow-plugin-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "ai-workflow-plugin-install-"));
+    workspaceRoots.push(sourcePackageDir, installRoot);
+    await mkdir(join(sourcePackageDir, ".codex-plugin"), { recursive: true });
+    await writeFile(
+      join(sourcePackageDir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({
+        id: "workflow.plugin-pack",
+        version: "1.2.3"
+      })
+    );
+    await writeFile(join(sourcePackageDir, "README.md"), "Plugin package.");
+
+    const resolution = await createFileSystemRunnerPackageResolver({
+      LOCAL_RUNNER_PACKAGE_AUTO_INSTALL: "true",
+      LOCAL_RUNNER_PLUGIN_ROOTS: installRoot,
+      LOCAL_RUNNER_PLUGIN_INSTALL_ROOT: installRoot
+    }).prepareRequirements([
+      {
+        type: "plugin",
+        id: "workflow.plugin-pack",
+        version: "1.2.3",
+        installSource: sourcePackageDir
+      }
+    ]);
+
+    expect(resolution.missing).toEqual([]);
+    expect(resolution.installed).toMatchObject([
+      {
+        type: "plugin",
+        id: "workflow.plugin-pack",
+        version: "1.2.3"
+      }
+    ]);
+    expect(await readFile(join(installRoot, "workflow.plugin-pack", "README.md"), "utf8")).toBe("Plugin package.");
+  });
+
   it("drains multiple claimable jobs until the runner becomes idle", async () => {
     const run = workflowRepository.createWorkflowRun({
       workflowDefinitionId: "prd_to_spec",
@@ -275,6 +585,7 @@ describe("local runner loop", () => {
       status: "failed",
       result: {
         status: "failed",
+        errorCategory: "engine",
         errorCode: "runner_engine_error",
         errorMessage: "Codex CLI returned invalid JSON"
       }
@@ -285,7 +596,7 @@ describe("local runner loop", () => {
     });
   });
 
-  it("records invalid structured runner output as a retryable runner failure", async () => {
+  it("records invalid structured runner output as a non-retryable contract failure", async () => {
     const run = workflowRepository.createWorkflowRun({
       workflowDefinitionId: "prd_to_spec",
       sourceType: "jira",
@@ -329,12 +640,13 @@ describe("local runner loop", () => {
       status: "failed",
       result: {
         status: "failed",
-        errorCode: "runner_engine_error",
+        errorCategory: "result_contract",
+        errorCode: "runner_result_invalid",
         errorMessage: "output.status must be a non-empty string"
       }
     });
     expect(workflowRepository.workflowJobs[0]).toMatchObject({
-      status: "retrying"
+      status: "failed"
     });
   });
 
@@ -619,7 +931,8 @@ describe("local runner loop", () => {
     expect(result).toMatchObject({
       status: "failed",
       result: {
-        errorCode: "runner_engine_error",
+        errorCategory: "workspace",
+        errorCode: "runner_workspace_error",
         errorMessage: "implementation.update_pr requires repositoryCloneUrl and branchName to prepare a git workspace"
       }
     });
@@ -742,7 +1055,8 @@ describe("local runner loop", () => {
       status: "failed",
       result: {
         status: "failed",
-        errorCode: "runner_engine_error",
+        errorCategory: "workspace",
+        errorCode: "runner_workspace_error",
         errorMessage: "../outside.md must stay inside runner workspace"
       }
     });
@@ -825,6 +1139,88 @@ describe("local runner loop", () => {
       claimedByRunnerId: undefined
     });
     expect(documentRepository.artifacts).toEqual([]);
+  });
+
+  it("signals running engines when a claimed job is canceled", async () => {
+    const run = workflowRepository.createWorkflowRun({
+      workflowDefinitionId: "prd_to_spec",
+      sourceType: "jira",
+      sourceKey: "PRD-100",
+      now
+    });
+    workflowRepository.createWorkflowJob({
+      runId: run.id,
+      jobType: "spec.generate",
+      assignedUserId: "dev-a",
+      requiredCapabilities: ["spec.generate"],
+      requiredEngine: "codex",
+      now
+    });
+    const client = new WorkflowApiRunnerClient({ baseUrl: server.url });
+    const engine: LocalRunnerEngine = {
+      async run({ job, signal }) {
+        if (!signal) {
+          throw new Error("runner did not provide a cancellation signal");
+        }
+
+        await client.requestCancellation({
+          jobId: job.id,
+          requestedBy: "planner-a",
+          reason: "Stop running work",
+          now: new Date("2026-05-20T00:00:01.000Z")
+        });
+
+        await new Promise<never>((_resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error("cancellation signal was not aborted"));
+          }, 1000);
+
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timeout);
+              reject(signal.reason instanceof Error ? signal.reason : new Error("runner job canceled"));
+            },
+            { once: true }
+          );
+        });
+
+        return {
+          output: {
+            status: "unexpected"
+          }
+        };
+      }
+    };
+
+    const result = await runLocalRunnerOnce({
+      client,
+      engine,
+      runner: {
+        id: "runner-dev-a",
+        ownerUserId: "dev-a",
+        mode: "local",
+        capabilities: ["spec.generate"],
+        engines: ["codex"],
+        defaultEngine: "codex",
+        jobCancellationPollIntervalMs: 5
+      },
+      now
+    });
+
+    expect(result).toMatchObject({
+      status: "canceled",
+      result: {
+        status: "canceled",
+        output: {
+          status: "canceled"
+        }
+      }
+    });
+    expect(workflowRepository.workflowJobs[0]).toMatchObject({
+      status: "canceled",
+      claimedByRunnerId: undefined
+    });
   });
 
   it("normalizes CLI JSON into output and artifact uploads", () => {
@@ -1073,6 +1469,20 @@ fs.writeFileSync(args[outputIndex + 1], JSON.stringify({
     expect(await readFile(cwdFile, "utf8")).toBe((await realpath(workspaceRoot)).replace(/\\/g, "/"));
   });
 });
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  throw new Error("Timed out waiting for condition");
+}
 
 async function createImplementationRepositoryFixture(): Promise<{
   repoPath: string;

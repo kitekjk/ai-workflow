@@ -122,6 +122,22 @@ describe("Runner API", () => {
       }
     });
     expect(repository.workflowJobs[1].status).toBe("pending");
+
+    const renewal = await postJson(`${baseUrl}/runner-jobs/job_1/renew-lease`, {
+      runnerId: "runner-dev-a",
+      now: "2026-05-20T00:00:20.000Z"
+    });
+
+    expect(renewal.status).toBe(200);
+    expect(await renewal.json()).toMatchObject({
+      job: {
+        id: "job_1",
+        status: "claimed",
+        claimedByRunnerId: "runner-dev-a",
+        leaseExpiresAt: "2026-05-20T00:00:50.000Z",
+        updatedAt: "2026-05-20T00:00:20.000Z"
+      }
+    });
   });
 
   it("pauses a runner until an operator explicitly resumes it", async () => {
@@ -394,13 +410,17 @@ describe("Runner API", () => {
         LOCAL_RUNNER_ID: "runner-dev-a-example-com-pc",
         LOCAL_RUNNER_OWNER_EMAIL: "dev-a@example.com",
         LOCAL_RUNNER_WORKSPACE_ROOT: ".runner-workspaces",
+        LOCAL_RUNNER_CANCELLATION_POLL_MS: "2000",
         LOCAL_RUNNER_MAX_JOBS: "4",
+        LOCAL_RUNNER_PACKAGE_AUTO_INSTALL: "false",
+        LOCAL_RUNNER_SKILL_ROOTS: "skills",
         GITHUB_TOKEN: "<set locally>",
         GITHUB_CLONE_URL: "https://github.com/<org>/<repo>.git"
       },
       commands: [
         { label: "Install", command: "npm install" },
         { label: "Doctor", command: "npm run doctor:local-runner" },
+        { label: "Prepare Packages", command: "npm run prepare:local-runner-packages" },
         { label: "Drain", command: "npm run start:local-runner" },
         {
           label: "Watch",
@@ -703,6 +723,7 @@ describe("Runner API", () => {
     const failed = await postJson(`${baseUrl}/runner-jobs/job_2/fail`, {
       runnerId: "runner-qa-a",
       output: { status: "failed" },
+      errorCategory: "engine",
       errorCode: "engine_timeout",
       errorMessage: "Claude timed out",
       retryable: true,
@@ -715,6 +736,7 @@ describe("Runner API", () => {
         jobId: "job_2",
         attemptNo: 1,
         status: "failed",
+        errorCategory: "engine",
         errorCode: "engine_timeout"
       }
     });
@@ -736,6 +758,7 @@ describe("Runner API", () => {
             alert: false,
             runnerId: "runner-qa-a",
             attemptNo: 1,
+            errorCategory: "engine",
             errorCode: "engine_timeout",
             metric: "workflow_job_retries_total"
           }

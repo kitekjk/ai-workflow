@@ -116,11 +116,7 @@ function buildSkillBlock(skillId) {
   const promptPath = path.join(skillDir, "prompt.md");
 
   if (!existsSync(metadataPath) || !existsSync(promptPath)) {
-    return [
-      "## Runner Skill Package",
-      "",
-      `Skill package ${skillId} is not installed. Follow the job prompt and output contract exactly.`,
-    ].join("\n");
+    throw new Error(`Runner skill package ${skillId} is not installed under ${skillDir}`);
   }
 
   return [

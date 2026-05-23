@@ -20,6 +20,7 @@ import type {
   FailWorkflowJobInput,
   ListWorkflowEventsInput,
   RecordWorkflowJobResultInput,
+  RenewWorkflowJobLeaseInput,
   RequestWorkflowJobCancellationInput,
   RequestWorkflowJobRetryInput,
   UpdateWorkflowTaskInput,
@@ -275,6 +276,22 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
     return job;
   }
 
+  renewJobLease(input: RenewWorkflowJobLeaseInput): WorkflowJob {
+    const job = this.requireJob(input.jobId);
+
+    if (job.claimedByRunnerId !== input.runnerId) {
+      throw new Error(`Job is not claimed by runner ${input.runnerId}: ${input.jobId}`);
+    }
+
+    if (!isRenewableJobStatus(job.status)) {
+      throw new Error(`Job lease cannot be renewed while status is ${job.status}: ${input.jobId}`);
+    }
+
+    job.leaseExpiresAt = input.leaseExpiresAt.toISOString();
+    job.updatedAt = input.now.toISOString();
+    return job;
+  }
+
   completeJob(input: CompleteWorkflowJobInput): WorkflowJobResult {
     const job = this.requireJob(input.jobId);
 
@@ -315,6 +332,7 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       runnerId: input.runnerId,
       status: "failed",
       output: input.output,
+      errorCategory: input.errorCategory,
       errorCode: input.errorCode,
       errorMessage: input.errorMessage,
       now: input.now
@@ -422,6 +440,7 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       attemptNo,
       status: input.status,
       output: input.output,
+      errorCategory: input.errorCategory,
       errorCode: input.errorCode,
       errorMessage: input.errorMessage,
       createdAt: toIso(input.now)
@@ -507,6 +526,10 @@ function isTerminalJobStatus(status: WorkflowJob["status"]): boolean {
 
 function isRetryableTerminalJobStatus(status: WorkflowJob["status"]): boolean {
   return status === "failed" || status === "canceled" || status === "skipped";
+}
+
+function isRenewableJobStatus(status: WorkflowJob["status"]): boolean {
+  return status === "claimed" || status === "running" || status === "cancel_requested";
 }
 
 function isActiveRunnerJob(job: WorkflowJob, now: Date): boolean {

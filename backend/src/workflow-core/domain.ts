@@ -186,10 +186,21 @@ export interface WorkflowJobResult {
   attemptNo: number;
   status: "succeeded" | "failed" | "canceled";
   output: Record<string, unknown>;
+  errorCategory?: RunnerFailureCategory;
   errorCode?: string;
   errorMessage?: string;
   createdAt: string;
 }
+
+export type RunnerFailureCategory =
+  | "dependency"
+  | "workspace"
+  | "engine"
+  | "result_contract"
+  | "artifact"
+  | "cancellation"
+  | "github"
+  | "unknown";
 
 export interface WorkflowEvent {
   id: string;

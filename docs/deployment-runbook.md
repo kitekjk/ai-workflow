@@ -250,6 +250,8 @@ LOCAL_RUNNER_ALLOWED_REPOSITORY_IDS=
 LOCAL_RUNNER_TEAM_IDS=
 LOCAL_RUNNER_CONCURRENCY=1
 LOCAL_RUNNER_WORKSPACE_ROOT=.runner-workspaces
+LOCAL_RUNNER_JOB_LEASE_RENEWAL_MS=10000
+LOCAL_RUNNER_CANCELLATION_POLL_MS=2000
 RUNNER_ENGINE=codex
 ```
 
@@ -281,10 +283,30 @@ Fix every `failed` check before running `npm run start:local-runner`; `warning`
 means the runner can start but is missing an operational nicety such as an
 isolated workspace root.
 
+Prepare runner skill/plugin packages before claiming implementation work:
+
+```bash
+LOCAL_RUNNER_PACKAGE_AUTO_INSTALL=true npm run prepare:local-runner-packages
+```
+
+Job input can declare `runnerSkill`, `requiredSkills`, `runnerPlugin`,
+`requiredPlugins`, or typed `requiredRunnerPackages`. A requirement may include
+`source` or `installSource`; local paths, `file://` URLs, and git sources such
+as `git+https://github.com/org/repo.git#main` or `github:org/repo#main` are
+supported. Use `sourceSubdir` when the package lives below the repository root.
+The package is copied into `LOCAL_RUNNER_SKILL_INSTALL_ROOT` or
+`LOCAL_RUNNER_PLUGIN_INSTALL_ROOT` and then resolved from the normal local
+roots.
+
 Each claimed job gets its own directory under `LOCAL_RUNNER_WORKSPACE_ROOT`.
 When a job template sets `runner.workdir`, the runner creates that subdirectory
 inside the isolated job workspace before launching Codex/Claude. Paths that
 escape the job workspace are rejected.
+
+While a job is running, the local runner renews the job lease and polls for
+`cancel_requested`. Cancellation is passed to the active engine as an
+`AbortSignal`; the CLI runner terminates its child process and acknowledges the
+job as canceled.
 
 For `implementation.update_pr`, Git must be available on `PATH`. When GitHub
 PR status includes a `repositoryCloneUrl` and `branchName`, the local runner
@@ -526,7 +548,23 @@ SMOKE_ACTOR_EMAIL=yourname@example.com
 SMOKE_RUNNER_ID=runner-smoke-local
 SMOKE_PRD_JIRA_KEY=PRD-SMOKE-MANUAL-1
 SMOKE_SKIP_MIGRATIONS=false
+SMOKE_DOCUMENT_MODE=stub
+SMOKE_IMPLEMENTATION_MODE=stub
 ```
+
+By default, document generation/evaluation/routing/fan-out jobs use the
+deterministic smoke runner. To exercise the real Claude/Codex CLI document
+runner while keeping implementation jobs deterministic, set:
+
+```bash
+SMOKE_DOCUMENT_MODE=cli
+RUNNER_ENGINE=codex
+CODEX_CLI_PATH=codex
+```
+
+When `SMOKE_DOCUMENT_MODE=cli` is enabled, the smoke validates `RUNNER_ENGINE`
+and the selected CLI command before applying migrations or starting the
+in-process API, so missing CLI setup fails fast.
 
 By default, implementation jobs inside the smoke use deterministic stub PR
 artifacts. To exercise the real GitHub-backed implementation path, opt in
@@ -623,8 +661,8 @@ Operators should monitor these workflow events:
 
 | Event | Meaning | Expected metadata |
 | --- | --- | --- |
-| `job.retry_scheduled` | Retryable failure was rescheduled | `severity=warning`, `metric=workflow_job_retries_total` |
-| `job.failed` | Final or non-retryable job failure | `severity=critical`, `alert=true`, `retryExhausted=true` |
+| `job.retry_scheduled` | Retryable failure was rescheduled | `severity=warning`, `metric=workflow_job_retries_total`, `errorCategory` when supplied |
+| `job.failed` | Final or non-retryable job failure | `severity=critical`, `alert=true`, `retryExhausted=true`, `errorCategory` when supplied |
 | `job.lease_expired` | A claimed job exceeded its lease | `severity=warning`, `alert=true`, `metric=workflow_job_lease_expirations_total` |
 | `workflow.prd_intake` | PRD intake workflow/document/draft job was recorded | run id, document id, draft job id, PRD Jira key, title |
 | `workflow.feedback_recorded` | Document feedback was recorded | feedback id, document id, work item id, source, author, linked revision job id |
@@ -639,6 +677,12 @@ Use:
 ```bash
 curl http://127.0.0.1:3000/workflow-runs/<runId>/events?limit=50
 ```
+
+Runner failure categories are normalized as `dependency`, `workspace`,
+`engine`, `result_contract`, `artifact`, `cancellation`, `github`, or
+`unknown`. The category is stored on `workflow_job_result.error_category` and
+mirrored into failure event metadata so operators can separate missing local
+skills/plugins from CLI/runtime failures.
 
 Event and runner-log cursors share the same cursor contract. Invalid cursors
 return `400` with `Invalid event cursor`.

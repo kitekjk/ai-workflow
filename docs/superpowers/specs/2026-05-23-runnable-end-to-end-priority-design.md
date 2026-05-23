@@ -21,7 +21,10 @@ the workflow reach a terminal state with artifacts and pull request status.
 The local runner is the highest priority because it is the execution boundary.
 It must be able to register with the scheduler, advertise owner email, project
 scope, supported engines, and capabilities, claim only matching jobs, execute
-them, stream or persist logs, report heartbeats, and return normalized results.
+them, stream or persist logs, renew leases while long-running work is active,
+report heartbeats, and return normalized results. A running job must not become
+eligible for another runner while its original runner is still alive and
+actively extending the claim.
 
 ### P0 Skill And Plugin Resolution
 
@@ -29,7 +32,8 @@ Runner jobs must be able to declare required AI skills or plugins. The runner
 should check what is already installed, resolve missing requirements through
 the configured local plugin/skill registry, install or prepare them where
 allowed, and fail with an actionable error when a requirement cannot be
-satisfied.
+satisfied. Capability strings are not enough for this phase; jobs need
+explicit dependency metadata such as skill/plugin id and version.
 
 ### P1 Runnable Workflow Path
 
@@ -43,8 +47,10 @@ than cluttering the workflow view with duplicate stage nodes.
 ### P2 Minimal Control UI
 
 The UI only needs enough surface to operate the real flow: create or select a
-workflow, inspect tasks and their job attempts, start or resume work, see
-runner/job status, and open generated artifacts. Runner management and broad
+workflow, inspect tasks and their job attempts, start or resume real
+runner-backed work, see runner/job status, and open generated artifacts.
+Canned runner output should be isolated as a development harness so it does
+not look like the actual local runner path. Runner management and broad
 settings can move to separate pages later.
 
 ### P3 Recovery And Feedback Loops
@@ -75,10 +81,38 @@ end-to-end execution.
   job, while the PR creation step is performed by the runner or backend adapter
   according to configured credentials.
 
+## Current Implementation Notes
+
+- Runner lease renewal is implemented across scheduler, repository, API,
+  runner client, and local runner loop. `LOCAL_RUNNER_JOB_LEASE_RENEWAL_MS`
+  controls the local renewal interval.
+- Runner cancellation is implemented as cooperative local execution signaling:
+  the runner polls for `cancel_requested`, aborts the active engine through
+  `AbortSignal`, and the CLI engine terminates the child process.
+- Runner failures are categorized through `workflow_job_result.error_category`
+  and scheduler event metadata. The local runner currently maps missing
+  packages, workspace/artifact path issues, invalid result contracts, GitHub/PR
+  failures, cancellations, and generic engine failures into stable categories.
+- Runner skill/plugin dependency resolution is implemented as a local
+  pre-execution check plus local registry prepare flow. Job input can declare
+  explicit skill/plugin package ids and versions, missing requirements fail
+  with `runner_package_missing` before the AI engine runs, and
+  `LOCAL_RUNNER_PACKAGE_AUTO_INSTALL=true` can copy matching packages from
+  configured registry roots into local install roots. Package-specific
+  `source` / `installSource` values can also install from local paths,
+  `file://` URLs, git URLs, or GitHub repo shorthand before resolution.
+- MySQL no-fixture smoke can keep deterministic implementation jobs while
+  routing document jobs through the real Claude/Codex CLI runner with
+  `SMOKE_DOCUMENT_MODE=cli`; that mode validates the selected runner engine and
+  CLI command before migrations/API startup.
+- The next gap is hardening package source trust/checksums and then driving
+  the full PRD -> HLD -> LLD -> Spec -> Code runnable path through the real
+  runner.
+
 ## Error Handling
 
-The next phase should normalize runner and dependency failures into product
-events:
+The next phase should keep expanding normalized runner and dependency failures
+into actionable product events:
 
 - missing skill or plugin
 - unsupported engine
