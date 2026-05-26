@@ -47,7 +47,7 @@
 | Fan-out | routing 결과의 `next_task_types` 에 따라 1+ next task (HLD 또는 LLD 또는 Spec) 생성 |
 | Approver role | **기획자** |
 | Author 종류 | AI 단독 (사람은 feedback 만 제공) |
-| revise loop | ❓ 확인: 횟수 제한 있나? `[TBD]` |
+| revise loop | **I-5' 따름정리: 무제한** (사람이 "재시도요청" 안 하면 멈춤). 비용/품질 escalation 은 Strategy outbound mapping 로 표현. |
 
 ---
 
@@ -57,14 +57,14 @@
 | --- | --- |
 | Input | 승인된 PRD + 영향 Services 의 repos (Routing 이 식별한 service list) |
 | 산출물 type | markdown (+ 선택적 다이어그램?) |
-| 산출물 위치 | ❓ 확인: req.md 14행 "be-repo: ... HLD 문서 보관" 이지만 한 PRD 가 **여러 Service 에 영향** 일 때 HLD 가 어느 repo 에? `[TBD]` (옵션: 각 service 의 be-repo 에 각각 / 별도 docs-repo / prd-repo) |
+| 산출물 위치 | prd 와 hld는 1:1 이라서 be-repo 에 저장 |
 | Default Job sequence | `generate` → `quality` → (사람) → `revise`* → ... → (사람 승인) → `split` (LLD 쪼개기) |
 | 사람 판단 transition | (PRD 와 동일 패턴 - 추정) |
 | 자동 transition | (PRD 와 동일 패턴 - 추정) |
 | Fan-out | `split` 결과의 LLD scope list 에 따라 1+ LLD Task 생성 |
 | Approver role | **개발자** |
 | Author 종류 | AI 단독 (추정) |
-| revise loop | `[TBD]` |
+| revise loop | **I-5' 따름정리: 무제한** (PRD 와 동일 패턴). |
 
 ---
 
@@ -74,14 +74,14 @@
 | --- | --- |
 | Input | 승인된 HLD 의 한 scope |
 | 산출물 type | markdown |
-| 산출물 위치 | `[TBD]` — HLD 위치와 동일? Service 의 repo 안? |
+| 산출물 위치 | be, fe 에 따라 be-repo, fe-repo 선정 |
 | Default Job sequence | `generate` → `quality` → (사람) → `revise`* → ... → (사람 승인) → (next?) |
 | 사람 판단 transition | (PRD 와 동일 패턴 - 추정) |
 | 자동 transition | (PRD 와 동일 패턴 - 추정) |
-| Fan-out | ❓ 확인: 1 LLD → **1 Spec** 인가, **여러 Spec** 인가? `[TBD]` |
+| Fan-out | 안함, 1 개의 lld는 1개의 spec용 task와 연결 |
 | Approver role | **개발자** |
 | Author 종류 | AI 단독 (추정) |
-| revise loop | `[TBD]` |
+| revise loop | **I-5' 따름정리: 무제한** (PRD 와 동일 패턴). |
 
 ---
 
@@ -91,14 +91,14 @@
 | --- | --- |
 | Input | 승인된 LLD |
 | 산출물 type | markdown (machine-readable spec — code 생성 가능 수준) |
-| 산출물 위치 | `[TBD]` — be-repo `/specs/` ? 또는 LLD 와 같은 위치? |
+| 산출물 위치 | LLD 와 같은 repo 하지만 폴더는 specs |
 | Default Job sequence | `generate` → `quality` → (사람) → `revise`* → ... → (사람 승인) → (next: code) |
 | 사람 판단 transition | (PRD 와 동일 패턴 - 추정) |
 | 자동 transition | (PRD 와 동일 패턴 - 추정) |
-| Fan-out | ❓ 확인: 1 Spec → 1 PR 인가, **여러 Spec 묶음 → 1 PR** 인가? `[TBD]` |
+| Fan-out | 1 PR |
 | Approver role | **개발자** |
 | Author 종류 | AI 단독 (추정) |
-| revise loop | `[TBD]` |
+| revise loop | **I-5' 따름정리: 무제한** (PRD 와 동일 패턴). |
 
 ---
 
@@ -111,65 +111,97 @@
 | Input | 승인된 Spec(s) |
 | 산출물 type | **code + tests** (markdown 아님) |
 | 산출물 위치 | **be-repo / fe-repo 의 feature branch** (req.md 14-15행) |
-| Default Job sequence | `[TBD]` (추정: `generate_code` → `run_tests` → `open_pr` → `address_review`* → `merge`) |
-| 사람 판단 transition | ❓ 확인: PRD/HLD/LLD 의 "승인대기/수정요청" 패턴 그대로? 또는 PR review 라는 다른 메커니즘? `[TBD]` |
+| Default Job sequence | `generate_code and test` → `open_pr` → `address_review`* → `merge`) |
+| 사람 판단 transition | PR review 라는 다른 메커니즘 |
 | 자동 transition | tests 자동 실행 (추정) |
-| Fan-out | 보통 1 PR (추정), 또는 fan-in (여러 Spec → 1 PR)? `[TBD]` |
+| Fan-out | 1 PR |
 | Approver role | **개발자 (리뷰어)** |
-| Author 종류 | ❓ 확인: **AI 단독 / AI + 사람 hybrid / 사람 단독** — 어느 모델? `[TBD]` |
-| revise loop | PR review comment 마다 새 commit → 같은 패턴? `[TBD]` |
+| Author 종류 |  **AI 단독 |
+| revise loop | PR review comment 마다 새 commit  |
 
 ### Code task 의 특이 사항 (논의 필요)
-- ❓ **PR open/merge 가 Jira transition 인가, git/GitHub event 인가**?
+-  **PR open/merge 가 Jira transition 인가, git/GitHub event 인가**?
   - PR open = "리뷰대기", merge = "구현완료" 같이 Jira status 로 표현?
   - 또는 GitHub PR state 자체가 SSOT 이고 Jira 는 mirror?
-- ❓ **테스트 실패 시 처리** — code Job 안의 sub-step 으로 실패가 새 `address_test_failure` Job 을 만드나? 또는 PR review 와 동일 처리?
-- ❓ **revise 의 단위** — Spec 자체를 revise (위 단계로 되돌림) vs code 만 수정?
+-  **테스트 실패 시 처리** — code 단계의 test는 unit test 이기 때문에 code generate 와 test는 같이 진행함. 따라서 테스트 실패시 코드 수정을 동시에 함.
+-  **revise 의 단위** — pr를 사람이 리뷰하면서 lld 수정부터 다시 진행 가능느 (방식은 추후 논의 필요)
 
 ---
 
-## 6. Test (QA)
+## 6. TC (Test Case 작성 task)
 
-> ❓ **이 단계가 정말 별도 Task 인가, 또는 Code task 의 sub-step 인가?**
+> **fan-in 의 첫 등장 지점.** N 개 Code task 가 모두 terminal 도달 시 Workflow Run 이 sync gate 로 이 task 를 1 개 spawn.
+> **분기 결정 지점.** 첫 job `analyze_change` 가 실제 merged 코드 변경을 분석하여 `qa_required` 를 판정. 그 결과로 다음이 QA 인지 Deploy 인지가 갈림 (I-16).
 
 | 필드 | 값 |
 | --- | --- |
-| Input | merged code + 테스트 케이스 |
-| 산출물 type | 테스트 케이스 (코드) + 실행 결과 (보고서) |
-| 산출물 위치 | be-repo `/tests/` + Jira (결과 요약) |
-| Default Job sequence | `[TBD]` (추정: `tc_draft` (Spec 기반) → `tc_review` → (사람) → `tc_finalize` → `run_tc` → `qa_signoff`) |
-| 사람 판단 transition | ❓ 확인: QA 단독 검토? 또는 PRD 처럼 quality job + 사람 승인? `[TBD]` |
-| 자동 transition | tc 실행 자동 (추정) |
-| Fan-out | — (단일 task) |
+| Input | 모든 merged Code (PR diff) + PRD (AC 섹션 포함) + Spec(s) |
+| 산출물 type | markdown (TC 명세) — `qa_required=false` 면 산출물 없음 (분석 결과만) |
+| 산출물 위치 | **fe-repo** `/tests/` 또는 `/qa/tc/{prd-key}.md` (TC 작성 시) |
+| Default Job sequence | `analyze_change` → (분기)<br>• `qa_required=true` → `tc_generate` → `quality` → `revise`* → `quality` → (사람 승인) → 종료<br>• `qa_required=false` → 사람 승인 (또는 자동 승인) → 종료 |
+| 사람 판단 transition | (qa_required=true) PRD 와 동일 패턴: `승인대기` → `승인` / `수정요청` → `재시도요청` |
+| 자동 transition | `analyze_change` 종료 → 분기. `tc_generate` 종료 → `quality` 자동. quality 결과로 Jira outbound. |
+| Fan-out | **1 : 1 분기** — `qa_required=true` → QA task 1 개 / `qa_required=false` → Deploy task 1 개 (TC 자체 산출물도 skip) |
+| Approver role | **QA** (qa_required=true) / **개발자** (qa_required=false 의 분석 결과 confirm) |
+| Author 종류 | AI 단독 (사람은 feedback 만) |
+| revise loop | **I-5' 따름정리: 무제한** (PRD 와 동일 패턴). |
+
+### TC task 의 특이 사항
+
+- `analyze_change` 의 input 은 **모든 merged PR diff + PRD AC 섹션**. 화면 영향 여부 판단의 SSOT 는 실제 코드.
+- `qa_required=false` 케이스에서 TC 작성을 skip 하는 이유 = token 낭비 방지 + workflow 단순화.
+- AC (Acceptance Criteria) 는 PRD 의 한 섹션으로 존재 (workflow 별도 관리 X). TC 생성 job 의 rubric 에 "AC cover 율" 포함.
+
+---
+
+## 7. QA (QA 수행 task)
+
+> **back-edge 의 첫 등장 지점.** 버그 발견 시 영향 LLD/Spec/Code task 의 **새 revise Job** 으로 표현 (I-15).
+> **lifecycle** = 모든 버그 fix 까지 open.
+
+| 필드 | 값 |
+| --- | --- |
+| Input | 승인된 TC + merged code + 영향 fe 화면 / API |
+| 산출물 type | QA 실행 보고서 (markdown) + N 개 버그 티켓 (Jira) |
+| 산출물 위치 | fe-repo `/qa/reports/{prd-key}/{run-n}.md` + Jira (버그 티켓들) |
+| Default Job sequence | `run_qa` → (버그 발견 시) `file_bug_tickets` → **back-edge: 영향 LLD/Spec/Code 의 새 revise Job 트리거** → (모든 fix 완료 대기) → `run_qa` (재실행) → ... → 버그 없음 → 사람 (QA) 승인 → 종료 |
+| 사람 판단 transition | (1) 사람이 버그 검토 후 코멘트로 수정 방안 명시 → 이게 영향 task 의 revise Job input 이 됨. (2) 모든 버그 close 후 QA 가 "QA 승인" transition → Deploy task spawn. |
+| 자동 transition | `run_qa` 종료 후 결과로 분기. 영향 task 들이 모두 terminal 도달 시 QA `run_qa` 자동 재실행. |
+| Fan-out | **1 : N back-edge** (버그마다 영향 task 의 새 revise Job) + **1 : 1 순방향** (QA 승인 시 Deploy spawn) |
 | Approver role | **QA** |
-| Author 종류 | ❓ 확인: tc 작성을 AI 가 Spec 보고 draft → QA 가 finalize 패턴? `[TBD]` |
-| revise loop | tc 실행 실패 → 어디서 다시 시작? code? spec? `[TBD]` |
+| Author 종류 | AI + 사람 hybrid — AI 가 자동 QA / 사람 (QA) 가 수동 검증 + 버그 검토 |
+| revise loop | **I-5' 따름정리: 무제한** (`run_qa` ↔ 버그 fix 사이클이 모든 버그 해소 + QA 승인까지 반복) |
 
-### Test task 의 특이 사항 (논의 필요)
-- ❓ **QA 가 시작되는 시점** — code merge 전? merge 후? PR 안에 QA 까지 포함?
-- ❓ **회귀 테스트 / 통합 테스트 의 위치** — Test task 안? 별도 task? CI 의 책임?
+### QA task 의 특이 사항 (추후 grilling)
+
+- **버그 티켓의 Jira issue type** — "그 외 = Task" 통합? 별도 "Bug" type?
+- **버그 티켓 ↔ 영향 task 의 매핑** — 사람이 코멘트로 명시? AI 가 분류? Jira link?
+- **여러 버그가 같은 LLD 가리킬 때** — 한 번에 묶어 1 revise? 버그마다 revise?
+- **back-edge 의 정확한 trigger 메커니즘** — 사람의 "수정 방안 코멘트" 가 새 transition 인가, 자동 감지인가?
 
 ---
 
-## 7. Deploy (배포)
+## 8. Deploy (배포 task)
+
+> **Action-only pattern.** quality / revise 없음. Workflow 가 Jira 티켓만 만들고, 실제 배포 / 환경 / 롤백 / CD 연동은 workflow scope 밖 (사람 + 외부 시스템).
 
 | 필드 | 값 |
 | --- | --- |
-| Input | 승인된 release / merged code |
-| 산출물 type | **배포 결과** (성공 / 실패 / 부분 성공) |
-| 산출물 위치 | 외부 CD 시스템 (k8s / infra 등) + Jira (결과 요약) |
-| Default Job sequence | `[TBD]` (추정: `prepare_release` → `run_pipeline` → `verify` → `notify`) |
-| 사람 판단 transition | ❓ 확인: 배포 시작 자체에 사람 승인 필요? 자동? `[TBD]` |
-| 자동 transition | pipeline 자동 실행 (추정) |
-| Fan-out | — |
-| Approver role | **운영자** |
-| Author 종류 | ❓ 확인: AI 가 pipeline 트리거? 운영자만? `[TBD]` |
-| revise loop | 배포 실패 → rollback? 재시도? `[TBD]` |
+| Input | QA 승인 또는 `qa_required=false` 의 TC task 종료 |
+| 산출물 type | Jira 배포 티켓 1 개 |
+| 산출물 위치 | Jira (별도 git 산출물 없음) |
+| Default Job sequence | `create_deploy_ticket` (Jira status = "배포대기") → 종료 (in-progress 상태로 사람 transition 대기) |
+| 사람 판단 transition | 사람이 외부 CD 로 실제 배포 후 Jira "완료" 수동 transition → hook → workflow run completed |
+| 자동 transition | `create_deploy_ticket` 후 task = pending-human (작업 없음). Jira "완료" hook 수신 시 workflow run terminal. |
+| Fan-out | — (terminal) |
+| Approver role | **운영자** (배포 실행자) |
+| Author 종류 | AI 가 티켓만 생성, 실제 배포 = 사람 |
+| revise loop | 없음 (action-only) |
 
-### Deploy task 의 특이 사항 (논의 필요)
-- ❓ **배포 환경 분리** (dev / staging / prod) — 각각 별도 task? 하나의 task 의 sub-step?
-- ❓ **롤백** — 별도 task? Deploy task 의 새 인스턴스?
-- ❓ **외부 CD 시스템 연동** — Argo / Spinnaker / GitHub Actions 등 — Workflow 가 직접? 또는 CD 자체에 맡김?
+### Deploy task 의 특이 사항
+
+- 배포 정책은 아직 확정되지 않음 (M0+ 범위 밖). 환경 분리 (dev/staging/prod) / 롤백 / 외부 CD 연동은 모두 workflow 밖.
+- 향후 정책 확정 시 task pattern 이 변경될 수 있음 (action-only → 더 복잡한 패턴).
 
 ---
 

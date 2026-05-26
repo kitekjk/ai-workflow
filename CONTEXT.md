@@ -151,6 +151,43 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 
 ---
 
+## Fan-out cardinality (단계 간)
+
+| 종료 단계 | 다음 단계 | cardinality | hand-off 메커니즘 |
+| --- | --- | --- | --- |
+| PRD | HLD | **1 : 1** | routing Job 의 `next_task_types` |
+| HLD | LLD | **1 : N** | `split` Job 의 `lld_scopes[]` 마다 Spawn |
+| LLD | Spec | **1 : 1** | LLD task 종료 시 Spec task 자동 생성 |
+| Spec | Code | **1 : 1** | Spec task 승인 시 Code task 자동 생성 (1 Spec = 1 PR) |
+| Code (N 개) | TC | **N : 1 (fan-in)** | **Workflow Run 이 sync gate owner**. 모든 Code task terminal 도달 시 TC task 1 개 spawn. |
+| TC | QA 또는 Deploy | **1 : 1 분기** | TC task 의 `analyze_change` job output `qa_required` 가 분기: true → QA task spawn / false → Deploy task spawn (QA skip) |
+| QA | (back-edge LLD/Spec/Code) | **1 : N (back-edge)** | QA 가 발견한 버그 = 영향 LLD/Spec/Code task 의 **새 revise Job**. 새 task 인스턴스 / child task 생성 X. |
+| QA | Deploy | **1 : 1** | QA 가 모든 버그 해소 후 사람 (QA) "승인" transition → Deploy task spawn |
+| Deploy | (terminal) | **— (workflow run completed)** | Deploy task = Jira 티켓 "배포대기" 생성. 사람이 외부 CD 로 실제 배포 → Jira 수동 "완료" → workflow run completed |
+
+### 원칙
+
+- 한 PRD 의 의도 = "한 시스템 변화". service 별 독립 변화 묶음이라면 PRD 가 분리되어야 한다 (PRD 분할이 fan-out 보다 우선).
+- TC 작성 위치 = **fe-repo** 기본. 화면 영향 있는 모든 변경의 검증이 fe-repo TC 에 모인다. server-to-server 만 영향 시 TC task 안 `analyze_change` 가 `qa_required=false` 로 판정하여 TC/QA 모두 skip.
+- back-edge 는 새 task 인스턴스가 아니라 기존 task 의 새 revise Job — invariant I-5' (revise 무제한) 와 일관.
+
+---
+
+## Task Pattern 4 종
+
+모든 Task 는 다음 4 패턴 중 하나를 따른다. 골격 (코드) 이 4 패턴 모두 cover 해야 한다.
+
+| 패턴 | 적용 Task | 모양 |
+| --- | --- | --- |
+| **P1 Document** | PRD / HLD / LLD / Spec / TC | `generate → quality → (revise → quality)* → 사람 승인` (PRD-style). Approver 별 다름. revise 무제한 (I-5'). |
+| **P2 Code** | Code | `generate_code+test (atomic) → open_pr → address_review* → merge`. 사람 판단 = PR review (Jira transition 아님). revise = PR review comment → 새 commit. LLD/Spec 까지 되돌릴 수도 (방식 추후 결정). |
+| **P3 QA** | QA | `run_qa → 버그 발견 시 LLD/Spec/Code 의 새 revise Job (back-edge) → 모든 fix 완료 시 → 사람 (QA) 승인 → 종료`. lifecycle = 버그 fix loop 동안 open. |
+| **P4 Action-only** | Deploy | `Jira 티켓 생성 ("배포대기") → 사람의 외부 CD 배포 → Jira 수동 "완료" transition → workflow 완료`. quality / revise 없음. |
+
+> 이 4 패턴이 **공통 골격 + Strategy YAML 데이터** 로 표현 가능한지가 "공통/특화 분석" 의 stress-test 핵심.
+
+---
+
 ## Jira Ticket Type 매핑
 
 | Workflow 개념 | Jira issue type |
@@ -199,6 +236,7 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 - **I-3**: Workflow 재시작 시 git + Jira 만으로 모든 Task/Job 상태를 catch-up 할 수 있어야 한다.
 - **I-4**: Git outage 는 시스템이 명시적으로 정지하는 타당한 외부 의존성 (NFR-7 의 "outage 견딤" 대상에서 제외).
 - **I-5 (F7 재정의)**: 시스템이 자체적으로 transition 정책을 가지지 않는다. 모든 사람-판단 transition 은 Jira event 가 트리거.
+  - **따름정리 (I-5')**: Document Task (PRD/HLD/LLD/Spec) 의 revise loop 는 **무제한**. 사람이 "재시도요청" transition 안 하면 자연히 멈추므로 시스템 차원 hard limit 이 필요 없다. 비용/품질 escalation 신호가 필요하면 그것은 Strategy 의 outbound mapping (예: revise 5 회 도달 시 Jira comment 로 경고) 로 표현하고, 모델 차원 종료 조건은 두지 않는다. Code/Test/Deploy 의 revise 모양은 별도 (markdown 산출물과 다른 cycle).
 - **I-6 (F10 재정의)**: Job 은 atomic. 재시도 개념이 모델에 없음. 같은 일을 다시 하려면 새 Job 인스턴스.
 - **I-7**: `generate / revise Job` 의 성공 = git push 까지 완료 (local commit only 는 in-progress).
 - **I-8**: DB 의 commit hash 는 git remote 에 실제 존재하는 commit 만 가리킨다 (verify-on-write).
@@ -207,6 +245,10 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 - **I-11**: Wiki publish 는 모든 Document version (generate / revise) 마다 실행된다. in-progress 포함.
 - **I-12**: 사람의 PRD/HLD 수정 의도는 **Jira comment 로만** 전달된다. wiki 직접 수정은 다음 publish 가 덮어쓴다 (wiki 페이지 헤더에 안내).
 - **I-13**: Wiki publish 실패는 task 진행을 막지 않는다. retry queue 로 background 처리.
+- **I-14 (workflow-run sync gate)**: N→1 fan-in 의 owner 는 **Workflow Run** 이다. sync gate state 자체는 휘발 가능 (DB 만 보유) — Jira 의 모든 child task ticket status 로 언제든 재계산 가능 (I-3 와 정합). 첫 적용: N Code task → 1 TC task.
+- **I-15 (QA back-edge)**: QA 가 발견한 버그는 **영향받는 LLD/Spec/Code task 의 새 revise Job** 으로 표현된다. 새 task 인스턴스 / child task 생성 금지. revise Job 의 input 에 "버그 티켓 코멘트" 가 feedback 으로 포함된다. (I-5 / I-5' / I-6 와 정합)
+- **I-16 (QA path 분기 위치)**: `qa_required` 분기 결정은 **TC task 의 첫 job `analyze_change`** 에서 일어난다. PRD/HLD 단계에서 미리 결정하지 않는다 (실제 코드 변경을 봐야 정확). output `qa_required=false` 면 TC 작성 자체도 skip, 바로 Deploy task spawn.
+- **I-17 (Deploy task = action-only)**: Deploy task 는 quality 도 revise 도 없다. Jira 티켓 ("배포대기") 생성 → 사람의 외부 CD 배포 → Jira "완료" transition → workflow run completed. workflow 의 책임은 "티켓 생성과 완료 hook" 까지로 한정 (실제 배포 / 환경 / 롤백 / CD 연동은 workflow scope 밖).
 
 ---
 
