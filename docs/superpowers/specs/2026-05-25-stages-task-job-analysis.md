@@ -119,12 +119,11 @@
 | Author 종류 |  **AI 단독 |
 | revise loop | PR review comment 마다 새 commit  |
 
-### Code task 의 특이 사항 (논의 필요)
--  **PR open/merge 가 Jira transition 인가, git/GitHub event 인가**?
-  - PR open = "리뷰대기", merge = "구현완료" 같이 Jira status 로 표현?
-  - 또는 GitHub PR state 자체가 SSOT 이고 Jira 는 mirror?
--  **테스트 실패 시 처리** — code 단계의 test는 unit test 이기 때문에 code generate 와 test는 같이 진행함. 따라서 테스트 실패시 코드 수정을 동시에 함.
--  **revise 의 단위** — pr를 사람이 리뷰하면서 lld 수정부터 다시 진행 가능느 (방식은 추후 논의 필요)
+### Code task 의 특이 사항 (확정)
+- **PR open/merge 의 SSOT (I-18 확정)**: **GitHub PR state 가 진행 SSOT**. workflow App 은 GitHub webhook (PR merge 등) 로 직접 react. Jira ticket 의 status 변화는 GitHub-Jira integration 의 부수 효과 — workflow App 이 set 안 함. Code task 의 Jira ticket 은 audit / Runner assignee 매칭용.
+- **PR title contract (I-19 확정)**: PR title 에 **Jira ticket key 포함 강제** (GitHub-Jira integration auto-sync trigger). Strategy YAML 의 PR title template + Type B schema 가 강제. 위반 = Job 실패.
+- **테스트 실패 시 처리**: code 단계의 test 는 unit test 이므로 generate+test 가 한 atomic job. 테스트 실패 시 같은 job 안에서 코드 수정 같이 진행.
+- **revise 의 LLD/Spec 되돌림 (확정)**: PR review 에서 "이건 LLD 가 잘못됨" 류의 코멘트 → **back-edge 메커니즘 (I-15 와 동일)**. AI 가 Bug 티켓 + Jira issue link 자동 생성 → 사람 (개발자) confirm/수정 → 영향 task "재시도요청" transition → 새 revise Job. QA back-edge 와 통일 모델.
 
 ---
 
@@ -172,12 +171,12 @@
 | Author 종류 | AI + 사람 hybrid — AI 가 자동 QA / 사람 (QA) 가 수동 검증 + 버그 검토 |
 | revise loop | **I-5' 따름정리: 무제한** (`run_qa` ↔ 버그 fix 사이클이 모든 버그 해소 + QA 승인까지 반복) |
 
-### QA task 의 특이 사항 (추후 grilling)
+### QA task 의 특이 사항 (확정)
 
-- **버그 티켓의 Jira issue type** — "그 외 = Task" 통합? 별도 "Bug" type?
-- **버그 티켓 ↔ 영향 task 의 매핑** — 사람이 코멘트로 명시? AI 가 분류? Jira link?
-- **여러 버그가 같은 LLD 가리킬 때** — 한 번에 묶어 1 revise? 버그마다 revise?
-- **back-edge 의 정확한 trigger 메커니즘** — 사람의 "수정 방안 코멘트" 가 새 transition 인가, 자동 감지인가?
+- **버그 티켓 Jira type**: **Bug** (CONTEXT.md Jira Ticket Type 매핑 참조).
+- **버그 티켓 ↔ 영향 task 매핑**: **Jira issue link** (예: `is caused by` / `blocks`). AI 가 자동 생성, 사람이 confirm/수정.
+- **묶음 처리**: **1 bug = 1 revise Job** (N 버그 = N revise Job). 같은 task 의 N Job 은 **순차 실행** (I-20) — git conflict 회피 + 직전 fix 결과를 다음 Job context 로.
+- **trigger 메커니즘 (I-15 확정)**: QA AI 가 의심 사항 자동 Bug 티켓 생성 + 후보 영향 task 자동 Jira link → 사람 (QA) confirm/수정 + 수정 방안 코멘트 → 영향 task 의 **"재시도요청" transition** 이 trigger → 새 revise Job 의 input 에 Bug 티켓 코멘트 포함. Code back-channel 도 동일 메커니즘.
 
 ---
 

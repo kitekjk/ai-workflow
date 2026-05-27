@@ -130,11 +130,12 @@ Workflow App 자체는 휘발성으로 취급.
 ### Transition 권한 — `T-relaxed`
 | 종류 | 권한 |
 | --- | --- |
-| 사람의 판단이 필요한 transition | **Jira event** 가 트리거 |
+| 사람의 판단이 필요한 transition | **외부 사람-판단 event** 가 트리거 (Jira 가 default, GitHub PR review 같은 다른 외부 시스템 event 도 동일 model) |
 | 결정론적 transition | **시스템** 이 자동 |
 
 예시:
-- PRD 승인 / 재시도요청 → Jira event 가 트리거.
+- PRD 승인 / 재시도요청 → **Jira event** 가 트리거.
+- Code task 의 PR review / merge → **GitHub event** 가 트리거 (Jira 가 아님 — Code task 의 SSOT 는 GitHub PR state, I-18).
 - generate → quality 자동 진행 / fan-out 시 LLD Task 자동 생성 → 시스템이 자동.
 
 ### Quality / Approval 표준 흐름 (모든 Document Task 공통)
@@ -180,8 +181,8 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 | 패턴 | 적용 Task | 모양 |
 | --- | --- | --- |
 | **P1 Document** | PRD / HLD / LLD / Spec / TC | `generate → quality → (revise → quality)* → 사람 승인` (PRD-style). Approver 별 다름. revise 무제한 (I-5'). |
-| **P2 Code** | Code | `generate_code+test (atomic) → open_pr → address_review* → merge`. 사람 판단 = PR review (Jira transition 아님). revise = PR review comment → 새 commit. LLD/Spec 까지 되돌릴 수도 (방식 추후 결정). |
-| **P3 QA** | QA | `run_qa → 버그 발견 시 LLD/Spec/Code 의 새 revise Job (back-edge) → 모든 fix 완료 시 → 사람 (QA) 승인 → 종료`. lifecycle = 버그 fix loop 동안 open. |
+| **P2 Code** | Code | `generate_code+test (atomic) → open_pr → address_review* → merge`. 사람 판단 = **PR review (GitHub event SSOT, I-18)**. PR title 에 Jira ticket key 포함 강제 (I-19). revise = PR review comment → 새 commit. LLD/Spec 되돌림은 **back-edge 메커니즘 (I-15 와 동일)**: AI 가 Bug 티켓 + Jira link 자동 생성 → 사람 confirm → 영향 task "재시도요청" transition. |
+| **P3 QA** | QA | `run_qa → 버그 발견 시 LLD/Spec/Code 의 새 revise Job (back-edge) → 모든 fix 완료 시 → 사람 (QA) 승인 → 종료`. lifecycle = 버그 fix loop 동안 open. **back-edge 메커니즘 (I-15)**: AI 가 Bug 티켓 + Jira issue link 자동 생성 → 사람 (QA) confirm/수정 → 영향 task "재시도요청" transition → 새 revise Job. 1 bug = 1 revise Job, 같은 task 의 N Job 은 순차 실행 (I-20). |
 | **P4 Action-only** | Deploy | `Jira 티켓 생성 ("배포대기") → 사람의 외부 CD 배포 → Jira 수동 "완료" transition → workflow 완료`. quality / revise 없음. |
 
 > 이 4 패턴이 **공통 골격 + Strategy YAML 데이터** 로 표현 가능한지가 "공통/특화 분석" 의 stress-test 핵심.
@@ -197,9 +198,12 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 | HLD | Epic |
 | LLD | Story |
 | Spec | Task |
+| **Bug (QA / Code back-channel)** | **Bug** |
 | 그 외 (요청·메타·기록) | Task |
 
 **운영 요청 ↔ PRD** 는 Jira 표준 계층상 직접 부모/자식이 불가하므로 **link** 로 묶는다 (link type 은 미정).
+
+**Bug ↔ 영향 task** 는 Jira **issue link** 로 묶는다 (예: `is caused by` / `blocks`). AI 가 자동 생성, 사람이 confirm/수정 (I-15).
 
 ---
 
@@ -249,6 +253,10 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 - **I-15 (QA back-edge)**: QA 가 발견한 버그는 **영향받는 LLD/Spec/Code task 의 새 revise Job** 으로 표현된다. 새 task 인스턴스 / child task 생성 금지. revise Job 의 input 에 "버그 티켓 코멘트" 가 feedback 으로 포함된다. (I-5 / I-5' / I-6 와 정합)
 - **I-16 (QA path 분기 위치)**: `qa_required` 분기 결정은 **TC task 의 첫 job `analyze_change`** 에서 일어난다. PRD/HLD 단계에서 미리 결정하지 않는다 (실제 코드 변경을 봐야 정확). output `qa_required=false` 면 TC 작성 자체도 skip, 바로 Deploy task spawn.
 - **I-17 (Deploy task = action-only)**: Deploy task 는 quality 도 revise 도 없다. Jira 티켓 ("배포대기") 생성 → 사람의 외부 CD 배포 → Jira "완료" transition → workflow run completed. workflow 의 책임은 "티켓 생성과 완료 hook" 까지로 한정 (실제 배포 / 환경 / 롤백 / CD 연동은 workflow scope 밖).
+- **I-18 (Code task SSOT = GitHub PR state)**: Code task 의 진행 SSOT 는 **GitHub PR state**. workflow App 은 GitHub webhook (PR open / review / merge) 로 직접 react. Jira ticket 의 status 는 GitHub-Jira integration 의 부수 효과 (workflow App 이 set 하지 않음). Code task 의 Jira ticket 은 audit / Runner assignee 매칭용. (I-5 일반화: 사람-판단 transition = 외부 사람-판단 event, Jira 가 default 이지만 GitHub event 도 동일 model.)
+- **I-19 (PR title contract)**: Code task 의 `open_pr` job 은 PR title 에 Jira ticket key 를 반드시 포함한다 (GitHub-Jira integration auto-sync trigger). Strategy YAML 의 PR title template + Type B integration skill schema 가 강제. 위반 = Job 실패.
+- **I-20 (back-edge 순차 실행)**: 같은 task 의 N 개 revise Job (back-edge 로 생성된 것 포함) 은 **순차 실행**. 1 Runner = 1 사람 머신 = 직렬. git conflict 회피 + 직전 push 후 fresh state 에서 다음 Job 시작 (I-7 정합). AI 가 직전 fix commit 을 context 로 받아 다음 버그 처리.
+- **I-21 (Workflow restart 회복)**: I-3 의 구체화. (a) DB 는 순수 cache — SSOT 는 git + Jira. (b) workflow App startup 시 모든 in-flight task 의 Jira status + git commit hash 를 **verify-on-startup** 으로 재확인, 불일치 시 git/Jira 가 truth, DB 를 그것에 맞춤. (c) "in-flight" 인데 git push 흔적 없는 Job = **failed 처리** (I-7: 성공 = push 까지). local commit only 는 Runner 자체 cleanup. (d) Job dedupe key = `git commit hash + Jira issue key + Job spec hash` — 같은 입력에 결과가 이미 git/Jira 에 있으면 skip.
 
 ---
 
