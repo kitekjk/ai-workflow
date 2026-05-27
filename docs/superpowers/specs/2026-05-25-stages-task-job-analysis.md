@@ -210,57 +210,95 @@
 
 | 종료 Task | hand-off 메커니즘 | 다음 Task |
 | --- | --- | --- |
-| PRD | `routing` Job 의 output `next_task_types` 에 따라 Spawn rule 적용 | HLD 또는 LLD 또는 Spec (분류에 따라) |
+| PRD | `routing` Job 의 output `next_task_types` 에 따라 Spawn rule 적용 | HLD (1 : 1, 또는 HLD skip 시 LLD/Spec) |
 | HLD | `split` Job 의 output `lld_scopes[]` 마다 Spawn | LLD x N |
-| LLD | `[TBD]` Spec 으로 자동? 또는 명시적 분리 Job? | Spec (1 또는 N) |
-| Spec | `[TBD]` Code 로 자동? 또는 묶음 단위 결정 Job? | Code (1 또는 N) |
-| Code (merge) | `[TBD]` Test 로 자동? 또는 PR merge = code task 종료 + test task 시작? | Test |
-| Test (QA pass) | `[TBD]` Deploy 로 자동? 또는 사람 trigger? | Deploy |
-| Deploy | Terminal — workflow run completed | — |
+| LLD | LLD task 승인 시 Spec task 1 개 자동 spawn | Spec x 1 |
+| Spec | Spec task 승인 시 Code task 1 개 자동 spawn (1 Spec = 1 PR) | Code x 1 |
+| Code (PR merge) | **Workflow Run 이 sync gate owner**. 모든 Code task 가 terminal 도달 시 TC task 1 개 spawn (N→1 fan-in, I-14). | TC x 1 |
+| TC | `analyze_change` job output `qa_required` 가 분기. true → QA spawn, false → Deploy spawn (TC 작성 자체도 skip 가능, I-16). | QA 또는 Deploy |
+| QA | QA 가 모든 버그 해소 후 사람 (QA) "승인" transition → Deploy task spawn. 버그 발견 시 영향 LLD/Spec/Code 의 새 revise Job (back-edge, I-15). | Deploy |
+| Deploy | Jira 티켓 "배포대기" 생성 → 사람 외부 CD 배포 → Jira 수동 "완료" → hook → workflow run completed (I-17). | — terminal |
 
 ---
 
-## 공통 / 특화 분석 (단계별 표 완료 후 작성)
+## 공통 / 특화 분석 (확정)
 
-> 위 표가 채워진 후, 각 행을 비교하여 다음을 추출.
+> 4 task pattern (P1 Document / P2 Code / P3 QA / P4 Action-only) 의 stress-test 결과. 골격이 모든 패턴을 cover 가능함을 확인.
 
-### 모든 단계 공통 (= 골격 = 코드)
+### 패턴별 lifecycle 비교
 
-후보 (단계별 표 완료 시 검증):
-- `[추정]` Job atomic, 재시도 = 새 Job 인스턴스
-- `[추정]` Job 결과 → 위로 전달 (Task → Workflow), 자체 transition 안 함
-- `[추정]` Outbound mapping (Job 결과 → Jira) 의 메커니즘은 모든 task type 동일
-- `[추정]` Inbound mapping (Jira event → 다음 Job) 의 메커니즘 동일
-- `[추정]` revise loop 의 구조 (사람 feedback → 새 Job 인스턴스) 동일
-- `[추정]` Document version = git commit, atomicity = push 까지
-- `[추정]` Spawn rule 의 메커니즘 (이전 Job output 에서 child task spec 추출) 동일
+| dimension | P1 Document | P2 Code | P3 QA | P4 Action-only |
+| --- | --- | --- | --- | --- |
+| Job sequence 모양 | generate → quality → (revise→quality)* → 종료 | gen+test → open_pr → review* → merge | run_qa → (fan-out bug) → run_qa* → 종료 | create_ticket → 종료 |
+| Quality job 존재? | ✅ | ❌ (test pass = 품질) | ❌ (사람 검토) | ❌ |
+| 사람-판단 transition source | Jira event | **GitHub event** | Jira event | Jira event |
+| revise loop trigger | 사람 "재시도요청" | PR review comment / back-edge | 새 버그 발견 + back-edge | 없음 |
+| fan-out 방향 | 순방향 | 순방향 (TC fan-in) | **역방향 (back-edge)** + 순방향 | 없음 |
+| 산출물 type | markdown | code + tests | QA 보고서 + Bug 티켓 | Jira 티켓 |
+| 산출물 SSOT | git commit | git commit (PR merged) | git commit + Jira (Bug) | Jira (ticket) |
+| terminal trigger | 사람 "승인" | PR merge | 사람 (QA) "승인" | 사람 "완료" |
+| Approver | Strategy 별 | 리뷰어 | QA | 운영자 |
 
-### Task type 별 특화 (= Strategy YAML 데이터)
+### 모든 패턴 공통 (= 골격 = 코드 책임)
 
-후보 (단계별 표 완료 시 검증):
-- Job sequence 의 정확한 순서
-- 각 Job 의 prompt / skill / output schema (Type A + Type B)
-- Outbound mapping 의 정확한 Jira status / comment 포맷
-- Inbound mapping 의 정확한 trigger
-- Spawn rule 의 input → child task spec 변환 로직
-- Fan-out 의 모양 (1→1 / 1→N / N→1)
-- Approver role
-- 산출물 type 별 commit / publish 로직 (markdown vs code vs test result)
+골격이 cover 해야 할 4 컴포넌트:
 
-### 골격이 안 맞을 가능성 (= 모델 재설계 후보)
+1. **Task State Machine**
+   - task 단위 lifecycle: Job spawn → Job 결과 → 다음 Job 결정 → terminal
+   - Job atomic (I-6), git push 까지 = success (I-7)
+   - Task assignee = Jira ticket assignee (I-9)
+   - in-flight Job pending-unassigned 표시 (I-9)
+   - 같은 task 의 N 개 revise Job 순차 실행 (I-20)
+2. **Workflow Run Orchestrator**
+   - 순방향 fan-out (1→N): Strategy L5 Spawn rules
+   - 역방향 back-edge: Bug 티켓 생성 + Jira link + 영향 task transition trigger (I-15)
+   - N→1 fan-in: workflow run sync gate (I-14)
+   - restart recovery: verify-on-startup + push-or-fail + dedupe by hash (I-21)
+3. **Outbound Dispatcher**
+   - Job result → 외부 시스템 (Jira/GitHub/etc) action
+   - Strategy L2 outbound mapping 따름
+   - I-19 (PR title contract 같은 schema) 강제
+4. **Inbound Dispatcher**
+   - 외부 event normalization (Jira event / GitHub event / etc — I-5 일반화)
+   - Strategy L3 inbound mapping lookup → 적절한 task/job event
+   - source-agnostic
 
-후보 (가설, 검증 필요):
-- **산출물 type 변화** (Code 의 code+test, Deploy 의 배포결과) 가 같은 commit-per-version 모델에 들어맞나?
-- **PR review 의 cycle** 이 PRD revise 의 cycle 과 같은 모양인가? (PR 은 inline comment 들, PRD 는 ticket comment 들 — 데이터 구조 다름)
-- **Deploy 의 외부 CD 연동** 이 Skill 패턴에 들어맞나? (CD 트리거는 AI 가 아니라 시스템 트리거)
-- **Test 의 사람 개입** 시점이 다른 단계와 다른 모양인가?
++ **Skill 합성** (Type A domain + Type B integration schema) 후 Runner 에 전달, output schema validation (실패 = Job 실패)
+
+### Task type 별 특화 (= Strategy YAML 데이터, 5 layer)
+
+| Layer | 내용 |
+| --- | --- |
+| **L1 Job sequence skeleton** | default job 순서, branch 표현 (TC `qa_required`, QA fan-out back-edge) |
+| **L2 Outbound mapping** | Job 결과 → 외부 시스템 update (Jira status / comment / GitHub PR / Jira ticket 생성), template/threshold/format |
+| **L3 Inbound mapping** | 외부 event → 다음 Job (Jira transition name, GitHub event, back-edge transition) |
+| **L4 Job spec** | 각 Job 의 Type A skill 이름 + Type B output schema + I/O contract |
+| **L5 Spawn rules** | child task 생성 규칙 (fan-out / fan-in 대기 / 분기) |
+
++ **추가 데이터**:
+- **Task pattern flag** (P1/P2/P3/P4): 골격이 패턴별 동작 분기 (예: P1 = quality+승인 wait, P2 = PR webhook react, P3 = back-edge orchestration, P4 = 사람 transition wait)
+- **Approver role** (운영자/기획자/개발자/QA)
+- **산출물 위치 template** (`be-repo/docs/hld/{prd-key}.md` 등)
+- **Strategy YAML schema version** (I-23) — M0 는 `version: 1`
+
+### 패턴 안 변이의 처리
+
+- **P1 안의 TC**: 첫 job `analyze_change` 가 `qa_required` 분기. P1 의 변이가 아니라 L1 (job sequence) 의 `on_output_branch` rule 로 표현 가능.
+- **P3 의 Bug auto-close**: QA task 가 매 run 마다 open Bug 의 TC 들을 재실행. 통과 시 Bug 자동 close (Outbound Dispatcher 가 set), 재실패 시 reopen (I-22). 이것도 L2 outbound mapping 데이터로 표현.
+
+### 검증 결과
+
+✅ **4 패턴 모두 위 4 골격 컴포넌트 + Strategy 5 layer + 추가 데이터로 표현 가능.** 모델 재설계 불필요.
 
 ---
 
-## 미해결 결정 (전체 분석 진행 중 결정 필요)
+## 다음 결정 (M0 acceptance bar)
 
-각 ❓ 항목 + 추가로:
-- 한 task 의 in-flight Job 이 fail 했을 때 자동 재시도 정책 (= 새 Job 인스턴스 자동 생성?)
-- Workflow restart 시 in-flight 회복 알고리즘
-- Revise 의 cardinality limit
-- M0 의 범위 (이 분석 완료 후 자연스럽게 결정)
+위 분석 완료 → 다음은 **M0 의 범위** 결정.
+
+후보:
+- M0 = cycle 1 happy path (PRD 1 → HLD 1 → LLD 1 → Spec 1 → Code 1 → TC 1 → QA pass → Deploy 1, 모두 1 회 통과)
+- M0 = + back-edge 1 회 (revise loop 와 QA Bug 1 개라도 검증)
+- M0 = + fan-out 1 회 (1 PRD → N LLD 검증)
+
+다음 grilling 에서 결정.

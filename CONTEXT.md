@@ -186,6 +186,18 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 | **P4 Action-only** | Deploy | `Jira 티켓 생성 ("배포대기") → 사람의 외부 CD 배포 → Jira 수동 "완료" transition → workflow 완료`. quality / revise 없음. |
 
 > 이 4 패턴이 **공통 골격 + Strategy YAML 데이터** 로 표현 가능한지가 "공통/특화 분석" 의 stress-test 핵심.
+> **검증 결과 (2026-05-27 grilling, stages-task-job-analysis.md § 공통/특화 분석)**: ✅ 4 패턴 모두 아래 골격 4 컴포넌트 + Strategy 5 layer 로 표현 가능. 모델 재설계 불필요.
+
+### 골격 4 컴포넌트 (M0/M1 코드의 구조)
+
+| 컴포넌트 | 책임 |
+| --- | --- |
+| **Task State Machine** | task 단위 lifecycle (Job spawn → 결과 → 다음 Job → terminal). Strategy L1 + L3 + L4 + I-6/I-7/I-9/I-20 따름. |
+| **Workflow Run Orchestrator** | sync gate (I-14, N→1 fan-in), 순방향 fan-out (1→N), 역방향 back-edge (I-15), restart recovery (I-21). Strategy L5 따름. |
+| **Outbound Dispatcher** | Job result → 외부 시스템 (Jira/GitHub/etc) action. Strategy L2 따름. I-19 (PR title contract 같은 schema) 강제. |
+| **Inbound Dispatcher** | 외부 event normalization (Jira event / GitHub event — I-5 일반화) → Strategy L3 lookup → 적절한 task/job event. source-agnostic. |
+
++ **Skill 합성** (Type A domain + Type B integration schema) → Runner 전달 → output schema validation (실패 = Job 실패).
 
 ---
 
@@ -257,6 +269,8 @@ threshold / status 명 / comment 포맷 모두 **Strategy YAML 의 outbound/inbo
 - **I-19 (PR title contract)**: Code task 의 `open_pr` job 은 PR title 에 Jira ticket key 를 반드시 포함한다 (GitHub-Jira integration auto-sync trigger). Strategy YAML 의 PR title template + Type B integration skill schema 가 강제. 위반 = Job 실패.
 - **I-20 (back-edge 순차 실행)**: 같은 task 의 N 개 revise Job (back-edge 로 생성된 것 포함) 은 **순차 실행**. 1 Runner = 1 사람 머신 = 직렬. git conflict 회피 + 직전 push 후 fresh state 에서 다음 Job 시작 (I-7 정합). AI 가 직전 fix commit 을 context 로 받아 다음 버그 처리.
 - **I-21 (Workflow restart 회복)**: I-3 의 구체화. (a) DB 는 순수 cache — SSOT 는 git + Jira. (b) workflow App startup 시 모든 in-flight task 의 Jira status + git commit hash 를 **verify-on-startup** 으로 재확인, 불일치 시 git/Jira 가 truth, DB 를 그것에 맞춤. (c) "in-flight" 인데 git push 흔적 없는 Job = **failed 처리** (I-7: 성공 = push 까지). local commit only 는 Runner 자체 cleanup. (d) Job dedupe key = `git commit hash + Jira issue key + Job spec hash` — 같은 입력에 결과가 이미 git/Jira 에 있으면 skip.
+- **I-22 (Bug auto-close on TC pass)**: QA task 가 매 run 마다 open Bug 의 연결된 TC 들을 재실행한다. 통과 시 Bug 자동 close (Outbound Dispatcher 가 Jira status set). 같은 TC 가 나중에 또 실패 시 **closed Bug 를 reopen** (Jira 표준 동작). 결함 추적이 한 ticket 에 누적.
+- **I-23 (Strategy YAML schema versioning)**: 모든 Strategy YAML 파일은 schema `version` field 가 필수. M0 = `version: 1` only. 미래 v2 도입 시 골격의 Inbound/Outbound dispatcher 가 version 별 분기 추가만 하면 됨. v1 schema 의 backward compat 정책은 v2 도입 시점에 결정.
 
 ---
 
