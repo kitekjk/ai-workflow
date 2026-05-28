@@ -223,6 +223,8 @@
 
 ## 공통 / 특화 분석 (확정)
 
+> **갱신 (2026-05-27)**: 아래 분석은 4 패턴 (P1~P4) 을 별개로 본 stress-test 다. 후속 grilling 에서 **이 4 패턴이 1 패턴 + 4 axis 의 변이** 임이 확인되어 통합 단순화됨 (A/B/C). 최신 모델은 `2026-05-27-workflow-architecture.md` + CONTEXT.md `## Task Pattern — 1 패턴 + 4 axis`. 아래 표는 그 통합으로 이어진 원 분석으로 보존.
+>
 > 4 task pattern (P1 Document / P2 Code / P3 QA / P4 Action-only) 의 stress-test 결과. 골격이 모든 패턴을 cover 가능함을 확인.
 
 ### 패턴별 lifecycle 비교
