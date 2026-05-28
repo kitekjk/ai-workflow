@@ -87,8 +87,7 @@
 | `id` | UUID | system 발급 |
 | `run_id` | UUID | parent WorkflowRun |
 | `parent_task_id` | UUID? | hand-off 의 부모 (fan-out tree) |
-| `type` | string | `prd` / `hld` / `lld` / `spec` / `code` / `tc` / `qa` / `deploy` |
-| `pattern` | enum | `P1` / `P2` / `P3` / `P4` (Strategy YAML 의 메타) |
+| `type` | string | `prd` / `hld` / `lld` / `spec` / `code` / `tc` / `qa` / `deploy`. **유일한 discriminator** (handler registry 키). |
 | `jira_key` | string | 외부 Jira issue key (SSOT for human transitions) |
 | `github_pr_ref` | string? | P2 (Code) 의 GitHub PR identifier (I-18) |
 | `document_pointer` | git_ref? | 현재 Document version (commit hash). P1/P3 (보고서) 에 존재. |
@@ -97,7 +96,7 @@
 | `created_at` / `terminated_at` | timestamp | |
 
 **Invariants**
-- task type ↔ pattern 매핑은 Strategy YAML 의 메타 (`pattern: P1`) 가 결정. 코드 hardcode 금지 (P-1).
+- task type → handler 클래스는 **registry lookup** 으로 결정 (`Task.type` 이 유일한 discriminator). 별도 `pattern` enum 없음 (단순화 A). 4 axis 는 데이터 필드가 아니라 (handler 클래스) + (L4) + (lookup) 으로 흡수 — §4.1. 데이터는 type-agnostic dispatcher 가 보지 않음 (P-1).
 - assignee 와 매칭되는 Runner 가 없으면 status = `pending` + Jira comment 표시 (I-9).
 - document_pointer 의 git push 흔적 없으면 task 가 succeeded 될 수 없음 (I-7).
 
@@ -269,7 +268,7 @@ interface WorkflowRunOrchestrator {
 
 ### 3.3 Outbound Dispatcher
 
-**책임**: handler / orchestrator 가 **이미 결정한** outbound action 을 외부 시스템 (Jira / GitHub / Wiki) 에 apply. status명/comment template 은 메타 데이터로 채움. I-19 같은 schema 강제. **결정 로직은 handler/orchestrator 에 있고, Dispatcher 는 실행만** (§3.7 참조).
+**책임**: handler / orchestrator 가 **이미 결정 + 문자열까지 resolve 한** outbound action 을 외부 시스템 (Jira / GitHub / Wiki) 에 apply. status명/comment 문자열은 **handler 가** 자기 lookup (또는 base 가 `_common`) 에서 채워 **리터럴**로 넘긴다 — Dispatcher 는 채우지 않음 (D1, §4.3). I-19 같은 schema 강제는 apply 단계에서. **결정·templating 은 handler/orchestrator, Dispatcher 는 실행만** (§3.7 참조).
 
 ```ts
 type ExternalAction =
@@ -282,7 +281,7 @@ type ExternalAction =
 
 interface OutboundDispatcher {
   // handler 의 'outbound' Action 또는 orchestrator action 안의 ExternalAction[] 을 받아
-  // 메타 template 으로 최종 payload 채운 뒤 apply. 결정은 안 함.
+  // 이미 채워진 리터럴 action 을 apply 만. 결정·templating 안 함 (D1).
   apply(action: ExternalAction): Promise<void>;
 }
 ```
@@ -298,7 +297,7 @@ interface OutboundDispatcher {
 
 ### 3.4 Inbound Dispatcher
 
-**책임**: 외부 event 를 source-agnostic normalize 후 (외부 transition명 → event type) lookup table 로 dispatch.
+**책임**: 외부 event 를 source-agnostic normalize 후 **ref(ExternalRef)→소유 task/run 라우팅** 으로 dispatch. (외부 transition명 → event) **의미 해석은 Dispatcher 가 하지 않는다** — raw transition명을 payload 로 실어 handler 에 forward 하고, handler 가 자기 inbound lookup 으로 해석 (D1, §4.3).
 
 ```ts
 type NormalizedEvent = {
@@ -312,10 +311,10 @@ interface InboundDispatcher {
   // 외부 webhook payload → normalize
   normalize(source: string, rawPayload: unknown): NormalizedEvent;
 
-  // 메타의 lookup table (외부 transition명 → event type) → 적절한 컴포넌트로 forward
+  // ref → 소유 task/run 으로 라우팅하여 forward. transition명의 의미는 안 봄 (handler 가 해석).
   dispatch(event: NormalizedEvent): Promise<void>;
-  // 내부적으로:
-  //  - task-scoped event → TaskStateMachine (→ EventHandler.onEvent, external_event)
+  // 내부적으로 (라우팅 기준 = ExternalRef + 구조적 event kind, type-agnostic):
+  //  - task-scoped event → TaskStateMachine (→ EventHandler.onEvent, external_event; raw transition명 포함)
   //  - workflow-scoped event (e.g., Bug confirm) → WorkflowRunOrchestrator.handleBackEdgeTrigger
   //  - source request 신규 ticket → WorkflowRunOrchestrator (new run 시작)
 }
@@ -416,13 +415,218 @@ External webhook ──────▶│ Inbound         │
 
 ## 4. Strategy 데이터 schema (L4 + 메타)
 
-> *§4 는 다음 grilling 라운드에서 작성. 현재는 placeholder.*
+> 단순화 (C) 후 **데이터로 남는 부분만** 정의한다. 로직 (job sequence / branch / transition / spawn rule) 은 handler·orchestrator **코드** (§3). 여기 YAML 은 코드가 참조하는 **값** (schema · 문자열 · 식별자) 일 뿐이다.
 >
-> 단순화 (C) 후 데이터로 남는 부분만 정의:
 > - **L4 Job spec**: 각 Job 의 I/O JSON schema (Type B, runtime validation) + Type A skill 이름
 > - **메타**: task type 별 approver role / 산출물 위치 template / 4 axis 값 / schema version (I-23)
 > - **lookup tables**: Outbound 의 status명/comment template, Inbound 의 (외부 transition명 → event type) 매핑
 > - (L1/L2/L3 로직 + L5 spawn rules 는 데이터가 아니라 handler/orchestrator 코드 — §3 참조)
+
+### 4.0 조직 원칙 + 파일 레이아웃
+
+**(Q1 결정) per-task-type 파일.** task type 1 개 = YAML 파일 1 개. 그 파일은 해당 type 의 **meta + 그 type job 들의 L4 + 그 type 의 outbound/inbound lookup 문자열** 을 담는다. handler registry 가 task type 으로 키되므로 코드(`handlers/<type>.ts`)와 데이터(`<type>.yaml`)가 1:1 로 짝지어진다. 한 type 의 동작을 바꾸려면 정확히 두 파일만 건드린다.
+
+**(Q2 결정) 공유는 코드에서.** 5 Document type (PRD/HLD/LLD/Spec/TC) 이 공유하는 표준 quality/approval 흐름 문자열은 `_common.yaml` 한 파일에 둔다. 이 파일은 **공유 Document base handler 가 직접 읽는다** — per-type YAML 로 merge·extends 되지 않는다. per-type YAML 은 cross-file 참조 없는 **flat** 파일. 공유는 TS 클래스 계층 (`PrdHandler extends DocumentTaskHandler`) 에서 일어나고, 데이터 레이어엔 merge 의미가 0 이다. (YAML cross-file 상속은 네이티브 기능이 아니라 자작 merge 엔진이 필요 — 단순화 C 가 피하려는 accidental complexity 라 배제.)
+
+```
+workflows/definitions/
+├── _common.yaml          ← Document 공통 흐름 문자열 (base handler 가 읽음)
+├── prd.yaml
+├── hld.yaml
+├── lld.yaml
+├── spec.yaml
+├── tc.yaml               ← analyze_change 분기 포함 (분기 *결정* 은 handler 코드, output schema 는 L4)
+├── qa.yaml
+├── code.yaml             ← Document 공통 미참조 (GitHub event 기반, I-18)
+└── deploy.yaml           ← action-only (I-17)
+```
+
+- 현재 workflow 종류 = 1 (PRD→…→Deploy) 이므로 `definitions/` 바로 아래 평면 배치. 미래에 분기 workflow 도입 시 `definitions/<workflow>/` 하위 디렉토리로 확장 (§2.1 의 `definition_id` 도입 결정과 함께).
+- **`definition_version`** = `workflows/` 디렉토리 전체의 git commit hash (§2.1). 파일 분할·개수와 무관하게 재현성 보장.
+- 파일명에 version 을 넣지 않는다 — schema version 은 파일 안 `version:` field (I-23), run version 은 git commit hash. 둘 다 파일명 밖. (legacy `prd-confirmation.v1.yaml` 의 `.v1` 중복은 폐기.)
+- 기존 `prd-confirmation.v1.yaml` = state-graph-as-data 모델 (단순화 C 가 폐기한 형태). 새 schema 와 구조가 근본적으로 달라 **superseded** — 새 파일로 대체한다 (이전 파일의 물리적 정리는 별도 액션).
+
+**코드 ↔ 데이터 바인딩** (누가 어느 파일을 읽는가):
+
+| 코드 | 읽는 데이터 |
+| --- | --- |
+| `DocumentTaskHandler` (base) | `_common.yaml` (공통 outbound status · inbound transition) |
+| `PrdHandler` / `HldHandler` / `LldHandler` / `SpecHandler` / `TcHandler` (leaf, base 상속) | 자기 `<type>.yaml` (meta + L4 + type 고유 lookup) |
+| `CodeHandler` / `QaHandler` / `DeployHandler` (base 미상속) | 자기 `<type>.yaml` 만 |
+| Outbound / Inbound Dispatcher | (파일 직접 안 읽음) handler 가 resolve 한 결과를 Action 으로 받아 실행만 (§3.7) |
+
+> handler 가 문자열까지 resolve 해 Action 으로 넘기는지, 아니면 Dispatcher 가 semantic action 을 받아 메타 template 을 채우는지 — 그 경계는 §4.3 (lookup table) 에서 확정한다. (§3.3 의 서술과 `ExternalAction` 타입이 약간 어긋나 있어 거기서 정리.)
+
+### 4.1 meta 블록 (per task type)
+
+단순화 A 결정 (Q3): **별도 `pattern` / `axes` enum 없음.** 4 axis 는 (handler 클래스) + (L4) + (lookup) 으로 흡수되고, 데이터에 남는 type-레벨 메타는 아래뿐이다.
+
+```yaml
+# axis (non-load-bearing 주석, 사람 가독용): gen=ai_generate, quality=score@85, revise=jira_transition, approve=jira_event
+version: 1                          # I-23 — schema version (structural, top-level)
+type: prd                           # task type. 파일명과 일치(loader validation). registry 키.
+
+meta:
+  approver_role: planner            # operator | planner | developer | qa
+  output_location: "prd-repo:{prd_key}.md"   # Q4 템플릿. Deploy = null.
+
+# jobs:            ← L4 (§4.2)
+# outbound/inbound: ← lookup table (§4.3)
+```
+
+| field | level | type | 비고 |
+| --- | --- | --- | --- |
+| `version` | top | int | I-23. M0 = `1` only. Inbound/Outbound dispatcher 가 version 별 분기 (현재 1 가지). |
+| `type` | top | string | task type. **파일명과 일치해야 함** (loader 가 validation). handler registry 의 키. |
+| `meta.approver_role` | meta | enum | `operator` / `planner` / `developer` / `qa`. **advisory** — 시스템은 실제 transition 을 일으킨 사람에 react (I-5), role 을 강제하지 않는다. workflow 가 다음 Jira 티켓 생성 시 assignee 힌트 + 사람-가독 comment 용. |
+| `meta.output_location` | meta | string\|null | Q4 의 `{}` 템플릿. 변수 resolve = handler/orchestrator 코드 (`{repo}` 는 service registry 에서 be/fe 선택). 해석 (path vs branch) = handler. Deploy = `null` (git 산출물 없음). |
+
+- **`approver_role` 는 enforcement 아님.** 4 axis 의 "사람 승인 source" 가 *누가* 가 아니라 *어디서* (Jira vs GitHub) 를 가르는 것과 별개로, role 은 "기대 승인자" 표시일 뿐. TC 처럼 분기에 따라 approver 가 갈리는 경우 (`qa_required=true`→qa / `false`→developer) 는 handler 가 결정 (§5 예시). meta 는 primary 만 둔다.
+- **axis 주석** (`# axis: ...`) 은 load-bearing 아님 — loader 가 읽지 않는다. 사람이 파일 열었을 때 "이 type 이 1패턴 4축 중 어디" 를 한눈에 보게 하는 보조용. 원치 않으면 제거 가능.
+
+### 4.2 L4 Job spec (`jobs:` 맵)
+
+`jobs:` 는 그 task type 이 spawn 할 수 있는 **모든 job type → L4** 의 맵이다. handler 가 *어느 job 을 언제* spawn 할지 결정 (sequence/분기 = 코드), 데이터는 각 job 의 **skill 이름 + I/O schema (+ job param)** 만 제공한다 (단순화 C / P-1).
+
+```yaml
+jobs:
+  <job_type>:
+    skill: <type-a-skill-name>      # Type A 도메인 skill 이름 (버전 없음 — 항상 latest)
+    output_schema: <JSON Schema>    # 필수. Runner 결과를 검증 (위반 = Job 실패, P-5)
+    input_schema: <JSON Schema>     # 선택. JobSpecBuilder 가 input 조립 시 참조 + Runner instruction
+    <param>: <value>                # 선택. job 고유 tuning (예: quality 의 threshold)
+```
+
+| field | 필수 | 의미 |
+| --- | --- | --- |
+| `skill` | ✅ | Type A 도메인 skill 이름. **버전 핀 없음** — Runner 가 Job 시작 시 latest install. 실제 쓰인 version 은 사후 `Job.skill_versions` 에 audit 기록 (CONTEXT Skill 절). |
+| `output_schema` | ✅ | JSON Schema. `JobOutputValidator` 가 Runner 의 AI 결과를 검증. 실패 = Job 실패 (P-5, §3.5). 인라인 작성, schema 가 커지면 `{ $ref: "./schemas/<type>.<job>.output.json" }` 로 분리 (non-breaking 성장 경로). |
+| `input_schema` | — | JSON Schema, **비강제**. input 은 신뢰된 workflow 코드(`JobSpecBuilder`)가 구성하므로 검증 대상 아님 — 이 job 이 무엇을 소비하는지의 계약/문서. |
+| job param | — | job 고유 tuning 값. 예: `quality.threshold`. axis 값 중 유일하게 진짜 데이터로 남는 숫자 (Q3). |
+
+**제거된 legacy 필드** (이 schema 에 두지 않음):
+- `runner.requiredCapability` — Runner 매칭은 Task assignee 로 (I-9), skill 은 on-demand install. capability 매칭 = YAGNI.
+- `retry: { maxAttempts }` — Job atomic, 재시도 = 새 인스턴스 (I-6). retry 개념이 모델에 없음.
+- `requiredSkill.versionRange` — Type A 는 always-latest (버전 핀 금지, CONTEXT Skill 절).
+
+**예시 — PRD 의 `jobs:`** (4 job type):
+
+```yaml
+jobs:
+  generate:
+    skill: prd.generate
+    output_schema:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }            # 사람-가독 요약 (Jira comment 재료)
+    # input_schema 생략: source request ticket 본문 + 첨부 (JobSpecBuilder 가 조립)
+
+  quality:
+    skill: prd.quality
+    threshold: 85                            # ≥ 면 승인대기, < 면 수정요청 (판정 = handler)
+    output_schema:
+      type: object
+      required: [score, missing_items]
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100 }
+        missing_items: { type: array, items: { type: string } }
+
+  revise:
+    skill: prd.revise
+    input_schema:                            # revise 는 feedback 을 반드시 소비 (문서용)
+      type: object
+      required: [feedback]
+      properties:
+        feedback: { type: string }
+    output_schema:
+      type: object
+      required: [summary, addressed]
+      properties:
+        summary: { type: string }
+        addressed: { type: array, items: { type: string } }   # 반영한 feedback 항목
+
+  routing:
+    skill: prd.routing
+    output_schema:
+      type: object
+      required: [next_task_types]
+      properties:
+        next_task_types:
+          type: array
+          items: { enum: [hld, lld, spec] }   # PRD 하위 진입점 (보통 [hld])
+        rationale: { type: string }
+```
+
+> `git_commit_ref` (I-7) 는 `output_schema` 에 넣지 않는다 — Runner 가 push 완료 후 Job result 의 **봉투(envelope) 필드**로 보고하며 시스템이 직접 검증 (verify-on-write, I-8). `output_schema` 는 AI 가 생성하는 **본문 구조**만 검증한다.
+
+### 4.3 lookup table (outbound / inbound)
+
+D1 (Q6 결정): 두 lookup 모두 **handler 가 읽는다**. Document 공통은 `_common.yaml` (base handler), type 고유는 그 type YAML (leaf handler). Dispatcher 는 안 읽고 리터럴 action 을 실행만.
+
+**Outbound** — semantic outcome → 외부 action 들 (status 문자열 + comment 템플릿). handler 가 job 결과로 outcome 판정 → 해당 항목 템플릿을 job output 으로 채워 리터럴 `ExternalAction[]` emit.
+
+```yaml
+outbound:
+  <outcome_key>:
+    - { action: jira_status,  status: "<리터럴 status명>" }
+    - { action: jira_comment, template: "<{var} 보간 문자열>" }
+```
+
+**Inbound** — 외부 신호명 → semantic event. handler 가 `external_event` 받을 때 raw transition명/event kind 를 이 표로 해석 → 다음 action 결정.
+
+```yaml
+inbound:
+  "<외부 transition명 / event kind>": <semantic_event>
+```
+
+**`_common.yaml` (Document 공통 — 5 type 공유, `DocumentTaskHandler` base 가 읽음):**
+
+```yaml
+outbound:
+  quality_passed:
+    - { action: jira_status,  status: "승인대기" }
+    - { action: jira_comment, template: "품질 {score}점 — 승인 대기. 요약: {summary}" }
+  quality_failed:
+    - { action: jira_status,  status: "수정요청" }
+    - { action: jira_comment, template: "품질 {score}점 (기준 {threshold}). 보완 필요:\n{missing_items}" }
+inbound:
+  "승인":       approved     # → handler 가 type 별로 처리: PRD=routing job spawn / LLD=terminate→Spec hand-off
+  "재시도요청":  revise       # → handler: revise job spawn (직전 feedback 을 input 으로). 무제한 (I-5')
+```
+
+**type 고유 (override / 추가) 예시:**
+
+```yaml
+# code.yaml — GitHub event 기반 (I-18), Document 공통 미참조.
+inbound:
+  pr_merged:          merged           # → handler: task terminate(succeeded)
+  pr_review_comment:  review_feedback  # → handler: address_review job spawn (또는 back-edge)
+# Code 는 system 이 Jira status 를 set 하지 않음 (I-18) → outbound status 없음.
+
+# deploy.yaml — action-only (I-17).
+outbound:
+  on_spawn:
+    - { action: jira_ticket_create, ticket_type: "Deploy", status: "배포대기", template: "{prd_key} 배포 대기" }
+inbound:
+  "완료": done        # → handler: terminate → Orchestrator completeRun
+```
+
+**규약:**
+
+| 항목 | 결정 |
+| --- | --- |
+| 템플릿 보간 | `{var}` 치환. `{score}` `{summary}` `{threshold}` 등은 job output / job param / context 에서 채움. |
+| 배열 변수 (`{missing_items}`) | handler 가 bullet list (markdown `- ` 줄) 로 렌더. |
+| status / transition 문자열 | **실제 Jira 프로젝트 config 와 일치해야 하는 환경 의존 값.** schema 가 보관, 값은 실제 Jira 설정에서 옴. 변경 시 코드가 아니라 이 데이터만 수정 (F7 회귀 방지). |
+| comment 의 정확한 wording/format 규약 | CONTEXT.md "미정" 항목 — 데이터라 나중에 채움. schema(=템플릿 문자열) 자체는 막지 않음. |
+
+**lookup 에 안 들어가는 standing outbound** (특정 outcome 이 아니라 handler/orchestrator 가 상시 emit):
+- **skill version audit** — 모든 Job 종료 후 `Job.skill_versions` 를 Jira comment + DB ledger 에 기록 (CONTEXT Skill 절). outcome 무관.
+- **wiki publish** — generate/revise version 마다 (I-11). 실패해도 task 진행 안 막음 (I-13).
+- **Bug 생성 · auto-close** — Orchestrator 가 `handleBackEdgeTrigger` 에서 emit (I-15/I-22). 티켓 템플릿은 `qa.yaml`.
+
+> **§4 닫힘**: per-type 파일 = `version`/`type` + `meta` (§4.1) + `jobs` L4 (§4.2) + `outbound`/`inbound` lookup (§4.3); Document 공통은 `_common.yaml`. 로직 (job sequence / branch / spawn / back-edge) 은 전부 handler·orchestrator **코드** (§3). 데이터엔 state graph 도 pattern enum 도 없다.
 
 ---
 
