@@ -140,12 +140,17 @@ bare claim(D4) 선택의 대가를 명시한다.
 ```
 {
   domain_output,            // Jira 코멘트용 요약 + 판단값(예: quality 의 score). job별 schema
-  refs: [ { system, key, url? }, ... ],   // 불투명. url 은 Jira 링크 표시용일 뿐, 해석 안 함
+  refs: [ { system, key, url, label? }, ... ],  // 불투명 메타. 앱은 저장+클릭표시만, 파싱·대조·재독 안 함
   next_task_candidates?     // 라우팅 추천. 순차/fan-out 결정은 앱(D3)
 }
 ```
 
-**앱의 행동**: envelope 수신 → `refs` 를 Task 에 저장 → `domain_output` 의 outcome 을
+`refs` 예: `{system:"git", key:"<repo>@<commit>", url:"<커밋 링크>"}`,
+`{system:"wiki", key:"<page id>", url:"<위키 링크>"}`. 앱은 이를 **Task 메타정보로 저장**하고
+UI/Jira 에서 `url` 을 **클릭-이동 링크**로 렌더한다(`label`/`key` 표시, `system` 아이콘 분류).
+"관리"는 저장+표시까지이고, git/wiki 를 읽거나 쓰거나 검증하지 않는다.
+
+**앱의 행동**: envelope 수신 → `refs` 를 Task 메타로 저장 → `domain_output` 의 outcome 을
 lookup 으로 Jira 상태/코멘트 매핑(Outbound, Jira 전용) → 다음 job/task spawn(필요 시 `input_refs`
 에 저장된 ref 전달). 끝.
 
