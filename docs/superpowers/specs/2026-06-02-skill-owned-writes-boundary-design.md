@@ -119,8 +119,44 @@ bare claim(D4) 선택의 대가를 명시한다.
 
 ---
 
-## 6. 다음 작업 (이 문서 밖)
+## 6. 앱 ↔ 스킬 계약 표면 (이게 전부)
 
-- §3/§4 본문을 이 결정에 맞게 개정 (Outbound 를 Jira-only 로, Runner 에서 git 제거, `output_location` 삭제, envelope schema 에 `refs[]` 추가).
-- AI 스킬의 책임 경계 spec (도메인 작업 + git/wiki/PR 쓰기 + envelope contract) — 별도 문서.
-- envelope schema 의 `refs[]` 구조 확정 (system / key / url).
+> **원칙**: 앱은 **저장소-무관(artifact-store-agnostic)**. git/wiki/PR 이라는 단어가 앱
+> 어휘에 없다. job 내부에서 AI 가 무엇을 하는지는 앱의 관심사가 아니다. 경계를 넘는 것은
+> **불투명한 ref** 뿐 — 앱은 파싱·검증·재독 없이 저장하고 다음 job 으로 나른다.
+
+**앱 → 스킬 (JobSpec)**
+
+```
+{
+  job_type,                 // generate / quality / revise / routing / ...
+  inline_inputs,            // 사람 피드백 등 앱이 webhook 으로 받은 것 (inline)
+  input_refs: [ ref, ... ]  // 직전 산출물 포인터. 앱엔 불투명 문자열, 그대로 passthrough
+}
+```
+
+**스킬 → 앱 (envelope)**
+
+```
+{
+  domain_output,            // Jira 코멘트용 요약 + 판단값(예: quality 의 score). job별 schema
+  refs: [ { system, key, url? }, ... ],   // 불투명. url 은 Jira 링크 표시용일 뿐, 해석 안 함
+  next_task_candidates?     // 라우팅 추천. 순차/fan-out 결정은 앱(D3)
+}
+```
+
+**앱의 행동**: envelope 수신 → `refs` 를 Task 에 저장 → `domain_output` 의 outcome 을
+lookup 으로 Jira 상태/코멘트 매핑(Outbound, Jira 전용) → 다음 job/task spawn(필요 시 `input_refs`
+에 저장된 ref 전달). 끝.
+
+**앱 밖 (스킬 저장소의 문제, 이 spec 무관)**: 스킬 프롬프트, git/wiki/PR 사용법, 스킬
+permissions, AI 가 문서를 어디서 읽고 어디에 쓰는지. — 전부 스킬 패키지 self-contained.
+
+> **범위 선언**: 최소 스펙으로 빠르게 개발하고 운영하며 개선한다. 위 §5 의 위험(bare claim)은
+> 의식적으로 수용한 트레이드오프이며, M0 happy path 통과가 우선이다.
+
+---
+
+## 7. 다음 작업 (이 문서 밖)
+
+- §3/§4 본문 개정: Outbound → Jira-only, Runner 에서 git/wiki/PR 제거, `meta.output_location` 삭제, envelope 에 §6 의 `refs[]` 반영.
