@@ -1,0 +1,28 @@
+version: 1
+type: prd
+meta:
+  approver_role: planner
+jobs:
+  generate:
+    skill: prd.generate
+    output_schema:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+  quality:
+    skill: prd.quality
+    threshold: 85
+    output_schema:
+      type: object
+      required: [score, missing_items]
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100 }
+        missing_items: { type: array, items: { type: string } }
+  routing:
+    skill: prd.routing
+    output_schema:
+      type: object
+      required: [next_task_types]
+      properties:
+        next_task_types: { type: array, items: { enum: [hld, lld, spec] } }

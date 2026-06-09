@@ -1,0 +1,13 @@
+# Document-common trigger/outbound/inbound. base handler reads this (M0: prd only).
+# status/transition/trigger strings are environment-dependent Jira config values (F7: data, not code).
+trigger:
+  new_run_status: "PRD 요청"
+outbound:
+  quality_passed:
+    - { action: jira_status, status: "승인대기" }
+    - { action: jira_comment, template: "품질 {score}점 — 승인 대기. {summary}" }
+  quality_failed:
+    - { action: jira_status, status: "수정요청" }
+    - { action: jira_comment, template: "품질 {score}점(기준 {threshold}). 보완: {missing_items}" }
+inbound:
+  "승인": approved
