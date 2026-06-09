@@ -16,7 +16,8 @@
     "smoke:mysql:no-fixture": "tsx backend/src/smoke/mysql-no-fixture-smoke.ts",
     "typecheck:app": "tsc --noEmit -p app/tsconfig.json",
     "test:app": "vitest run app/tests",
-    "db:migrate:app": "tsx app/src/migrate.ts"
+    "db:migrate:app": "tsx app/src/migrate.ts",
+    "start:app": "tsx app/src/app.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
