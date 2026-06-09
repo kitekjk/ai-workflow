@@ -26,7 +26,7 @@ export class Runner {
     const startedAt = this.clock.now();
     const jobDef = this.strategy.jobs[claimed.jobType];
     if (!jobDef) {
-      return this.fail(claimed, startedAt);
+      return this.fail(claimed, startedAt, `no jobDef for job type "${claimed.jobType}"`);
     }
 
     let envelope;
@@ -35,13 +35,13 @@ export class Runner {
         inlineInputs: claimed.inlineInputs,
         inputRefs: claimed.inputRefs,
       });
-    } catch {
-      return this.fail(claimed, startedAt);
+    } catch (err) {
+      return this.fail(claimed, startedAt, `skill threw: ${String(err)}`);
     }
 
     const result = validateEnvelope(envelope, jobDef.outputSchema);
     if (!result.ok) {
-      return this.fail(claimed, startedAt);
+      return this.fail(claimed, startedAt, `envelope shape invalid: ${result.errors}`);
     }
 
     const succeeded: Job = {
@@ -55,7 +55,10 @@ export class Runner {
     return succeeded;
   }
 
-  private async fail(job: Job, startedAt: string): Promise<null> {
+  private async fail(job: Job, startedAt: string, reason: string): Promise<null> {
+    // F9 lesson: never swallow the failure cause silently. M0 has no per-job error
+    // column, so surface the reason to the runner log at minimum.
+    console.error(`[runner] job ${job.id} (${job.jobType}) failed: ${reason}`);
     await this.repos.jobs.update({
       ...job,
       status: "failed",

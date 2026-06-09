@@ -27,7 +27,8 @@ RUN_DB_TESTS=1 npm run test:app        # also runs MySQL F5/F6 integration
 
 1. ✅ PRD 티켓 생성 → generate → quality → 승인대기 자동 진행 (e2e test).
 2. ✅ 승인 → routing → Run completed, Jira+DB 일관 (e2e + smoke).
-3. ✅ 스킬 ref 가 Task 메타로 저장 (e2e asserts git+wiki refs).
+3. ◐ 스킬 ref 가 Task 메타로 저장 (e2e asserts git+wiki refs). **클릭-이동 링크 렌더는 미구현** —
+   refs 의 `url` 은 저장되지만 outbound 코멘트 템플릿이 아직 렌더하지 않음. 실제 Jira 클라이언트(M0+)와 함께 완성 예정.
 4. ✅ F7: 정책은 데이터(YAML), 코드에 type 분기 없음 (registry + strategy).
 5. ⚠️ F11: 앱이 문서 내용 무보유(ref만) — 거짓 약속 표면 제거. ref 진위는 미검증(bare claim, D4).
    F5/F6: 단일 Db boundary 로 구조적 차단 (db.test + 통합 테스트).

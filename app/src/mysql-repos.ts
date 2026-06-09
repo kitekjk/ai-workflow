@@ -109,7 +109,14 @@ export class MysqlRepos implements Repos {
     },
     get: async (id) => this.mapJob(await this.firstJob(`WHERE id = ?`, [id])),
     claimNextPending: async (runnerId) => {
-      // M0 single-runner claim: pick oldest pending, then mark claimed.
+      // M0 SINGLE-RUNNER ONLY. Two caveats that are safe now but unsafe to scale:
+      //  (1) Not FIFO: `id` is a random UUID, so order among pending jobs is arbitrary
+      //      (M0 never has >1 pending job per run, so it never manifests). Multi-job
+      //      ordering needs a monotonic insertion column (e.g. AUTO_INCREMENT seq).
+      //  (2) Not atomic: SELECT-then-UPDATE is a race. The UPDATE is guarded by
+      //      `status = 'pending'` but we don't check affectedRows, so under concurrent
+      //      runners this could return a job another runner won. Add an affectedRows
+      //      check (return null on 0) before introducing a second runner.
       const rows = await this.db.query<RowDataPacket>(
         `SELECT * FROM job WHERE status = 'pending' ORDER BY started_at IS NOT NULL, id ASC LIMIT ${safeLimit(1)}`,
       );
