@@ -31,7 +31,8 @@ describe("validateEnvelope", () => {
 
   it("rejects a ref missing required key", () => {
     const r = validateEnvelope(
-      { domainOutput: { score: 90, missing_items: [] }, refs: [{ system: "git" }] },
+      // deliberately malformed ref (missing required `key`) to exercise runtime rejection
+      { domainOutput: { score: 90, missing_items: [] }, refs: [{ system: "git" } as any] },
       qualitySchema,
     );
     expect(r.ok).toBe(false);
