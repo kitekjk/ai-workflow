@@ -85,4 +85,28 @@ describe("M0 PRD happy path (end-to-end, stub skill)", () => {
     const run = await repos.runs.get(t!.runId);
     expect(run?.status).toBe("failed");
   });
+
+  it("engine failure → task failed, run failed, Jira failure comment (no orphan)", async () => {
+    const { repos, out, reactor } = build();
+    const boom = new Reactor({
+      ...(reactor as unknown as { deps: any }).deps,
+      runner: new Runner(
+        repos,
+        (reactor as unknown as { deps: any }).deps.strategy,
+        async () => {
+          throw new Error("claude exited 1");
+        },
+        systemClock,
+        "runner-boom",
+      ),
+    });
+    const task = await boom.startRun("PAIR-500");
+    await boom.drain();
+
+    const t = await repos.tasks.get(task.id);
+    expect(t?.status).toBe("failed");
+    const run = await repos.runs.get(t!.runId);
+    expect(run?.status).toBe("failed");
+    expect(out.applied.some((a) => a.kind === "jira_comment" && a.body.includes("작업 실패"))).toBe(true);
+  });
 });

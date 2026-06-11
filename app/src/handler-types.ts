@@ -4,6 +4,7 @@ import type { CommonDef, StrategyDef } from "./strategy";
 export type Event =
   | { kind: "task_spawned"; taskId: string }
   | { kind: "job_finished"; taskId: string; jobType: JobType; envelope: Envelope }
+  | { kind: "job_failed"; taskId: string; jobType: JobType; reason: string }
   | { kind: "external_event"; taskId: string; transition: string };
 
 export type ExternalAction =

@@ -9,5 +9,8 @@ outbound:
   quality_failed:
     - { action: jira_status, status: "수정요청" }
     - { action: jira_comment, template: "품질 {score}점(기준 {threshold}). 보완: {missing_items}" }
+  job_failed:
+    - { action: jira_status, status: "수정요청" }
+    - { action: jira_comment, template: "작업 실패: {reason}" }
 inbound:
   "승인": approved

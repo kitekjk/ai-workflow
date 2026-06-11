@@ -76,10 +76,24 @@ export class Reactor {
   /** Drive the single runner until no pending jobs remain, reacting to each result. */
   async drain(): Promise<void> {
     for (;;) {
-      const finished = await this.deps.runner.runOnce();
-      if (!finished) break;
-      await this.onJobFinished(finished);
+      const result = await this.deps.runner.runOnce();
+      if (result.kind === "idle") break;
+      if (result.kind === "finished") {
+        await this.onJobFinished(result.job);
+      } else {
+        await this.onJobFailed(result.job, result.reason);
+      }
     }
+  }
+
+  /** Runner reports a failed job → terminate its task (policy via handler, F7). */
+  async onJobFailed(job: Job, reason: string): Promise<void> {
+    await this.applyEvent({
+      kind: "job_failed",
+      taskId: job.taskId,
+      jobType: job.jobType,
+      reason,
+    });
   }
 
   private async applyEvent(event: Event): Promise<void> {
