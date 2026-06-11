@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { engineConfigFromEnv, buildWrapperPrompt, makeClaudeSkill } from "../src/cli-engine";
 import type { RunClaude } from "../src/cli-engine";
+import { loadStrategy } from "../src/strategy";
 import type { StrategyDef } from "../src/strategy";
 
 describe("engineConfigFromEnv", () => {
@@ -120,22 +121,9 @@ describe("makeClaudeSkill", () => {
 const RUN_CLI = process.env.RUN_CLI_TESTS === "1";
 (RUN_CLI ? describe : describe.skip)("makeClaudeSkill (real claude)", () => {
   it("round-trips an envelope file from a real claude run", async () => {
-    const s: StrategyDef = {
-      version: 1,
-      type: "prd",
-      meta: {},
-      jobs: {
-        generate: {
-          skill: "prd-cycle",
-          outputSchema: {
-            type: "object",
-            required: ["summary"],
-            properties: { summary: { type: "string" } },
-          },
-        },
-      },
-    };
-    const skill = makeClaudeSkill(s, engineConfigFromEnv());
+    const DEFS = new URL("../workflows/definitions/", import.meta.url).pathname;
+    const { strategy: prodStrategy } = loadStrategy(DEFS, "prd");
+    const skill = makeClaudeSkill(prodStrategy, engineConfigFromEnv());
     const env = await skill("generate", {
       jobId: "it-1",
       inlineInputs: { ticket: "PAIR-1: build login" },

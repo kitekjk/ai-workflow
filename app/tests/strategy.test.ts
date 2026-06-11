@@ -8,7 +8,7 @@ describe("loadStrategy", () => {
     expect(strategy.type).toBe("prd");
     expect(strategy.version).toBe(1);
     expect(strategy.jobs.quality.threshold).toBe(85);
-    expect(strategy.jobs.generate.skill).toBe("prd.generate");
+    expect(strategy.jobs.generate.skill).toBe("prd-cycle");
     expect(common.trigger.newRunStatus).toBe("PRD 요청");
     expect(common.inbound["승인"]).toBe("approved");
     expect(common.outbound.quality_passed[0]).toEqual({

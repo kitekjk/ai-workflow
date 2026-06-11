@@ -72,6 +72,8 @@ export type RunClaude = (
 /** Real spawn of `claude -p ... --output-format json`. F9: capture stdout AND stderr. */
 export const runClaude: RunClaude = (config, cwd, prompt) =>
   new Promise<ClaudeResult>((resolve, reject) => {
+    // stdout JSON is captured for F9 failure diagnostics only; the envelope itself is
+    // returned via the workspace ./out/envelope.json file, not parsed from stdout.
     const args = ["-p", prompt, "--output-format", "json"];
     if (config.model) args.push("--model", config.model);
     if (config.maxTurns) args.push("--max-turns", String(config.maxTurns)); // Claude CLI flag name
