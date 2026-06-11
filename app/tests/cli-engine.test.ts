@@ -1,5 +1,10 @@
 // app/tests/cli-engine.test.ts
-import { engineConfigFromEnv, buildWrapperPrompt } from "../src/cli-engine";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { engineConfigFromEnv, buildWrapperPrompt, makeClaudeSkill } from "../src/cli-engine";
+import type { RunClaude } from "../src/cli-engine";
+import type { StrategyDef } from "../src/strategy";
 
 describe("engineConfigFromEnv", () => {
   it("uses defaults when env is empty", () => {
@@ -55,5 +60,56 @@ describe("buildWrapperPrompt", () => {
     expect(p).toContain("./out/envelope.json");
     expect(p).toContain("domainOutput");
     expect(p).toContain('"summary"');
+  });
+});
+
+const strategy: StrategyDef = {
+  version: 1,
+  type: "prd",
+  meta: {},
+  jobs: {
+    generate: { skill: "prd.generate", outputSchema: { type: "object" } },
+  },
+};
+
+const cfg = () => ({
+  cliPath: "claude",
+  timeoutMs: 1000,
+  workspaceBase: mkdtempSync(join(tmpdir(), "engine-")),
+});
+
+const input = { jobId: "job-1", inlineInputs: {}, inputRefs: [] };
+
+describe("makeClaudeSkill", () => {
+  it("returns the envelope the skill wrote to the workspace file", async () => {
+    const fakeRun: RunClaude = async (_c, cwd) => {
+      writeFileSync(
+        join(cwd, "out", "envelope.json"),
+        JSON.stringify({ domainOutput: { summary: "ok" }, refs: [] }),
+      );
+      return { stdout: "done", stderr: "", code: 0 };
+    };
+    const skill = makeClaudeSkill(strategy, cfg(), fakeRun);
+    const env = await skill("generate", input);
+    expect(env.domainOutput.summary).toBe("ok");
+  });
+
+  it("throws with stdout+stderr when claude exits non-zero (F9)", async () => {
+    const fakeRun: RunClaude = async () => ({ stdout: "OUT", stderr: "BOOM", code: 1 });
+    const skill = makeClaudeSkill(strategy, cfg(), fakeRun);
+    await expect(skill("generate", input)).rejects.toThrow(/OUT[\s\S]*BOOM/);
+  });
+
+  it("throws when no envelope file was written", async () => {
+    const fakeRun: RunClaude = async () => ({ stdout: "", stderr: "", code: 0 });
+    const skill = makeClaudeSkill(strategy, cfg(), fakeRun);
+    await expect(skill("generate", input)).rejects.toThrow(/envelope file/);
+  });
+
+  it("throws on an unknown job type", async () => {
+    const fakeRun: RunClaude = async () => ({ stdout: "", stderr: "", code: 0 });
+    const skill = makeClaudeSkill(strategy, cfg(), fakeRun);
+    // @ts-expect-error deliberately unknown job type
+    await expect(skill("nope", input)).rejects.toThrow(/no jobDef/);
   });
 });
