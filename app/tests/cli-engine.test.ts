@@ -113,3 +113,34 @@ describe("makeClaudeSkill", () => {
     await expect(skill("nope", input)).rejects.toThrow(/no jobDef/);
   });
 });
+
+// Real `claude` spawn. Gated like the MySQL integration tests. The wrapper prompt fully
+// specifies the task, so this exercises the engine I/O path (spawn → file → read) even if
+// the prd-cycle skill is not separately installed.
+const RUN_CLI = process.env.RUN_CLI_TESTS === "1";
+(RUN_CLI ? describe : describe.skip)("makeClaudeSkill (real claude)", () => {
+  it("round-trips an envelope file from a real claude run", async () => {
+    const s: StrategyDef = {
+      version: 1,
+      type: "prd",
+      meta: {},
+      jobs: {
+        generate: {
+          skill: "prd-cycle",
+          outputSchema: {
+            type: "object",
+            required: ["summary"],
+            properties: { summary: { type: "string" } },
+          },
+        },
+      },
+    };
+    const skill = makeClaudeSkill(s, engineConfigFromEnv());
+    const env = await skill("generate", {
+      jobId: "it-1",
+      inlineInputs: { ticket: "PAIR-1: build login" },
+      inputRefs: [],
+    });
+    expect(typeof env.domainOutput.summary).toBe("string");
+  }, 120000);
+});
