@@ -55,6 +55,12 @@ export const prdHandler: EventHandler = {
         return [];
       }
 
+      case "job_failed":
+        return [
+          outboundFor("job_failed", ctx, { reason: event.reason }),
+          { kind: "terminate", outcome: "failed" },
+        ];
+
       case "external_event": {
         const semantic = ctx.common.inbound[event.transition];
         if (semantic === "approved") {

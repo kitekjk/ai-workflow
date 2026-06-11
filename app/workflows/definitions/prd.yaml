@@ -4,14 +4,14 @@ meta:
   approver_role: planner
 jobs:
   generate:
-    skill: prd.generate
+    skill: prd-cycle
     output_schema:
       type: object
       required: [summary]
       properties:
         summary: { type: string }
   quality:
-    skill: prd.quality
+    skill: prd-cycle
     threshold: 85
     output_schema:
       type: object
@@ -20,7 +20,7 @@ jobs:
         score: { type: integer, minimum: 0, maximum: 100 }
         missing_items: { type: array, items: { type: string } }
   routing:
-    skill: prd.routing
+    skill: prd-cycle
     output_schema:
       type: object
       required: [next_task_types]

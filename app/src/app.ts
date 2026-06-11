@@ -9,6 +9,7 @@ import { defaultRegistry } from "./registry";
 import { loadStrategy } from "./strategy";
 import { Runner } from "./runner";
 import { stubSkill } from "./stub-skill";
+import { engineConfigFromEnv, makeClaudeSkill } from "./cli-engine";
 import { normalizeJiraWebhook, RecordingOutbound } from "./jira";
 import { Reactor } from "./reactor";
 
@@ -25,7 +26,11 @@ export async function buildReactor(): Promise<{ reactor: Reactor; common: Return
   const db = Db.fromConfig(mysqlConfigFromEnv());
   const repos = new MysqlRepos(db);
   const outbound = new RecordingOutbound(); // M0: real Jira client is M0+
-  const runner = new Runner(repos, strategy, stubSkill, systemClock, "local-runner");
+  const skill =
+    process.env.SKILL_ENGINE === "claude"
+      ? makeClaudeSkill(strategy, engineConfigFromEnv())
+      : stubSkill; // default: stub (safe for tests and dry runs)
+  const runner = new Runner(repos, strategy, skill, systemClock, "local-runner");
   const reactor = new Reactor({
     repos,
     registry: defaultRegistry(),

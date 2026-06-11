@@ -29,8 +29,9 @@ describe("Runner.runOnce", () => {
     await repos.jobs.create(pendingJob("generate"));
     const runner = new Runner(repos, strategy, stubSkill, systemClock, "runner-A");
 
-    const finished = await runner.runOnce();
-    expect(finished?.jobType).toBe("generate");
+    const result = await runner.runOnce();
+    expect(result.kind).toBe("finished");
+    if (result.kind === "finished") expect(result.job.jobType).toBe("generate");
 
     const stored = await repos.jobs.get("job-generate");
     expect(stored?.status).toBe("succeeded");
@@ -39,13 +40,13 @@ describe("Runner.runOnce", () => {
     expect(stored?.endedAt).not.toBeNull();
   });
 
-  it("returns null when no pending job", async () => {
+  it("returns idle when no pending job", async () => {
     const repos = new InMemoryRepos();
     const runner = new Runner(repos, strategy, stubSkill, systemClock, "runner-A");
-    expect(await runner.runOnce()).toBeNull();
+    expect((await runner.runOnce()).kind).toBe("idle");
   });
 
-  it("marks job failed when the skill returns an envelope that violates output_schema", async () => {
+  it("returns failed (and marks job failed) when the envelope violates output_schema", async () => {
     const repos = new InMemoryRepos();
     await repos.jobs.create(pendingJob("quality"));
     const badSkill = async () => ({
@@ -53,8 +54,9 @@ describe("Runner.runOnce", () => {
       refs: [],
     });
     const runner = new Runner(repos, strategy, badSkill, systemClock, "runner-A");
-    const finished = await runner.runOnce();
-    expect(finished).toBeNull(); // failed jobs are not surfaced as finished work
+    const result = await runner.runOnce();
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.reason).toMatch(/shape invalid/);
     const stored = await repos.jobs.get("job-quality");
     expect(stored?.status).toBe("failed");
   });

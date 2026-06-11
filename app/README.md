@@ -16,6 +16,15 @@ POST a Jira webhook to `localhost:8787/jira/webhook`:
 - `{"issue":{"key":"PAIR-1"},"status":"PRD 요청"}` → starts a run (→ 승인대기)
 - `{"issue":{"key":"PAIR-1"},"status":"승인"}` → routing → completed
 
+By default the app uses the **stub skill**. To drive jobs with the real Claude CLI:
+
+    SKILL_ENGINE=claude npm run start:app
+
+The engine isolates each job in a workspace under `SKILL_WORKSPACE_BASE`, injects the
+envelope I/O contract as a wrapper prompt, and reads the result from `./out/envelope.json`
+(F9: stdout+stderr are surfaced on failure; F10: the workspace is cleaned up).
+Run the gated real-CLI integration test with `RUN_CLI_TESTS=1 npm run test:app`.
+
 ## Test
 
 ```bash
@@ -45,5 +54,5 @@ Outbound: Jira only (RecordingOutbound in M0). git/wiki/PR owned by skill (opaqu
 Persistence: single Db boundary (MySQL) — F5 datetime / F6 LIMIT structurally blocked.
 ```
 
-Out of scope (M0+): real Claude CLI engine (F9/F10), revise loop, fan-out, HLD/LLD/…
+Out of scope (M0++): revise loop, fan-out, HLD/LLD/…
 task types, dashboard/UI, ref reachability verification.
