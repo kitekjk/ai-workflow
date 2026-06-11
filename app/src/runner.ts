@@ -32,6 +32,7 @@ export class Runner {
     let envelope;
     try {
       envelope = await this.skill(claimed.jobType, {
+        jobId: claimed.id,
         inlineInputs: claimed.inlineInputs,
         inputRefs: claimed.inputRefs,
       });

@@ -1,6 +1,7 @@
 import type { Envelope, JobType } from "./domain";
 
 export type Skill = (jobType: JobType, input: {
+  jobId: string;
   inlineInputs: Record<string, unknown>;
   inputRefs: { system: string; key: string; url?: string; label?: string }[];
 }) => Promise<Envelope>;
